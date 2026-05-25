@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# KiCad working artifacts (test projects keep their own git history)
+*-backups/
+.history/
+*.kicad_prl
+fp-info-cache
