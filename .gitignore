@@ -22,3 +22,6 @@ venv/
 .history/
 *.kicad_prl
 fp-info-cache
+
+
+autorouter_plan.md
