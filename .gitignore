@@ -21,6 +21,7 @@ venv/
 *-backups/
 .history/
 *.kicad_prl
+~*.lck
 fp-info-cache
 
 # Generated autorouter output
