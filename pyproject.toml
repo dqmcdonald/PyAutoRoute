@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 viz = ["matplotlib"]
+docs = ["pdoc"]
 
 [project.scripts]
 pyautoroute = "pyautoroute.autoroute:main"

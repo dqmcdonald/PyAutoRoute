@@ -4,6 +4,17 @@ Developer-facing notes on how the autorouter is put together: the data flow, eac
 module's job, the algorithms, and the non-obvious invariants that make the output
 DRC-clean. For user-facing usage see the top-level `README.md`.
 
+## API documentation
+
+Per-module HTML API docs (generated from the module docstrings) live in
+[`docs/api/`](api/index.html) — open `docs/api/index.html` in a browser.
+Regenerate them after changing docstrings with:
+
+```bash
+pip install -e ".[docs]"          # installs pdoc
+pdoc pyautoroute -o docs/api
+```
+
 ## Pipeline
 
 ```mermaid
