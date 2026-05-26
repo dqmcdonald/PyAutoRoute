@@ -38,9 +38,10 @@ classes) is read from the project — nothing Test1-specific is hardcoded.
 - Board outline = a `gr_poly` on `Edge.Cuts` here, but general boards express the
   outline as `gr_line` segments / `gr_arc` / `gr_rect` / `gr_circle`. Outline
   builder must stitch arbitrary Edge.Cuts shapes into a polygon.
-- 28 footprints, 97 pads (66 SMD / 30 thru-hole), 106 nets, **0 tracks**, plus
+- 28 footprints, ~96–97 pads (SMD + thru-hole), 106 nets, **0 tracks**, plus
   **10 dangling free-vias** (net-tagged, no connected track) that will be
-  stripped before routing.
+  stripped before routing. (Pad/net counts are descriptive — **do not hardcode
+  them**; derive everything from the parsed board.)
 
 ## Approach (confirmed with user)
 
@@ -68,7 +69,24 @@ Global optimisation:     SIMULATED ANNEALING over
 
 ## Module architecture
 
-New package at `/Users/que/Documents/PyAutoRoute/pyautoroute/`:
+New package at `/Users/que/Documents/PyAutoRoute/pyautoroute/`.
+
+```mermaid
+flowchart TD
+  PCB[".kicad_pcb (s-expr)"] --> sexpr
+  PRO[".kicad_pro (json)"] --> rules
+  sexpr["sexpr.py — tokenizer / serializer (round-trip safe)"] --> pcb
+  pcb["pcb.py — board model: layers, pads(abs+rot), nets(name & numbered), copper, outline"] --> netlist
+  pcb --> geometry
+  rules["rules.py — per-netclass clearance/width/via + net→class + board mins"] --> geometry
+  geometry["geometry.py — pad polys, outline assembly, clearance buffer, per-layer STRtree"] --> grid
+  grid["grid.py — 2-layer grid, blocked masks, pad access nodes"] --> router
+  netlist["netlist.py — net grouping + MST → two-pin connections"] --> anneal
+  router["router.py — A*/Lee maze + 45° cost model → segments + vias"] --> anneal
+  anneal["anneal.py — SA over order / rip-up / layer-bias; I/O-free, progress via callback"] --> autoroute
+  autoroute["autoroute.py — CLI + orchestration + writer (strip dangling vias, append by net NAME)"] --> OUT[".._routed.kicad_pcb"]
+  visualize["visualize.py — optional matplotlib debug"] -.-> autoroute
+```
 
 | File | Responsibility |
 |---|---|
@@ -83,6 +101,11 @@ New package at `/Users/que/Documents/PyAutoRoute/pyautoroute/`:
 | `autoroute.py` | Orchestration + CLI entry point. |
 | `visualize.py` | (optional) matplotlib debug render of layers/obstacles/routes. |
 | `tests/` | round-trip parser test, geometry/transform tests, small synthetic routing test, end-to-end Test1 run. |
+
+**Testability boundary:** every module above is plain Python (+ numpy/scipy/
+shapely from `tf`) and is unit-testable directly in the `tf` venv — there is no
+`pcbnew` dependency anywhere. The *only* steps that need a full KiCad install are
+`kicad-cli pcb drc` and eyeballing the result in the KiCad GUI.
 
 ## Algorithm detail
 
@@ -129,6 +152,12 @@ python -m pyautoroute.autoroute INPUT.kicad_pcb \
 Run on the test board produces `TestProjects/Test1/Test1_routed.kicad_pcb`
 (input never overwritten).
 
+> **Optional packaging.** A minimal `pyproject.toml` (`requires-python>=3.10`,
+> console script `pyautoroute = pyautoroute.autoroute:main`, `[dev]` extra =
+> `pytest`, `[viz]` extra = `matplotlib`) makes `pip install -e .` and a bare
+> `pyautoroute …` command available. The heavy deps (numpy/scipy/shapely) already
+> live in `tf`, so this is convenience only — flagged as optional, not required.
+
 ### Progress display
 
 By default the tool prints a **live text-based progress display** to the
@@ -155,20 +184,31 @@ callback each accepted iteration — the SA engine stays I/O-free.
 3. **`geometry.py`** — pad polygons, outline assembly, obstacle `STRtree`.
 4. **`grid.py`** — grid + per-layer blocked masks + pad access nodes.
 5. **`router.py`** — A* single-net router with the cost model; path→segments/vias.
-6. **`netlist.py`** — net grouping + MST connection decomposition.
+6. **`netlist.py`** — net grouping + MST connection decomposition (skip
+   `--exclude-net`).
+   → **Milestone A — greedy, DRC-clean route.** Wire phases 1–6 with a simple
+   greedy connection order + the writer, producing a `Test1_routed.kicad_pcb`
+   that is DRC-clean *by construction* (some nets may be left unrouted). This is
+   a shippable checkpoint before any SA work.
 7. **`anneal.py`** — SA engine wrapping sequential routing.
+   → **Milestone B — optimised route.** SA improves length / via count / routed
+   fraction over the Milestone-A baseline.
 8. **`autoroute.py`** — wire it together + CLI + writer (strip dangling vias,
-   append routing by net name).
+   append routing by net name) + progress display.
 9. **End-to-end** on Test1; tune weights/grid; optional `visualize.py`.
 
 ## Verification
 
 - **Round-trip test**: parse + re-write Test1 unmodified → KiCad opens it; diff is
   empty/semantically identical.
+- **In-repo self-check (no `kicad-cli` needed)**: re-parse our own
+  `Test1_routed.kicad_pcb` and assert via shapely that no routed segment/via
+  violates track-, pad-, via-, or board-edge clearance for its net class. This is
+  the fast, CI-able correctness gate since it runs entirely in `tf`.
 - **End-to-end**: route Test1 → `Test1_routed.kicad_pcb`; validate with
   `kicad-cli pcb drc` (check availability) on `Test1_routed.kicad_pcb` →
-  **0 clearance / 0 unconnected**
-  errors (or a report of residuals). Open in KiCad to eyeball.
+  **0 clearance / 0 unconnected** errors (or a report of residuals). Open in
+  KiCad to eyeball.
 - **Metrics report**: total wirelength, via count, % connections routed, runtime —
   printed at end of run.
 - **Generality smoke test**: run on a second, structurally different 2-layer board
@@ -191,4 +231,6 @@ callback each accepted iteration — the SA engine stays I/O-free.
   still treated as obstacles (so routed nets keep clear of them); any existing
   tracks on an excluded net are preserved untouched. Reported separately from
   "failed to route" so the user can tell intentional skips from failures.
+- **Nothing Test1-specific is hardcoded** — pad/net/footprint counts, the outline
+  primitive used, and the net-class set are all derived from the parsed board.
 - No new heavy dependencies; only `pytest` may be installed into `tf` for tests.

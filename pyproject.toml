@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyautoroute"
+version = "0.1.0"
+description = "Simulated-annealing autorouter for 2-layer KiCad PCBs"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "shapely>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+viz = ["matplotlib"]
+
+[project.scripts]
+pyautoroute = "pyautoroute.autoroute:main"
+
+[tool.setuptools.packages.find]
+include = ["pyautoroute*"]
