@@ -121,5 +121,6 @@ construction. See [`docs/architecture.md`](docs/architecture.md) for the details
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest                # fast suite (large-board routing is skipped)
+pytest --slow         # also route the large boards (Test1, Test4) — slow
 ```

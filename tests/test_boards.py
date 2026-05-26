@@ -87,10 +87,11 @@ def test_board_outline_and_pads_inside(board_path):
     assert inside >= int(0.95 * len(board.pads))
 
 
-def test_small_board_routes_clean(board_path, tmp_path):
+def test_board_routes_clean(board_path, tmp_path, request):
     board = pcb.load_board(board_path)
-    if len(board.pads) > _ROUTE_MAX_PADS:
-        pytest.skip(f"{board_path.parent.name} too large to route in a unit test")
+    small = len(board.pads) <= _ROUTE_MAX_PADS
+    if not small and not request.config.getoption("--slow"):
+        pytest.skip(f"{board_path.parent.name} is large; run with --slow to route it")
 
     rules = _rules_for(board_path)
     conns = netlist.build_connections(board)
@@ -106,9 +107,11 @@ def test_small_board_routes_clean(board_path, tmp_path):
     out = tmp_path / "routed.kicad_pcb"
     pcb.write_board(board, out, new_nodes=nodes, strip_free_vias=True)
 
-    # reload our own output and assert it is clearance-clean
+    # reload our own output and assert it is clearance-clean (true at any scale)
     routed = pcb.load_board(out)
     violations = geometry.clearance_violations(routed, rules)
     assert violations == [], f"{len(violations)} clearance violations: {violations[:3]}"
-    # these small boards should route completely
-    assert result.routed == len(conns)
+    if small:
+        assert result.routed == len(conns)   # small boards route completely
+    else:
+        assert result.routed >= 1            # large boards: routed something, clean

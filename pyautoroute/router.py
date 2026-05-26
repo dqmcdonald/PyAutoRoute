@@ -139,7 +139,11 @@ class RoutingState:
         grid = self.grid
         width = grid.rules.track_width_for(result.net)
         via_r = grid.rules.via_diameter_for(result.net) / 2.0
-        extra = grid._max_clear + grid.safety
+        # Treat committed copper like a pad obstacle: grow it by the full grid
+        # margin (= routing-track half-width + clearance + discretisation safety).
+        # The routing-track half-width term matters on multi-class boards where a
+        # later wide track would otherwise encroach on this one's clearance.
+        extra = grid.margin
         nodes: set = set(result.path)
         for (l0, c0, r0), (l1, c1, r1) in zip(result.path, result.path[1:]):
             if l0 != l1:

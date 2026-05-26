@@ -155,11 +155,21 @@ All geometry is in **KiCad board coordinates**: millimetres, **Y pointing down**
 Clearance is enforced discretely on the grid, not checked after the fact.
 
 - **Obstacle inflation.** Each obstacle is grown by
-  `margin = track/2 + clearance + safety` before marking grid owners, where
-  `safety = pitch · √2 / 2`. The safety term covers grid discretisation: a track
-  segment between two free node-centres can dip up to half a diagonal closer to an
-  obstacle than either endpoint, so without it the continuous track could clip
-  clearance even though both nodes look free.
+  `margin = max_track/2 + max_clearance + safety` before marking grid owners,
+  where `safety = pitch · √2 / 2`. The `max_track/2` term is the *routing* track's
+  half-width (a forbidden node is for a track centre, so the centre must clear by
+  the routing track's half-width plus clearance), and `max_*` are taken across net
+  classes so the single global margin is safe on multi-class boards. The safety
+  term covers grid discretisation: a track segment between two free node-centres
+  can dip up to half a diagonal closer to an obstacle than either endpoint, so
+  without it the continuous track could clip clearance even though both nodes look
+  free.
+- **Committed copper is inflated the same way.** A routed track/via is treated
+  like a pad obstacle: its copper is grown by the full `margin` (not just
+  `clearance + safety`) when marked owned. The routing-track half-width term is
+  essential here — on a multi-class board a later wide (e.g. 0.6 mm) track would
+  otherwise encroach on an earlier track's clearance. (On uniform single-class
+  boards the safety slack masked this; a wide-track multi-class board exposed it.)
 - **Vias clear more area than tracks.** A via uses
   `via_margin = via_diameter/2 + clearance + safety`. `can_via` checks the whole
   via-clearance disk is free on **both** layers (a stencil of node offsets), and
@@ -212,6 +222,7 @@ moves are forbidden from cutting a blocked corner.
 - `test_rules`, `test_geometry`, `test_grid`, `test_netlist`, `test_router` — per-module behaviour (occupancy semantics, via crossing, diagonal preference, exact rip-up).
 - `test_anneal` — best energy never worsens; routing stays clean after annealing.
 - `test_endtoend` — routes a synthetic board with a **`gr_line` outline** (generality) and `--exclude-net`, asserting zero clearance violations via the self-check.
+- `test_boards` — parametrized over every board in `TestProjects/` (ids `Test1`..`Test4`): parse, round-trip, writer no-op, outline/pads-inside, and a routing self-check. Routing the large boards (>30 pads) is skipped by default and enabled with `pytest --slow` (defined in `conftest.py`).
 
 The repo also carries `TestProjects/Test1/` (a real KiCad 10 board) used by the
 integration tests and validated end-to-end with `kicad-cli pcb drc`.
