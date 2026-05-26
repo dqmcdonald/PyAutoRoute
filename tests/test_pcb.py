@@ -7,7 +7,7 @@ import pathlib
 
 import pytest
 
-from pyautoroute import pcb, sexpr
+from pyautoroute import pcb
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PCB = REPO / "TestProjects" / "Test1" / "Test1.kicad_pcb"

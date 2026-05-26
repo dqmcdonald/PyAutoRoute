@@ -6,7 +6,6 @@ import pathlib
 
 import pytest
 
-from pyautoroute import grid as gridmod
 from pyautoroute import pcb, rules, sexpr
 from pyautoroute.grid import BLOCKED, FREE, Grid
 from pyautoroute.pcb import Board, OutlineShape, Pad

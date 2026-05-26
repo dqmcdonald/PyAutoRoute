@@ -7,8 +7,7 @@ import math
 from pyautoroute import rules, sexpr
 from pyautoroute.grid import Grid
 from pyautoroute.pcb import Board, OutlineShape, Pad
-from pyautoroute.router import (RouteParams, RoutingState, path_to_nodes,
-                                route_connection)
+from pyautoroute.router import RoutingState, path_to_nodes, route_connection
 
 
 def _pad(net, cx, cy, w=1.0, h=1.0, layers=("F.Cu",)):
