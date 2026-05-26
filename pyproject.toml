@@ -22,3 +22,9 @@ pyautoroute = "pyautoroute.autoroute:main"
 
 [tool.setuptools.packages.find]
 include = ["pyautoroute*"]
+
+[tool.pytest.ini_options]
+# Put the repo root on sys.path so `pytest` (not just `python -m pytest`)
+# can import the pyautoroute package without an editable install.
+pythonpath = ["."]
+testpaths = ["tests"]
