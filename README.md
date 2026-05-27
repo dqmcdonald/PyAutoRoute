@@ -82,7 +82,33 @@ pyautoroute MyBoard.kicad_pcb --exclude-net GND --exclude-net "/VBUS*" -o routed
 # Optimise, capturing 10 progress snapshots and a verbose log:
 pyautoroute MyBoard.kicad_pcb --iters 5000 --snapshots 10 --log
 # -> snapshots/MyBoard_anneal_01of10.kicad_pcb ... 10of10, and MyBoard_routed.log
+
+# Experimental: place the footprints first (30 s budget), then route:
+pyautoroute MyBoard.kicad_pcb --place --place-time 30 --time 60 --debug-plot
 ```
+
+### Auto-placement (experimental)
+
+`--place` adds an opt-in pass that **arranges the footprints before routing**, the
+placement analogue of the routing annealer: simulated annealing moves footprint
+positions/rotations to minimise rats-nest length while keeping bodies from
+overlapping and pulling the layout together. When it finishes, the `Edge.Cuts`
+board outline is **replaced** with a rectangle bounding the placed parts (plus
+`--place-margin`), and the board is routed normally in the same run.
+
+Two footprint attributes steer it:
+
+- **Locked footprints stay put.** Lock a footprint in KiCad (it stores `(locked
+  yes)` / a bare `locked`) and the placer treats it as a fixed obstacle — useful
+  for connectors, mounting holes, or anything that must keep its position.
+- **`Autoroute = overlap`** — add a footprint **property** named `Autoroute` with a
+  value of `overlap` (Footprint Properties → Fields → `+`) and that footprint's
+  *body* may overlap others (e.g. an Arduino shield sitting over the board it plugs
+  into). Its **pads** are still kept clear of other copper.
+
+It is experimental: it optimises placement heuristically and does not understand
+mechanical/thermal intent, so review the result. Because it rewrites footprint
+positions and the outline, inspect the output in KiCad before relying on it.
 
 ### What you get
 
