@@ -56,6 +56,8 @@ The original file is never modified — a routed copy is written alongside it.
 | `--exclude-net PATTERN` | Leave matching nets un-routed (repeatable; glob, e.g. `GND` or `"/PWR*"`). Their pads still act as obstacles. |
 | `--via-weight W` | Via cost in mm-equivalent (higher ⇒ fewer vias). Default 2.0. |
 | `--seed S` | Random seed for the optimiser. |
+| `--snapshots N` | During annealing, save `N` intermediate board snapshots to a `snapshots/` subdir (beside the output), so you can watch the optimisation progress. Requires `--iters` or `--time`. |
+| `--log [FILE]` | Write a verbose log of the input parameters and routing/annealing progress. Bare `--log` writes `<output>.log`; `--log FILE` uses the given path. |
 | `--debug-plot` | Also write a `.png` render of the routed board. |
 | `--quiet` | Suppress the live progress display (final summary only). |
 
@@ -73,6 +75,10 @@ pyautoroute MyBoard.kicad_pcb --grid 0.2 --time 120 --debug-plot
 
 # Route everything except power nets, to a named output:
 pyautoroute MyBoard.kicad_pcb --exclude-net GND --exclude-net "/VBUS*" -o routed.kicad_pcb
+
+# Optimise, capturing 10 progress snapshots and a verbose log:
+pyautoroute MyBoard.kicad_pcb --iters 5000 --snapshots 10 --log
+# -> snapshots/MyBoard_anneal_01of10.kicad_pcb ... 10of10, and MyBoard_routed.log
 ```
 
 ### What you get

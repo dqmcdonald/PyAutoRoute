@@ -8,9 +8,16 @@ also exercise the generality paths: a gr_line (not gr_poly) outline and
 
 from __future__ import annotations
 
-from pyautoroute import geometry, netlist, router, rules, sexpr
+import pathlib
+
+import pytest
+
+from pyautoroute import autoroute, geometry, netlist, router, rules, sexpr
 from pyautoroute.grid import Grid
 from pyautoroute.pcb import Board, OutlineShape, Pad
+
+_TEST_BOARD = (pathlib.Path(__file__).resolve().parents[1]
+               / "TestProjects" / "Test5" / "Test5.kicad_pcb")
 
 
 def _pad(net, cx, cy):
@@ -81,3 +88,32 @@ def test_endtoend_exclude_net():
     assert violations == []
     # excluded net produced no routed tracks
     assert all(r.net != "GND" for r in result.results if r is not None)
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_writes_snapshots_and_log(tmp_path):
+    # the --snapshots / --log CLI flags emit N snapshot boards + a verbose log
+    out = tmp_path / "out.kicad_pcb"
+    args = autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out), "--iters", "30",
+         "--snapshots", "3", "--log", "--quiet"])
+    rc = autoroute.run(args)
+    assert rc == 0
+
+    snaps = sorted((tmp_path / "snapshots").glob("*.kicad_pcb"))
+    assert len(snaps) == 3                    # one board per requested snapshot
+
+    log = out.with_suffix(".log")             # bare --log -> <output>.log
+    text = log.read_text()
+    assert "snapshots      3" in text         # parameter dump
+    assert "snapshot 3/3" in text             # progress trace
+    assert "self-check:    clean" in text     # final metrics
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_snapshots_ignored_without_annealing(tmp_path):
+    out = tmp_path / "out.kicad_pcb"
+    args = autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out), "--snapshots", "3", "--quiet"])
+    assert autoroute.run(args) == 0
+    assert not (tmp_path / "snapshots").exists()    # no annealing -> no snapshots

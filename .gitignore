@@ -27,5 +27,7 @@ fp-info-cache
 # Generated autorouter output
 *_routed.kicad_pcb
 *_routed.png
+*_routed.log
+snapshots/
 
 

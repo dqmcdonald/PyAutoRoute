@@ -31,6 +31,7 @@ class AnnealParams:
     unrouted_weight: float = 100.0
     rip_neighbours: int = 4
     seed: int = 0
+    snapshots: int = 0          # number of board snapshots to emit across the run
     route_params: RouteParams = field(default_factory=lambda: RouteParams(max_expansions=400_000))
 
 
@@ -125,7 +126,7 @@ class _Annealer:
         i = self.rng.randrange(n)
         return [i], [i]                                 # reroute one
 
-    def run(self, on_progress=None) -> AnnealResult:
+    def run(self, on_progress=None, on_snapshot=None) -> AnnealResult:
         E = _energy(self.results, self.via_weight, self.p.unrouted_weight)
         start_E = E
         best_E = E
@@ -135,6 +136,8 @@ class _Annealer:
         total = self.p.iters if self.p.iters else 1_000_000
         t0 = time.time()
         ratio = self.p.t_end / self.p.t_start
+        n_snap = self.p.snapshots if on_snapshot else 0
+        next_snap = 1
         it = 0
         while True:
             if self.p.iters is not None and it >= self.p.iters:
@@ -166,6 +169,15 @@ class _Annealer:
                 routed = sum(1 for r in self.results if r is not None)
                 on_progress(it, total, routed, len(self.results) - routed,
                             E, best_E, T)
+            # emit intermediate snapshots as the run crosses k/N of its progress;
+            # the final k=N snapshot is taken after the loop on the best routing.
+            while n_snap and next_snap < n_snap and frac >= next_snap / n_snap:
+                on_snapshot(next_snap, n_snap, self.results)
+                next_snap += 1
+
+        while n_snap and next_snap <= n_snap:
+            on_snapshot(next_snap, n_snap, best)
+            next_snap += 1
 
         routed, unrouted, length, vias = _aggregate(best)
         return AnnealResult(best, routed, unrouted, length, vias,
@@ -173,6 +185,13 @@ class _Annealer:
 
 
 def anneal(state: RoutingState, connections, results, params: AnnealParams,
-           on_progress=None) -> AnnealResult:
-    """Optimise an already-committed routing in place; return the best seen."""
-    return _Annealer(state, connections, results, params).run(on_progress)
+           on_progress=None, on_snapshot=None) -> AnnealResult:
+    """Optimise an already-committed routing in place; return the best seen.
+
+    If ``params.snapshots`` is set and ``on_snapshot`` is given, the callback is
+    invoked ``params.snapshots`` times across the run as ``on_snapshot(k, n,
+    results)`` — the intermediate calls capture the live (current) routing as the
+    run crosses each ``k/n`` of its progress, and the final call captures the best
+    routing found. Useful for visualising how annealing improves the board.
+    """
+    return _Annealer(state, connections, results, params).run(on_progress, on_snapshot)

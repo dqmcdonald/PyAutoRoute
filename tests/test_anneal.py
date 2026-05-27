@@ -48,3 +48,24 @@ def test_anneal_keeps_routing_clean():
     for node, idxs in state.cover.items():
         nets = {state.conn_net[i] for i in idxs}
         assert len(nets) == 1, f"node {node} shared by nets {nets}"
+
+
+def test_anneal_snapshots_fire_n_times():
+    # on_snapshot is called exactly `snapshots` times, k=1..N, last one = best
+    state, conns, result = _setup()
+    calls = []
+    ap = anneal.AnnealParams(iters=40, seed=3, snapshots=4)
+    out = anneal.anneal(state, conns, list(result.results), ap,
+                        on_snapshot=lambda k, n, res: calls.append(
+                            (k, n, sum(1 for r in res if r is not None))))
+    assert [k for k, _, _ in calls] == [1, 2, 3, 4]
+    assert all(n == 4 for _, n, _ in calls)
+    assert calls[-1][2] == out.routed       # final snapshot reflects the best routing
+
+
+def test_anneal_no_snapshots_without_callback():
+    state, conns, result = _setup()
+    ap = anneal.AnnealParams(iters=10, seed=4, snapshots=5)
+    # snapshots requested but no callback -> nothing fires, run still completes
+    out = anneal.anneal(state, conns, list(result.results), ap)
+    assert out.iterations == 10

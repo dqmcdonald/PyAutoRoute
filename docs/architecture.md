@@ -134,6 +134,18 @@ text progress `Reporter` (single-line `\r` updates on a TTY, line-by-line
 otherwise, silent under `--quiet`), the metrics report, and the post-write
 self-check. Exit code 2 if the self-check finds a violation.
 
+Two diagnostic options hook into this flow:
+- **`--snapshots N`** writes `N` intermediate routed boards to a `snapshots/`
+  subdir during annealing. The annealer fires an `on_snapshot(k, n, results)`
+  callback as it crosses each `k/N` of its progress (by iteration for `--iters`,
+  by wall-clock for `--time`); the run() callback serialises the current routing
+  to `snapshots/<input>_anneal_<k>of<N>.kicad_pcb`. The final snapshot captures
+  the best routing. No-op (with a note) if neither `--iters` nor `--time` is set.
+- **`--log [FILE]`** tees a verbose plain-text log: a parameter/board dump up
+  front, a throttled trace of routing and annealing progress, snapshot events,
+  and the final metrics — all timestamped. The `Reporter` owns the file and
+  writes regardless of `--quiet`. Bare `--log` uses `<output>.log`.
+
 ### `visualize.py` — optional render
 matplotlib render of outline + pads + tracks + vias (`--debug-plot`).
 
