@@ -143,6 +143,12 @@ self-check. Exit code 2 if the self-check finds a violation. The version
 (`pyautoroute.__version__`, read from the installed package metadata) is printed
 on startup and written to the `--log` header; `--version` prints it and exits.
 
+`coarse_grid_note` prints (and logs) a heads-up when the effective `--grid`
+pitch exceeds ~2× the rules-derived pitch (`default_pitch` = `track/2 +
+clearance`): clearance is enforced discretely on the grid, so a coarse grid
+can't fit a node in the gap beside a pad and forces a via under it where a finer
+grid would route on a single layer.
+
 Two diagnostic options hook into this flow:
 - **`--snapshots N`** writes `N` intermediate routed boards to a `snapshots/`
   subdir during annealing. The annealer fires an `on_snapshot(k, n, results)`

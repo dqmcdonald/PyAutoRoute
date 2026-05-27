@@ -174,6 +174,36 @@ def default_pitch(rules) -> float:
     return round(dc.track_width / 2.0 + dc.clearance, 4)
 
 
+# A grid coarser than this multiple of the rules-derived pitch often can't place
+# a node in the tight gap beside a pad, forcing vias where a finer grid would
+# route on one layer. Empirically a pad-flanking single-layer route survives at
+# ~2x the natural pitch but is lost beyond it.
+COARSE_GRID_FACTOR = 2.0
+
+
+def coarse_grid_note(pitch: float, natural: float) -> str | None:
+    """Warn when the grid pitch is too coarse relative to the design rules.
+
+    A grid much coarser than the rules-derived pitch (``track/2 + clearance``)
+    often cannot fit a node in the clearance gap beside a pad, so the router is
+    forced to via under it where a finer grid would route on a single layer.
+
+    Args:
+        pitch: the routing grid pitch actually in use (mm).
+        natural: the rules-derived pitch (`default_pitch`), in mm.
+
+    Returns:
+        A warning string when `pitch` exceeds ``COARSE_GRID_FACTOR x natural``,
+        else `None`.
+    """
+    if natural <= 0 or pitch <= COARSE_GRID_FACTOR * natural:
+        return None
+    return (f"grid pitch {pitch:g} mm is {pitch / natural:.1f}x the rules-derived "
+            f"pitch ({natural:g} mm); a coarse grid can force vias where a finer "
+            f"grid would route on one layer — consider --grid {natural:g} "
+            f"(or omit --grid)")
+
+
 def _results_to_nodes(board, grid: Grid, results) -> list:
     """Flatten routed results into the KiCad nodes to append to the board.
 
@@ -304,6 +334,11 @@ def run(args: argparse.Namespace) -> int:
 
     _log_params(rep, args, input_path, out_path, pro_path, pitch,
                 board, conns, grid, snap_n)
+
+    note = coarse_grid_note(pitch, default_pitch(rules))
+    if note:
+        print(f"  warning: {note}")
+        rep.log(f"warning: {note}")
 
     params = router.RouteParams(via_cost=args.via_weight)
     order = netlist.greedy_order(conns)

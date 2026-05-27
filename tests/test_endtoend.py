@@ -142,3 +142,24 @@ def test_cli_rejects_invalid_anneal_params():
         autoroute.main(["b.kicad_pcb", "--anneal-temps", "0.1", "6"])
     with pytest.raises(SystemExit):
         autoroute.main(["b.kicad_pcb", "--unrouted-weight", "-1"])
+
+
+def test_coarse_grid_note():
+    # no warning at the derived pitch or up to 2x it; warn beyond that, and the
+    # message suggests the derived pitch as the remedy
+    assert autoroute.coarse_grid_note(0.3, 0.3) is None
+    assert autoroute.coarse_grid_note(0.6, 0.3) is None      # exactly 2x: boundary
+    note = autoroute.coarse_grid_note(0.8, 0.3)              # 2.7x: too coarse
+    assert note is not None
+    assert "coarse" in note and "--grid 0.3" in note
+    assert autoroute.coarse_grid_note(0.8, 0.0) is None      # degenerate rules
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_warns_on_coarse_grid(tmp_path):
+    # an explicit coarse --grid surfaces the warning in the log
+    out = tmp_path / "out.kicad_pcb"
+    args = autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out), "--grid", "2", "--log", "--quiet"])
+    autoroute.run(args)
+    assert "warning:" in out.with_suffix(".log").read_text()
