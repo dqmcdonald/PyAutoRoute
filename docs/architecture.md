@@ -82,6 +82,9 @@ edits.
 shapely geometry for pads (rect / roundrect / circle / oval / trapezoid; custom
 falls back to bounding box), tracks, vias, and the board outline (stitching
 `gr_line` / `gr_arc` / `gr_rect` / `gr_circle` / `gr_poly` via `polygonize`).
+Loose edge segments are noded with `unary_union` before `polygonize`, so
+outlines whose edges overlap or are collinear-redundant (rather than meeting at
+a shared vertex — common in hand-edited KiCad boards) still close into a polygon.
 `clearance_violations(board, rules)` is the **in-repo DRC self-check**: it
 re-derives copper per layer and reports any different-net pair closer than the
 required clearance, using an STRtree.
@@ -222,7 +225,7 @@ moves are forbidden from cutting a blocked corner.
 - `test_rules`, `test_geometry`, `test_grid`, `test_netlist`, `test_router` — per-module behaviour (occupancy semantics, via crossing, diagonal preference, exact rip-up).
 - `test_anneal` — best energy never worsens; routing stays clean after annealing.
 - `test_endtoend` — routes a synthetic board with a **`gr_line` outline** (generality) and `--exclude-net`, asserting zero clearance violations via the self-check.
-- `test_boards` — parametrized over every board in `TestProjects/` (ids `Test1`..`Test4`): parse, round-trip, writer no-op, outline/pads-inside, and a routing self-check. Routing the large boards (>30 pads) is skipped by default and enabled with `pytest --slow` (defined in `conftest.py`).
+- `test_boards` — parametrized over every board in `TestProjects/` (ids `Test1`..`Test5`; hidden stray files like `.kicad_pcb.kicad_pcb` are skipped): parse, round-trip, writer no-op, outline/pads-inside, and a routing self-check. Routing the large boards (>30 pads) is skipped by default and enabled with `pytest --slow` (defined in `conftest.py`).
 
 The repo also carries `TestProjects/Test1/` (a real KiCad 10 board) used by the
 integration tests and validated end-to-end with `kicad-cli pcb drc`.

@@ -141,7 +141,11 @@ def outline_to_polygon(shapes: list[OutlineShape]) -> Polygon:
                 s.data["start"], s.data["mid"], s.data["end"])))
 
     if edges:
-        closed.extend(polygonize(edges))
+        # Node the edges first: KiCad outlines may contain overlapping or
+        # collinear-redundant segments (e.g. two edges sharing part of a span
+        # instead of meeting at a single vertex). polygonize needs a cleanly
+        # noded graph, so union the linework to split overlaps before tracing.
+        closed.extend(polygonize(unary_union(edges)))
     if not closed:
         raise ValueError("no closed board outline found on Edge.Cuts")
     merged = unary_union(closed)

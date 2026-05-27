@@ -1,6 +1,6 @@
 """Generality tests across the bundled KiCad projects in TestProjects/.
 
-These are parametrized over every real board found on disk (Test1..Test4 and any
+These are parametrized over every real board found on disk (Test1..Test5 and any
 others added later), so the parser, outline assembly, round-trip and writer are
 exercised against a range of KiCad outputs: different outline primitives
 (gr_poly / gr_rect / gr_line) and scales (a handful to ~140 pads). Boards are
@@ -35,6 +35,8 @@ def _discover_boards():
     for pcb_path in sorted(PROJECTS.glob("*/*.kicad_pcb")):
         if "_routed" in pcb_path.name:
             continue
+        if pcb_path.name.startswith("."):
+            continue          # skip stray hidden artifacts (e.g. .kicad_pcb.kicad_pcb)
         out.append(pcb_path)
     return out
 
