@@ -22,7 +22,9 @@ flowchart TD
   PCB[".kicad_pcb (s-expr)"] --> sexpr
   PRO[".kicad_pro (json)"] --> rules
   sexpr["sexpr.py — tokenizer / serializer (round-trip safe)"] --> pcb
-  pcb["pcb.py — board model: layers, pads(abs+rot), nets, copper, outline"] --> netlist
+  pcb["pcb.py — board model: layers, pads(abs+rot), footprints, nets, copper, outline"] --> netlist
+  pcb --> placement
+  placement["placement.py — optional SA footprint placement (--place);<br/>honours locks + Autoroute=overlap, regenerates Edge.Cuts"] -.-> autoroute
   pcb --> geometry
   rules["rules.py — per-netclass clearance/width/via + net→class + board mins"] --> geometry
   geometry["geometry.py — pad polys, outline assembly, clearance buffer, self-check"] --> grid
@@ -65,18 +67,29 @@ KiCad defaults when no project file is present. Handles both name-only nets
 
 ### `pcb.py` — board model + writer
 Loads the board into a `Board`: copper layer stack, every `Pad` with **absolute**
-position/rotation/shape/layers/net, free (dangling) vias, existing segments and
-zones, and the Edge.Cuts outline shapes. Two file conventions are handled
-transparently:
+position/rotation/shape/layers/net, the per-footprint grouping, free (dangling)
+vias, existing segments and zones, and the Edge.Cuts outline shapes. Two file
+conventions are handled transparently:
 
 - **Net references** — `(net "GND")` (name-only) and `(net 3 "GND")` /
   `(net 3)` (numbered). The board's style is detected; the writer emits the same
   style.
 
+A **`Footprint`** records each footprint's origin/rotation, its lock state (a bare
+`locked` atom or `(locked yes)`), the `Autoroute=overlap` property flag, and each
+pad's *local* offset/angle. This is what the optional placement pass moves:
+`Footprint.sync_pads` recomputes the pads' absolute coordinates from a new pose,
+and `Board.footprints` defaults to empty so callers that build a `Board` directly
+are unaffected.
+
 The **writer** (`write_board`) clones the parsed tree, drops the free vias, and
 appends freshly-built `(segment …)` / `(via …)` nodes. Because untouched children
 keep their source spans, the diff against the input is limited to the routing
-edits.
+edits. When placement has run, two helpers prepare the tree first:
+`apply_placement` pushes the moved poses into the pads and replaces `Board.outline`
+with a margin-grown bounding rectangle, and `sync_tree_from_placement` rewrites each
+moved footprint's `(at …)` node (clearing its span so only that line changes) and
+swaps the Edge.Cuts graphics for a single generated `gr_rect`.
 
 ### `geometry.py` — shapes & self-check
 shapely geometry for pads (rect / roundrect / circle / oval / trapezoid; custom
@@ -135,8 +148,35 @@ violation term. The energy/schedule knobs exposed on the CLI are `--via-weight`,
 `--unrouted-weight`, and `--anneal-temps START END`; `rip_neighbours` and the
 A* bend/via cost weights remain `AnnealParams`/`RouteParams` defaults.
 
+### `placement.py` — optional footprint placement
+The placement analogue of `anneal.py`, enabled by `--place`. Simulated annealing
+over **footprint poses** (not tracks): moves are translate (a temperature-scaled
+random step), rotate ±90°/180°, or swap two footprints' origins, with Metropolis
+acceptance under the same geometric `t_start → t_end` schedule and the best-seen
+placement kept. Energy
+`E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area`:
+
+- **ratsnest** — total MST length over pad centroids, reusing `netlist`
+  (`build_connections` + `Connection.est_length`), recomputed per evaluation.
+- **overlap_area** — pairwise intersection of footprint body boxes via a shapely
+  `STRtree` (as in `geometry.clearance_violations`). A pair where either footprint
+  is `overlap_ok` (the `Autoroute=overlap` property) contributes only its
+  *pad-vs-pad* overlap, not body overlap — the shield-over-board case. **Locked**
+  footprints are immovable obstacles included in the overlap term.
+- **bbox_area** — area of the bounding box of all footprints; compaction emerges
+  from this term under cooling, with no separate phase.
+
+Each move keeps the moved footprint's pad coordinates in sync
+(`Footprint.sync_pads`) so the energy geometry stays consistent. `place()` leaves
+the board at the best placement; `autoroute` then calls `pcb.apply_placement` (pads
++ new outline) before building the grid, and `pcb.sync_tree_from_placement` before
+the write. The whole stage is transparent to the router, which already consumes
+`Board.pads` and `Board.outline`. CLI knobs: `--place-iters`/`--place-time`
+(budget), `--place-margin`, `--place-overlap-weight`, `--place-compact-weight`;
+`--seed` is shared.
+
 ### `autoroute.py` — CLI & orchestration
-Argument parsing, the parse → grid → route → (anneal) → write flow, the live
+Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
 text progress `Reporter` (single-line `\r` updates on a TTY, line-by-line
 otherwise, silent under `--quiet`), the metrics report, and the post-write
 self-check. Exit code 2 if the self-check finds a violation. The version
@@ -247,12 +287,13 @@ moves are forbidden from cutting a blocked corner.
 
 ## Testing
 
-`pytest` (50 tests across unit, integration, and end-to-end). Highlights:
+`pytest` (unit, integration, and end-to-end tests). Highlights:
 
 - `test_sexpr` — byte-identical round-trip + structural faithfulness of the generic formatter.
 - `test_pcb` — pad absolute position/rotation, both net formats, writer no-op byte-identity, free-via stripping, segment append.
 - `test_rules`, `test_geometry`, `test_grid`, `test_netlist`, `test_router` — per-module behaviour (occupancy semantics, via crossing, diagonal preference, exact rip-up).
 - `test_anneal` — best energy never worsens; routing stays clean after annealing.
+- `test_placement` — placement energy never worsens; locked footprints stay put; bodies separate while `Autoroute=overlap` parts may overlap (pads kept apart); lock/property parsing and the footprint-`(at)` + Edge.Cuts tree rewrite round-trip.
 - `test_endtoend` — routes a synthetic board with a **`gr_line` outline** (generality) and `--exclude-net`, asserting zero clearance violations via the self-check.
 - `test_boards` — parametrized over every board in `TestProjects/` (ids `Test1`..`Test5`; hidden stray files like `.kicad_pcb.kicad_pcb` are skipped): parse, round-trip, writer no-op, outline/pads-inside, and a routing self-check. Routing the large boards (>30 pads) is skipped by default and enabled with `pytest --slow` (defined in `conftest.py`).
 

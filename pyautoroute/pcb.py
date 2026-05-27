@@ -2,13 +2,18 @@
 writer.
 
 Parsing covers what the router needs: the copper layer stack, every pad with its
-absolute position/rotation/shape, the net-reference style (name-only as in KiCad
-10, or a numbered net table as in KiCad 6-9), existing tracks/vias/zones to treat
-as obstacles, the free (dangling) vias to strip, and the Edge.Cuts outline shapes.
+absolute position/rotation/shape, the per-footprint grouping (origin, lock state,
+the ``Autoroute`` overlap flag, and each pad's local offset, used by the optional
+placement pass), the net-reference style (name-only as in KiCad 10, or a numbered
+net table as in KiCad 6-9), existing tracks/vias/zones to treat as obstacles, the
+free (dangling) vias to strip, and the Edge.Cuts outline shapes.
 
 The writer clones the parsed tree, drops the free vias, appends freshly-built
 ``(segment ...)`` / ``(via ...)`` nodes, and serializes. Untouched subtrees keep
 their source spans so the diff against the input is limited to the routing edits.
+When the placement pass has moved footprints, `sync_tree_from_placement` rewrites
+each moved footprint's ``(at ...)`` and regenerates the Edge.Cuts outline before
+the write.
 """
 
 from __future__ import annotations
@@ -159,6 +164,51 @@ class OutlineShape:
 
 
 @dataclass
+class Footprint:
+    """A placed footprint: its origin/rotation plus the data the placement pass
+    needs to move it and keep its pads consistent.
+
+    `local_offsets` holds, per entry in `pads`, the pad's ``(px, py)`` offset from
+    the footprint origin and its rotation *relative to* the footprint, so a move
+    recomputes each pad's absolute centre/angle (`sync_pads`). `at_node`/`fp_node`
+    are the live source nodes the writer rewrites; `x0`/`y0`/`angle0` record the
+    parsed pose so `moved` can tell whether the footprint was actually relocated.
+    """
+
+    ref: str
+    x: float
+    y: float
+    angle: float
+    locked: bool                                   # honoured as fixed by placement
+    overlap_ok: bool                               # body may overlap others (e.g. a shield)
+    pads: list[Pad]
+    local_offsets: list[tuple[float, float, float]]
+    at_node: SList
+    fp_node: SList
+    x0: float = 0.0
+    y0: float = 0.0
+    angle0: float = 0.0
+
+    @property
+    def moved(self) -> bool:
+        """Whether the footprint's pose differs from the parsed one."""
+        return (abs(self.x - self.x0) > 1e-6 or abs(self.y - self.y0) > 1e-6
+                or abs(self.angle - self.angle0) > 1e-6)
+
+    def sync_pads(self) -> None:
+        """Recompute each pad's absolute centre/rotation from the current pose.
+
+        Applies the footprint's ``(x, y, angle)`` to every stored local offset so
+        `Board.pads` reflects the footprint's position after a placement move.
+        """
+        for pad, (px, py, local_angle) in zip(self.pads, self.local_offsets):
+            rx, ry = rotate(px, py, self.angle)
+            pad.cx = self.x + rx
+            pad.cy = self.y + ry
+            pad.angle = local_angle + self.angle
+
+
+@dataclass
 class Board:
     tree: SList
     copper_layers: list[str]               # ordered; [0] is the preferred front
@@ -169,6 +219,7 @@ class Board:
     outline: list[OutlineShape]
     numbered_nets: dict[int, str] = field(default_factory=dict)
     name_only_nets: bool = True
+    footprints: list[Footprint] = field(default_factory=list)
 
     @property
     def front_layer(self) -> str:
@@ -344,6 +395,49 @@ def _footprint_ref(fp_node: SList) -> str:
         if vals and vals[0].text == "Reference" and len(vals) >= 2:
             return vals[1].text
     return ""
+
+
+def _footprint_locked(fp_node: SList) -> bool:
+    """Return whether a footprint is locked (a fixed position for placement).
+
+    Handles both KiCad serialisations: a bare ``locked`` token among the
+    footprint's children, or a ``(locked yes)`` sub-list.
+
+    Args:
+        fp_node: the ``(footprint ...)`` node.
+
+    Returns:
+        True if the footprint is locked.
+    """
+    for it in fp_node:
+        if isinstance(it, Atom) and it.raw == "locked":
+            return True
+        if isinstance(it, SList) and sexpr.head_symbol(it) == "locked":
+            vals = atoms_after_head(it)
+            if vals and vals[0].text in ("yes", "true"):
+                return True
+    return False
+
+
+def _footprint_overlap_ok(fp_node: SList) -> bool:
+    """Return whether a footprint opts in to body overlap during placement.
+
+    Reads the user-defined ``Autoroute`` property: a value containing ``overlap``
+    (case-insensitive) means the footprint's body may overlap others — e.g. an
+    Arduino shield sitting over the board it plugs into. Its pads are still kept
+    clear of other copper.
+
+    Args:
+        fp_node: the ``(footprint ...)`` node.
+
+    Returns:
+        True if the ``Autoroute`` property requests overlap.
+    """
+    for prop in children(fp_node, "property"):
+        vals = atoms_after_head(prop)
+        if len(vals) >= 2 and vals[0].text == "Autoroute":
+            return "overlap" in vals[1].text.lower()
+    return False
 
 
 # --- outline parsing ---------------------------------------------------------
@@ -531,15 +625,33 @@ def load_board(pcb_path: str | Path) -> Board:
     name_only = len(numbered) == 0
 
     pads: list[Pad] = []
+    footprints: list[Footprint] = []
     for fp in children(tree, "footprint"):
-        at = floats(child(fp, "at"))
+        at_node = child(fp, "at")
+        at = floats(at_node)
         fx, fy = (at + [0.0, 0.0])[:2]
         fa = at[2] if len(at) >= 3 else 0.0
         ref = _footprint_ref(fp)
+        fp_pads: list[Pad] = []
+        local_offsets: list[tuple[float, float, float]] = []
         for pad_node in children(fp, "pad"):
             p = _parse_pad(pad_node, fx, fy, fa, copper, numbered, ref)
-            if p is not None:
-                pads.append(p)
+            if p is None:
+                continue
+            pads.append(p)
+            fp_pads.append(p)
+            pat = floats(child(pad_node, "at"))
+            px, py = (pat + [0.0, 0.0])[:2]
+            pad_angle = pat[2] if len(pat) >= 3 else 0.0
+            local_offsets.append((px, py, pad_angle - fa))
+        if at_node is not None:
+            footprints.append(Footprint(
+                ref=ref, x=fx, y=fy, angle=fa,
+                locked=_footprint_locked(fp), overlap_ok=_footprint_overlap_ok(fp),
+                pads=fp_pads, local_offsets=local_offsets,
+                at_node=at_node, fp_node=fp,
+                x0=fx, y0=fy, angle0=fa,
+            ))
 
     return Board(
         tree=tree,
@@ -551,6 +663,7 @@ def load_board(pcb_path: str | Path) -> Board:
         outline=_parse_outline(tree),
         numbered_nets=numbered,
         name_only_nets=name_only,
+        footprints=footprints,
     )
 
 
@@ -642,6 +755,121 @@ def make_via(board: Board, x, y, size, drill, layer_a, layer_b, net) -> SList:
         _net_ref_node(board, net),
         SList([sexpr.sym("uuid"), sexpr.string(str(_uuid.uuid4()))]),
     ])
+
+
+def make_edge_rect(x1: float, y1: float, x2: float, y2: float,
+                   width: float = 0.05) -> SList:
+    """Build a ``(gr_rect ...)`` board-outline node on ``Edge.Cuts``.
+
+    Args:
+        x1: a corner x (mm).
+        y1: a corner y (mm).
+        x2: the opposite corner x (mm).
+        y2: the opposite corner y (mm).
+        width: the edge stroke width (mm).
+
+    Returns:
+        A ``(gr_rect ...)`` node on ``Edge.Cuts`` with a fresh uuid.
+    """
+    return SList([
+        sexpr.sym("gr_rect"),
+        _xy_node("start", x1, y1),
+        _xy_node("end", x2, y2),
+        SList([sexpr.sym("stroke"),
+               SList([sexpr.sym("width"), sexpr.number(width)]),
+               SList([sexpr.sym("type"), sexpr.sym("solid")])]),
+        SList([sexpr.sym("fill"), sexpr.sym("no")]),
+        SList([sexpr.sym("layer"), sexpr.string("Edge.Cuts")]),
+        SList([sexpr.sym("uuid"), sexpr.string(str(_uuid.uuid4()))]),
+    ])
+
+
+def _pad_half_extent(pad: Pad) -> float:
+    """Rotation-independent half-extent of a pad (half its bounding diagonal).
+
+    Args:
+        pad: the pad whose width/height bound the extent.
+
+    Returns:
+        ``hypot(w, h) / 2`` — an upper bound on the pad's reach from its centre at
+        any rotation, used to size the regenerated board outline conservatively.
+    """
+    return 0.5 * math.hypot(pad.w, pad.h)
+
+
+def apply_placement(board: Board, margin: float = 2.0) -> None:
+    """Push the footprints' current poses into the model for routing.
+
+    Recomputes every pad's absolute centre/rotation from its footprint pose
+    (`Footprint.sync_pads`) and replaces `Board.outline` with a single rectangle
+    bounding all pads, grown by `margin`. Call after the placement pass and before
+    building the routing grid; the grid and router then see the new layout.
+
+    Args:
+        board: the board to update in place.
+        margin: extra space (mm) added around the pads when sizing the outline.
+    """
+    for fp in board.footprints:
+        fp.sync_pads()
+    if not board.pads:
+        return
+    x0 = min(p.cx - _pad_half_extent(p) for p in board.pads) - margin
+    y0 = min(p.cy - _pad_half_extent(p) for p in board.pads) - margin
+    x1 = max(p.cx + _pad_half_extent(p) for p in board.pads) + margin
+    y1 = max(p.cy + _pad_half_extent(p) for p in board.pads) + margin
+    board.outline = [OutlineShape("rect", {"start": (x0, y0), "end": (x1, y1)})]
+
+
+def _is_edge_graphic(node) -> bool:
+    """Return whether a top-level node is an ``Edge.Cuts`` graphic shape.
+
+    Args:
+        node: a child of the board tree.
+
+    Returns:
+        True for a ``gr_*`` shape whose ``(layer ...)`` is ``Edge.Cuts``.
+    """
+    if not isinstance(node, SList):
+        return False
+    if sexpr.head_symbol(node) not in ("gr_poly", "gr_line", "gr_rect", "gr_arc", "gr_circle"):
+        return False
+    layer = strings(child(node, "layer"))
+    return bool(layer) and layer[0] == "Edge.Cuts"
+
+
+def sync_tree_from_placement(board: Board, edge_width: float = 0.05) -> None:
+    """Rewrite the board tree to match the placement result, in place.
+
+    For each footprint that actually moved, clears its node's source span (so it
+    re-serialises from structure rather than verbatim) and replaces the ``(at ...)``
+    child with the new pose — children keep their own spans, so the only textual
+    diff is the footprint's ``(at)`` line. Replaces every ``Edge.Cuts`` graphic
+    with a single ``gr_rect`` matching `Board.outline` (set by `apply_placement`).
+
+    Args:
+        board: the board whose tree is mutated (and is then ready for
+            `write_board`).
+        edge_width: stroke width (mm) for the regenerated outline rectangle.
+    """
+    for fp in board.footprints:
+        if not fp.moved:
+            continue
+        fp.fp_node.span = None
+        new_at = SList([sexpr.sym("at"), sexpr.number(fp.x), sexpr.number(fp.y)])
+        if abs(fp.angle) > 1e-9 or len(fp.at_node) > 3:
+            new_at.append(sexpr.number(fp.angle))
+        for i, ch in enumerate(fp.fp_node):
+            if ch is fp.at_node:
+                fp.fp_node[i] = new_at
+                break
+        fp.at_node = new_at
+
+    rect = next((s for s in board.outline if s.kind == "rect"), None)
+    if rect is None:
+        return
+    board.tree[:] = [ch for ch in board.tree if not _is_edge_graphic(ch)]
+    (rx0, ry0), (rx1, ry1) = rect.data["start"], rect.data["end"]
+    board.tree.append(make_edge_rect(rx0, ry0, rx1, ry1, edge_width))
 
 
 def write_board(board: Board, out_path: str | Path,

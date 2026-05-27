@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__, anneal, geometry, netlist, pcb, router
+from . import __version__, anneal, geometry, netlist, pcb, placement, router
 from .grid import Grid
 from .rules import load_rules
 
@@ -84,6 +84,27 @@ class Reporter:
         """
         msg = (f"anneal {it}/{total}  T={temp:5.2f}  E={energy:7.1f}  "
                f"best={best:7.1f}  routed={routed} failed={unrouted}")
+        if it % 25 == 0:
+            self.log(msg)
+        if self.quiet:
+            return
+        line = f"[{self._elapsed():6.1f}s] {msg}"
+        if self.tty:
+            self._write(line)
+        elif it % 25 == 0:
+            self.stream.write(line + "\n")
+
+    def placing(self, it, total, energy, best, temp) -> None:
+        """Report a placement-annealing iteration.
+
+        Args:
+            it: iterations completed.
+            total: nominal iteration count (for the progress fraction).
+            energy: current placement energy.
+            best: best energy seen so far.
+            temp: current annealing temperature.
+        """
+        msg = (f"place {it}/{total}  T={temp:5.2f}  E={energy:8.1f}  best={best:8.1f}")
         if it % 25 == 0:
             self.log(msg)
         if self.quiet:
@@ -221,6 +242,14 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
     rep.log(f"project        {pro_path}")
     rep.log(f"grid pitch     {pitch} mm  (margin {grid.margin:.3f} mm)")
     rep.log(f"grid nodes     {grid.nx} x {grid.ny} x {grid.n_layers} layers")
+    if args.place:
+        rep.log(f"placement      on  (margin {args.place_margin} mm, "
+                f"overlap wt {args.place_overlap_weight}, "
+                f"compact wt {args.place_compact_weight})")
+        if args.place_iters:
+            rep.log(f"place iters    {args.place_iters}")
+        if args.place_time:
+            rep.log(f"place time     {args.place_time} s")
     rep.log(f"via weight     {args.via_weight}")
     rep.log(f"seed           {args.seed}")
     if args.exclude_net:
@@ -263,6 +292,23 @@ def run(args: argparse.Namespace) -> int:
     board = pcb.load_board(input_path)
     rules = load_rules(pro_path)
     pitch = args.grid if args.grid else default_pitch(rules)
+
+    if args.place:
+        rep.phase(f"placing {len(board.footprints)} footprints (annealing)")
+        pp = placement.PlaceParams(
+            iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
+            exclude=args.exclude_net, overlap_weight=args.place_overlap_weight,
+            compact_weight=args.place_compact_weight)
+        pout = placement.place(board, pp, on_progress=rep.placing)
+        pcb.apply_placement(board, margin=args.place_margin)
+        pcb.sync_tree_from_placement(board)
+        rep.done()
+        summary = (f"place: {pout.iterations} iters, {pout.accepted} accepted, "
+                   f"{pout.moved} moved, energy "
+                   f"{pout.start_energy:.1f} -> {pout.best_energy:.1f}")
+        rep.log(summary)
+        if not args.quiet:
+            print(f"\n  {summary}")
 
     rep.phase("building netlist (MST rats-nest)")
     conns = netlist.build_connections(board, exclude=args.exclude_net)
@@ -404,6 +450,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pro", help="project .kicad_pro (default: sibling)")
     p.add_argument("-o", "--output", help="output .kicad_pcb (default: INPUT_routed.kicad_pcb)")
     p.add_argument("--grid", type=float, help="grid pitch in mm (default derived from rules)")
+    p.add_argument("--place", action="store_true",
+                   help="experimental: place footprints (simulated annealing) before "
+                        "routing — honours locked footprints and the Autoroute=overlap "
+                        "property, and regenerates the Edge.Cuts outline")
+    pg = p.add_mutually_exclusive_group()
+    pg.add_argument("--place-iters", type=int, metavar="N",
+                    help="placement iteration budget (with --place)")
+    pg.add_argument("--place-time", type=float, metavar="S",
+                    help="placement time budget in seconds (with --place)")
+    p.add_argument("--place-margin", type=float,
+                   default=2.0, metavar="MM",
+                   help="margin (mm) around the parts for the regenerated outline "
+                        "(default %(default)s)")
+    p.add_argument("--place-overlap-weight", type=float,
+                   default=placement.PlaceParams.overlap_weight, metavar="W",
+                   help="placement cost per mm² of footprint overlap (default %(default)s)")
+    p.add_argument("--place-compact-weight", type=float,
+                   default=placement.PlaceParams.compact_weight, metavar="W",
+                   help="placement cost per mm² of layout bounding box, pulling the "
+                        "parts together (default %(default)s)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--iters", type=int, help="optimisation iteration budget")
     g.add_argument("--time", type=float, dest="time_budget", help="optimisation time budget (s)")
@@ -447,6 +513,10 @@ def main(argv=None) -> int:
         parser.error("--anneal-temps requires START > END > 0")
     if args.unrouted_weight < 0:
         parser.error("--unrouted-weight must be >= 0")
+    if args.place_margin < 0:
+        parser.error("--place-margin must be >= 0")
+    if (args.place_iters or args.place_time) and not args.place:
+        parser.error("--place-iters/--place-time require --place")
     return run(args)
 
 
