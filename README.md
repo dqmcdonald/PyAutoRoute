@@ -50,13 +50,7 @@ The original file is never modified — a routed copy is written alongside it.
 |---|---|
 | `--pro PROJECT.kicad_pro` | Project file with the design rules (default: the sibling `.kicad_pro`). |
 | `-o, --output FILE` | Output path (default: `INPUT_routed.kicad_pcb`). |
-| `--grid MM` | Routing grid pitch in mm (default: derived from the rules, ≈ `track/2 + clearance`). Finer = better coverage but slower. |
-| `--place` | **Experimental:** auto-place the footprints (simulated annealing) before routing, then regenerate the `Edge.Cuts` outline to fit. See [Auto-placement](#auto-placement-experimental). |
-| `--place-iters N` | Placement iteration budget (requires `--place`; mutually exclusive with `--place-time`). |
-| `--place-time SECONDS` | Placement wall-clock budget instead (requires `--place`). |
-| `--place-margin MM` | Margin around the parts for the regenerated outline (default `2.0`). |
-| `--place-overlap-weight W` | Placement cost per mm² of footprint overlap (default `20.0`). Higher ⇒ pushes parts apart harder. |
-| `--place-compact-weight W` | Placement cost per mm² of the layout's bounding box (default `0.02`). Higher ⇒ packs parts more tightly. |
+| `--grid MM` | Routing grid pitch in mm (default: derived from the rules, ≈ `track/2 + clearance`). Finer = better coverage but slower. A pitch more than ~2× the derived one prints a warning: a coarse grid can't fit a node in the gap beside a pad and so forces vias where a finer grid would route on one layer. |
 | `--iters N` | Run simulated-annealing optimisation for N iterations. |
 | `--time SECONDS` | Run optimisation for a wall-clock budget instead. |
 | `--unrouted-weight W` | Annealing energy penalty per unrouted connection (default 100). Higher ⇒ the optimiser tries harder to complete every connection, at the expense of wirelength/vias; lower ⇒ it tolerates leaving hard nets for manual routing. |
@@ -125,6 +119,7 @@ positions and the outline, inspect the output in KiCad before relying on it.
   wirelength:    1039.7 mm
   vias:          51
   self-check:    clean (0 clearance violations)
+  runtime:       12.34s real, 12.10s cpu
 ```
 
 The tool runs an in-repo geometric **self-check** on its own output and reports

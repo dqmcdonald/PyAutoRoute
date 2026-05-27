@@ -35,6 +35,7 @@ class Reporter:
         self.quiet = quiet
         self.tty = (not quiet) and hasattr(stream, "isatty") and stream.isatty()
         self._t0 = time.time()
+        self._c0 = time.process_time()
         self.log_file = open(log_path, "w") if log_path else None
 
     def phase(self, name: str) -> None:
@@ -70,7 +71,8 @@ class Reporter:
         elif done == total or done % 10 == 0:
             self.stream.write(line + "\n")
 
-    def annealing(self, it, total, routed, unrouted, energy, best, temp) -> None:
+    def annealing(self, it, total, routed, unrouted, energy, best, temp,
+                  accept) -> None:
         """Report an annealing iteration.
 
         Args:
@@ -81,9 +83,11 @@ class Reporter:
             energy: current energy.
             best: best energy seen so far.
             temp: current annealing temperature.
+            accept: fraction of recent moves accepted (0..1); falls as T cools.
         """
         msg = (f"anneal {it}/{total}  T={temp:5.2f}  E={energy:7.1f}  "
-               f"best={best:7.1f}  routed={routed} failed={unrouted}")
+               f"best={best:7.1f}  acc={accept*100:3.0f}%  "
+               f"routed={routed} failed={unrouted}")
         if it % 25 == 0:
             self.log(msg)
         if self.quiet:
@@ -137,6 +141,15 @@ class Reporter:
         """Seconds elapsed since this reporter was created."""
         return time.time() - self._t0
 
+    def runtime(self) -> tuple[float, float]:
+        """Wall-clock and process CPU seconds elapsed since this reporter began.
+
+        Returns:
+            ``(real, cpu)`` — elapsed wall-clock time and total (user+system)
+            CPU time of this process, both in seconds.
+        """
+        return time.time() - self._t0, time.process_time() - self._c0
+
     def _write(self, msg: str) -> None:
         """Write a formatted line to the display.
 
@@ -180,6 +193,36 @@ def default_pitch(rules) -> float:
     """
     dc = rules.default_class
     return round(dc.track_width / 2.0 + dc.clearance, 4)
+
+
+# A grid coarser than this multiple of the rules-derived pitch often can't place
+# a node in the tight gap beside a pad, forcing vias where a finer grid would
+# route on one layer. Empirically a pad-flanking single-layer route survives at
+# ~2x the natural pitch but is lost beyond it.
+COARSE_GRID_FACTOR = 2.0
+
+
+def coarse_grid_note(pitch: float, natural: float) -> str | None:
+    """Warn when the grid pitch is too coarse relative to the design rules.
+
+    A grid much coarser than the rules-derived pitch (``track/2 + clearance``)
+    often cannot fit a node in the clearance gap beside a pad, so the router is
+    forced to via under it where a finer grid would route on a single layer.
+
+    Args:
+        pitch: the routing grid pitch actually in use (mm).
+        natural: the rules-derived pitch (`default_pitch`), in mm.
+
+    Returns:
+        A warning string when `pitch` exceeds ``COARSE_GRID_FACTOR x natural``,
+        else `None`.
+    """
+    if natural <= 0 or pitch <= COARSE_GRID_FACTOR * natural:
+        return None
+    return (f"grid pitch {pitch:g} mm is {pitch / natural:.1f}x the rules-derived "
+            f"pitch ({natural:g} mm); a coarse grid can force vias where a finer "
+            f"grid would route on one layer — consider --grid {natural:g} "
+            f"(or omit --grid)")
 
 
 def _results_to_nodes(board, grid: Grid, results) -> list:
@@ -273,7 +316,8 @@ def run(args: argparse.Namespace) -> int:
     """Execute the full pipeline: parse -> grid -> route -> (anneal) -> write.
 
     Writes the routed board, optional snapshots and log, runs the clearance
-    self-check, and prints the metrics report.
+    self-check, and prints the metrics report (including the run's wall-clock
+    and CPU time, also mirrored to the log).
 
     Args:
         args: the parsed CLI namespace (see `build_parser`).
@@ -337,6 +381,11 @@ def run(args: argparse.Namespace) -> int:
     _log_params(rep, args, input_path, out_path, pro_path, pitch,
                 board, conns, grid, snap_n)
 
+    note = coarse_grid_note(pitch, default_pitch(rules))
+    if note:
+        print(f"  warning: {note}")
+        rep.log(f"warning: {note}")
+
     params = router.RouteParams(via_cost=args.via_weight)
     order = netlist.greedy_order(conns)
 
@@ -363,7 +412,9 @@ def run(args: argparse.Namespace) -> int:
         final_results = aout.results
         routed, unrouted, length, vias = (aout.routed, aout.unrouted,
                                           aout.total_length, aout.total_vias)
-        summary = (f"anneal: {aout.iterations} iters, {aout.accepted} accepted, "
+        acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
+        summary = (f"anneal: {aout.iterations} iters, "
+                   f"{aout.accepted} accepted ({acc_pct:.0f}%), "
                    f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
         rep.log(summary)
         if not args.quiet:
@@ -391,6 +442,11 @@ def run(args: argparse.Namespace) -> int:
         if not args.quiet:
             print(f"  debug plot:    {plot_path}")
         rep.log(f"debug plot -> {plot_path}")
+
+    real, cpu = rep.runtime()
+    timing = f"runtime:       {real:.2f}s real, {cpu:.2f}s cpu"
+    print(f"  {timing}")
+    rep.log(timing)
 
     if rep.log_file is not None and not args.quiet:
         print(f"  log:           {_resolve_log_path(args, out_path)}")

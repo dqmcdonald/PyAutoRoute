@@ -19,10 +19,17 @@ from __future__ import annotations
 import math
 import random
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from . import netlist, router
 from .router import RouteParams, RouteResult, RoutingState
+
+# Window (in iterations) over which the live acceptance ratio is measured. A
+# recent rate tracks how the cooling schedule bites — it falls towards zero as
+# T cools — which the cumulative accepted/iters figure (kept in AnnealResult)
+# masks because it is dominated by the hot start.
+_ACCEPT_WINDOW = 100
 
 
 @dataclass
@@ -214,7 +221,9 @@ class _Annealer:
 
         Args:
             on_progress: optional callback ``(it, total, routed, unrouted,
-                energy, best, temp)`` invoked each iteration.
+                energy, best, temp, accept)`` invoked each iteration, where
+                ``accept`` is the fraction of moves accepted over the last
+                ``_ACCEPT_WINDOW`` iterations.
             on_snapshot: optional callback ``(k, n, results)`` fired
                 ``params.snapshots`` times across the run (see `anneal`).
 
@@ -226,6 +235,7 @@ class _Annealer:
         best_E = E
         best = list(self.results)
         accepted = 0
+        recent = deque(maxlen=_ACCEPT_WINDOW)   # 1/0 per recent move, for the live ratio
 
         total = self.p.iters if self.p.iters else 1_000_000
         t0 = time.time()
@@ -249,7 +259,8 @@ class _Annealer:
             snapshot = self._apply(ripped, suborder)
             E_new = _energy(self.results, self.via_weight, self.p.unrouted_weight)
             dE = E_new - E
-            if dE <= 0 or self.rng.random() < math.exp(-dE / max(T, 1e-9)):
+            accept = dE <= 0 or self.rng.random() < math.exp(-dE / max(T, 1e-9))
+            if accept:
                 E = E_new
                 accepted += 1
                 if E < best_E:
@@ -257,12 +268,13 @@ class _Annealer:
                     best = list(self.results)
             else:
                 self._revert(snapshot)
+            recent.append(1 if accept else 0)
 
             it += 1
             if on_progress is not None:
                 routed = sum(1 for r in self.results if r is not None)
                 on_progress(it, total, routed, len(self.results) - routed,
-                            E, best_E, T)
+                            E, best_E, T, sum(recent) / len(recent))
             # emit intermediate snapshots as the run crosses k/N of its progress;
             # the final k=N snapshot is taken after the loop on the best routing.
             while n_snap and next_snap < n_snap and frac >= next_snap / n_snap:
