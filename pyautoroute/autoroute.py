@@ -35,6 +35,7 @@ class Reporter:
         self.quiet = quiet
         self.tty = (not quiet) and hasattr(stream, "isatty") and stream.isatty()
         self._t0 = time.time()
+        self._c0 = time.process_time()
         self.log_file = open(log_path, "w") if log_path else None
 
     def phase(self, name: str) -> None:
@@ -118,6 +119,15 @@ class Reporter:
     def _elapsed(self) -> float:
         """Seconds elapsed since this reporter was created."""
         return time.time() - self._t0
+
+    def runtime(self) -> tuple[float, float]:
+        """Wall-clock and process CPU seconds elapsed since this reporter began.
+
+        Returns:
+            ``(real, cpu)`` — elapsed wall-clock time and total (user+system)
+            CPU time of this process, both in seconds.
+        """
+        return time.time() - self._t0, time.process_time() - self._c0
 
     def _write(self, msg: str) -> None:
         """Write a formatted line to the display.
@@ -247,7 +257,8 @@ def run(args: argparse.Namespace) -> int:
     """Execute the full pipeline: parse -> grid -> route -> (anneal) -> write.
 
     Writes the routed board, optional snapshots and log, runs the clearance
-    self-check, and prints the metrics report.
+    self-check, and prints the metrics report (including the run's wall-clock
+    and CPU time, also mirrored to the log).
 
     Args:
         args: the parsed CLI namespace (see `build_parser`).
@@ -350,6 +361,11 @@ def run(args: argparse.Namespace) -> int:
         if not args.quiet:
             print(f"  debug plot:    {plot_path}")
         rep.log(f"debug plot -> {plot_path}")
+
+    real, cpu = rep.runtime()
+    timing = f"runtime:       {real:.2f}s real, {cpu:.2f}s cpu"
+    print(f"  {timing}")
+    rep.log(timing)
 
     if rep.log_file is not None and not args.quiet:
         print(f"  log:           {_resolve_log_path(args, out_path)}")

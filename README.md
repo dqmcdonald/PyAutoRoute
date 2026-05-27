@@ -93,6 +93,7 @@ pyautoroute MyBoard.kicad_pcb --iters 5000 --snapshots 10 --log
   wirelength:    1039.7 mm
   vias:          51
   self-check:    clean (0 clearance violations)
+  runtime:       12.34s real, 12.10s cpu
 ```
 
 The tool runs an in-repo geometric **self-check** on its own output and reports
