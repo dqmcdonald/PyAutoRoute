@@ -55,17 +55,23 @@ class Grid:
         self._net_id: dict[str, int] = {}
         self._id_net: dict[int, str] = {}
 
-        # conservative inflation margins (exact for single-net-class boards).
-        # `safety` accounts for grid discretisation: a track segment between two
-        # free node-centres must stay clear of obstacles, so obstacles are grown
-        # by an extra half-diagonal of the cell pitch.
+        # Inflation margins (exact for single-net-class boards). `safety`
+        # accounts for grid discretisation: a point on a track segment between
+        # two free node-centres can be up to a half-diagonal of the cell pitch
+        # from the nearer node. The required keep-out `clear` and that offset are
+        # perpendicular in the worst case (obstacle abeam the segment midpoint),
+        # so they combine in quadrature, not linearly: a node kept hypot(clear,
+        # safety) from an obstacle guarantees the whole segment stays `clear`
+        # away. Summing them instead (clear + safety) over-inflates and can wall
+        # off dense through-hole clusters that are in fact routable.
         max_track = max(c.track_width for c in rules.classes.values())
         max_via = max(c.via_diameter for c in rules.classes.values())
         self._max_clear = max(rules.clearance_for(n) for n in self._known_nets(board))
         self.safety = pitch * _SQRT2 / 2.0
-        self.margin = max_track / 2.0 + self._max_clear + self.safety
-        self.via_margin = max_via / 2.0 + self._max_clear + self.safety
-        self.edge_margin = rules.min_copper_edge_clearance + max_track / 2.0 + self.safety
+        self.margin = math.hypot(max_track / 2.0 + self._max_clear, self.safety)
+        self.via_margin = math.hypot(max_via / 2.0 + self._max_clear, self.safety)
+        self.edge_margin = math.hypot(
+            rules.min_copper_edge_clearance + max_track / 2.0, self.safety)
 
         # precomputed disk stencil for via-clearance sampling
         self._via_stencil = self._disk_stencil(self.via_margin)

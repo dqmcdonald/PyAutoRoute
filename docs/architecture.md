@@ -158,23 +158,31 @@ All geometry is in **KiCad board coordinates**: millimetres, **Y pointing down**
 Clearance is enforced discretely on the grid, not checked after the fact.
 
 - **Obstacle inflation.** Each obstacle is grown by
-  `margin = max_track/2 + max_clearance + safety` before marking grid owners,
-  where `safety = pitch · √2 / 2`. The `max_track/2` term is the *routing* track's
-  half-width (a forbidden node is for a track centre, so the centre must clear by
-  the routing track's half-width plus clearance), and `max_*` are taken across net
-  classes so the single global margin is safe on multi-class boards. The safety
-  term covers grid discretisation: a track segment between two free node-centres
-  can dip up to half a diagonal closer to an obstacle than either endpoint, so
-  without it the continuous track could clip clearance even though both nodes look
-  free.
+  `margin = hypot(max_track/2 + max_clearance, safety)` before marking grid
+  owners, where `safety = pitch · √2 / 2`. The `max_track/2` term is the *routing*
+  track's half-width (a forbidden node is for a track centre, so the centre must
+  clear by the routing track's half-width plus clearance), and `max_*` are taken
+  across net classes so the single global margin is safe on multi-class boards.
+  The safety term covers grid discretisation: a point on a track segment between
+  two free node-centres can sit up to half a diagonal (`safety`) from the nearer
+  node. The required keep-out `clear = max_track/2 + max_clearance` and that offset
+  are **perpendicular in the worst case** (obstacle abeam the segment midpoint),
+  so they combine *in quadrature* — `hypot(clear, safety)`, not `clear + safety`.
+  A node kept that far from an obstacle guarantees the whole segment stays `clear`
+  away; summing the two terms linearly instead is safe but over-inflates by up to
+  `safety`, which can wall off dense through-hole clusters that are in fact
+  routable.
 - **Committed copper is inflated the same way.** A routed track/via is treated
-  like a pad obstacle: its copper is grown by the full `margin` (not just
-  `clearance + safety`) when marked owned. The routing-track half-width term is
+  like a pad obstacle: its copper is grown by the full `margin` (i.e. with the
+  `max_track/2` term inside the quadrature, not `hypot(max_clearance, safety)`)
+  when marked owned. The routing-track half-width term is
   essential here — on a multi-class board a later wide (e.g. 0.6 mm) track would
   otherwise encroach on an earlier track's clearance. (On uniform single-class
   boards the safety slack masked this; a wide-track multi-class board exposed it.)
 - **Vias clear more area than tracks.** A via uses
-  `via_margin = via_diameter/2 + clearance + safety`. `can_via` checks the whole
+  `via_margin = hypot(via_diameter/2 + clearance, safety)` (same quadrature
+  combination; the board edge keep-out `edge_margin` is built the same way).
+  `can_via` checks the whole
   via-clearance disk is free on **both** layers (a stencil of node offsets), and
   committing a via marks that disk on every layer. Omitting this was the original
   source of shorts/hole-clearance violations.
