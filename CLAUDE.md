@@ -27,6 +27,23 @@ When you make such a change, update all three in the same piece of work:
 
 Treat docs as part of "done": a change isn't complete until the docs reflect it.
 
+## Versioning
+
+The version lives in `pyproject.toml` (`[project].version`). We follow SemVer,
+adapted for a pre-1.0 project:
+
+- **Minor** bump (`0.3.0` → `0.4.0`) for each *major addition*: a new feature,
+  CLI flag, output, or routing-algorithm change (the same "major change" bar the
+  docs rule uses).
+- **Patch** bump (`0.4.0` → `0.4.1`) for bug fixes and small corrections.
+- **Docs-only** changes need no bump (fold them into the next one).
+- Stay pre-1.0 until the CLI / file-output interface is declared stable; while
+  `0.x`, even breaking changes only bump the minor. Reserve `1.0.0` for the
+  stability commitment.
+
+Bump in the same piece of work as the change (it's part of "done", like the
+docs). Tagging a release is optional: `git tag v0.4.0`.
+
 ## Environment
 
 - Python lives in the **`tf` venv**: `/Users/que/venvs/tf` (Python 3.12, with
