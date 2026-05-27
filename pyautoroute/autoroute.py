@@ -70,7 +70,8 @@ class Reporter:
         elif done == total or done % 10 == 0:
             self.stream.write(line + "\n")
 
-    def annealing(self, it, total, routed, unrouted, energy, best, temp) -> None:
+    def annealing(self, it, total, routed, unrouted, energy, best, temp,
+                  accept) -> None:
         """Report an annealing iteration.
 
         Args:
@@ -81,9 +82,11 @@ class Reporter:
             energy: current energy.
             best: best energy seen so far.
             temp: current annealing temperature.
+            accept: fraction of recent moves accepted (0..1); falls as T cools.
         """
         msg = (f"anneal {it}/{total}  T={temp:5.2f}  E={energy:7.1f}  "
-               f"best={best:7.1f}  routed={routed} failed={unrouted}")
+               f"best={best:7.1f}  acc={accept*100:3.0f}%  "
+               f"routed={routed} failed={unrouted}")
         if it % 25 == 0:
             self.log(msg)
         if self.quiet:
@@ -317,7 +320,9 @@ def run(args: argparse.Namespace) -> int:
         final_results = aout.results
         routed, unrouted, length, vias = (aout.routed, aout.unrouted,
                                           aout.total_length, aout.total_vias)
-        summary = (f"anneal: {aout.iterations} iters, {aout.accepted} accepted, "
+        acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
+        summary = (f"anneal: {aout.iterations} iters, "
+                   f"{aout.accepted} accepted ({acc_pct:.0f}%), "
                    f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
         rep.log(summary)
         if not args.quiet:
