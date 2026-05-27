@@ -50,7 +50,7 @@ The original file is never modified — a routed copy is written alongside it.
 |---|---|
 | `--pro PROJECT.kicad_pro` | Project file with the design rules (default: the sibling `.kicad_pro`). |
 | `-o, --output FILE` | Output path (default: `INPUT_routed.kicad_pcb`). |
-| `--grid MM` | Routing grid pitch in mm (default: derived from the rules, ≈ `track/2 + clearance`). Finer = better coverage but slower. |
+| `--grid MM` | Routing grid pitch in mm (default: derived from the rules, ≈ `track/2 + clearance`). Finer = better coverage but slower. A pitch more than ~2× the derived one prints a warning: a coarse grid can't fit a node in the gap beside a pad and so forces vias where a finer grid would route on one layer. |
 | `--iters N` | Run simulated-annealing optimisation for N iterations. |
 | `--time SECONDS` | Run optimisation for a wall-clock budget instead. |
 | `--unrouted-weight W` | Annealing energy penalty per unrouted connection (default 100). Higher ⇒ the optimiser tries harder to complete every connection, at the expense of wirelength/vias; lower ⇒ it tolerates leaving hard nets for manual routing. |

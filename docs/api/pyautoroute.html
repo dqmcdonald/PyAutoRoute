@@ -250,6 +250,12 @@ self-check. Exit code 2 if the self-check finds a violation. The version
 (<code>pyautoroute.__version__</code>, read from the installed package metadata) is printed
 on startup and written to the <code>--log</code> header; <code>--version</code> prints it and exits.</p>
 
+<p><code>coarse_grid_note</code> prints (and logs) a heads-up when the effective <code>--grid</code>
+pitch exceeds ~2× the rules-derived pitch (<code>default_pitch</code> = <code>track/2 +
+clearance</code>): clearance is enforced discretely on the grid, so a coarse grid
+can't fit a node in the gap beside a pad and forces a via under it where a finer
+grid would route on a single layer.</p>
+
 <p>Two diagnostic options hook into this flow:</p>
 
 <ul>
