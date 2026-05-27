@@ -6,3 +6,10 @@ reference, where each function and method documents its parameters.
 
 .. include:: ../docs/architecture.md
 """
+
+from importlib.metadata import PackageNotFoundError, version as _version
+
+try:
+    __version__ = _version("pyautoroute")
+except PackageNotFoundError:  # running from a source tree without an install
+    __version__ = "unknown"

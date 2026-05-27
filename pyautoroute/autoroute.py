@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import anneal, geometry, netlist, pcb, router
+from . import __version__, anneal, geometry, netlist, pcb, router
 from .grid import Grid
 from .rules import load_rules
 
@@ -213,7 +213,8 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
         snap_n: the effective snapshot count (0 if disabled).
     """
     rep.log("=" * 64)
-    rep.log(f"PyAutoRoute  {datetime.datetime.now().isoformat(timespec='seconds')}")
+    rep.log(f"PyAutoRoute {__version__}  "
+            f"{datetime.datetime.now().isoformat(timespec='seconds')}")
     rep.log("=" * 64)
     rep.log(f"input          {input_path}")
     rep.log(f"output         {out_path}")
@@ -256,6 +257,7 @@ def run(args: argparse.Namespace) -> int:
     out_path = Path(args.output) if args.output else default_output(input_path)
     pro_path = Path(args.pro) if args.pro else default_pro(input_path)
     rep = Reporter(quiet=args.quiet, log_path=_resolve_log_path(args, out_path))
+    print(f"PyAutoRoute {__version__}")
 
     rep.phase("parsing board + rules")
     board = pcb.load_board(input_path)
@@ -397,6 +399,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pyautoroute",
         description="Autoroute a 2-layer KiCad PCB (writes a routed copy).")
+    p.add_argument("--version", action="version", version=f"PyAutoRoute {__version__}")
     p.add_argument("input", help="input .kicad_pcb")
     p.add_argument("--pro", help="project .kicad_pro (default: sibling)")
     p.add_argument("-o", "--output", help="output .kicad_pcb (default: INPUT_routed.kicad_pcb)")

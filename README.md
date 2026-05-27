@@ -62,6 +62,7 @@ The original file is never modified — a routed copy is written alongside it.
 | `--log [FILE]` | Write a verbose log of the input parameters and routing/annealing progress. Bare `--log` writes `<output>.log`; `--log FILE` uses the given path. |
 | `--debug-plot` | Also write a `.png` render of the routed board. |
 | `--quiet` | Suppress the live progress display (final summary only). |
+| `--version` | Print the version and exit. (The version is also printed on startup and written to the `--log` header.) |
 
 `--iters` and `--time` are mutually exclusive; if neither is given, the board is
 routed once (greedy order) without annealing.

@@ -139,7 +139,9 @@ A* bend/via cost weights remain `AnnealParams`/`RouteParams` defaults.
 Argument parsing, the parse → grid → route → (anneal) → write flow, the live
 text progress `Reporter` (single-line `\r` updates on a TTY, line-by-line
 otherwise, silent under `--quiet`), the metrics report, and the post-write
-self-check. Exit code 2 if the self-check finds a violation.
+self-check. Exit code 2 if the self-check finds a violation. The version
+(`pyautoroute.__version__`, read from the installed package metadata) is printed
+on startup and written to the `--log` header; `--version` prints it and exits.
 
 Two diagnostic options hook into this flow:
 - **`--snapshots N`** writes `N` intermediate routed boards to a `snapshots/`
