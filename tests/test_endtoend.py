@@ -92,11 +92,12 @@ def test_endtoend_exclude_net():
 
 @pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
 def test_cli_writes_snapshots_and_log(tmp_path):
-    # the --snapshots / --log CLI flags emit N snapshot boards + a verbose log
+    # --snapshots / --log emit N snapshot boards + a verbose log that records the
+    # annealing parameters (including --unrouted-weight / --anneal-temps)
     out = tmp_path / "out.kicad_pcb"
     args = autoroute.build_parser().parse_args(
-        [str(_TEST_BOARD), "-o", str(out), "--iters", "30",
-         "--snapshots", "3", "--log", "--quiet"])
+        [str(_TEST_BOARD), "-o", str(out), "--iters", "30", "--snapshots", "3",
+         "--unrouted-weight", "60", "--anneal-temps", "5", "0.1", "--log", "--quiet"])
     rc = autoroute.run(args)
     assert rc == 0
 
@@ -106,6 +107,8 @@ def test_cli_writes_snapshots_and_log(tmp_path):
     log = out.with_suffix(".log")             # bare --log -> <output>.log
     text = log.read_text()
     assert "snapshots      3" in text         # parameter dump
+    assert "unrouted wt    60.0" in text      # exposed anneal params logged
+    assert "anneal temps   5.0 -> 0.1" in text
     assert "snapshot 3/3" in text             # progress trace
     assert "self-check:    clean" in text     # final metrics
 
@@ -117,3 +120,25 @@ def test_cli_snapshots_ignored_without_annealing(tmp_path):
         [str(_TEST_BOARD), "-o", str(out), "--snapshots", "3", "--quiet"])
     assert autoroute.run(args) == 0
     assert not (tmp_path / "snapshots").exists()    # no annealing -> no snapshots
+
+
+def test_cli_anneal_param_flags_parse():
+    # defaults come from AnnealParams; overrides parse to the right namespace
+    from pyautoroute import anneal
+    p = autoroute.build_parser()
+    a = p.parse_args(["b.kicad_pcb"])
+    assert a.unrouted_weight == anneal.AnnealParams.unrouted_weight
+    assert tuple(a.anneal_temps) == (anneal.AnnealParams.t_start,
+                                     anneal.AnnealParams.t_end)
+    a2 = p.parse_args(["b.kicad_pcb", "--unrouted-weight", "50",
+                       "--anneal-temps", "6", "0.1"])
+    assert a2.unrouted_weight == 50.0
+    assert tuple(a2.anneal_temps) == (6.0, 0.1)
+
+
+def test_cli_rejects_invalid_anneal_params():
+    # validation happens in main(): START must exceed END > 0, weight >= 0
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--anneal-temps", "0.1", "6"])
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--unrouted-weight", "-1"])

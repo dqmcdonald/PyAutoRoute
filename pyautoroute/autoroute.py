@@ -143,6 +143,9 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
         rep.log(f"anneal iters   {args.iters}")
     if args.time_budget:
         rep.log(f"anneal time    {args.time_budget} s")
+    if args.iters or args.time_budget:
+        rep.log(f"unrouted wt    {args.unrouted_weight}")
+        rep.log(f"anneal temps   {args.anneal_temps[0]} -> {args.anneal_temps[1]}")
     if snap_n:
         rep.log(f"snapshots      {snap_n}")
     rep.log(f"copper layers  {', '.join(board.copper_layers)}")
@@ -204,7 +207,10 @@ def run(args: argparse.Namespace) -> int:
     if args.iters or args.time_budget:
         rep.phase("annealing (rip-up & reroute)")
         ap = anneal.AnnealParams(iters=args.iters, time_budget=args.time_budget,
-                                 seed=args.seed, snapshots=snap_n, route_params=params)
+                                 seed=args.seed, snapshots=snap_n,
+                                 unrouted_weight=args.unrouted_weight,
+                                 t_start=args.anneal_temps[0], t_end=args.anneal_temps[1],
+                                 route_params=params)
         aout = anneal.anneal(state, conns, list(result.results), ap,
                              on_progress=rep.annealing,
                              on_snapshot=on_snapshot if snap_n else None)
@@ -286,6 +292,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="net name/glob to leave un-routed (repeatable)")
     p.add_argument("--seed", type=int, default=0, help="random seed")
     p.add_argument("--via-weight", type=float, default=2.0, help="via cost (mm-equiv)")
+    p.add_argument("--unrouted-weight", type=float,
+                   default=anneal.AnnealParams.unrouted_weight, metavar="W",
+                   help="annealing penalty per unrouted connection — higher tries "
+                        "harder to complete routes at the expense of length/vias "
+                        "(default %(default)s)")
+    p.add_argument("--anneal-temps", nargs=2, type=float, metavar=("START", "END"),
+                   default=(anneal.AnnealParams.t_start, anneal.AnnealParams.t_end),
+                   help="annealing start/end temperature for the geometric cooling "
+                        "schedule; START>END>0 (default %(default)s)")
     p.add_argument("--snapshots", type=int, default=0, metavar="N",
                    help="during annealing, save N board snapshots to a snapshots/ "
                         "subdir (requires --iters or --time)")
@@ -298,7 +313,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    t_start, t_end = args.anneal_temps
+    if not (t_start > t_end > 0):
+        parser.error("--anneal-temps requires START > END > 0")
+    if args.unrouted_weight < 0:
+        parser.error("--unrouted-weight must be >= 0")
     return run(args)
 
 

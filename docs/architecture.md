@@ -125,8 +125,11 @@ Incremental rip-up & reroute over an already-committed routing. Moves: reroute o
 connection, swap the routing order of two, or rip up a failed connection plus its
 nearest neighbours and retry. Energy
 `E = wirelength + via_weight·#vias + unrouted_weight·#unrouted`. Metropolis
-acceptance under a geometric cooling schedule; the best-seen routing is kept.
-Because the router is DRC-clean by construction, there is no violation term.
+acceptance under a geometric cooling schedule (`t_start` → `t_end`); the best-seen
+routing is kept. Because the router is DRC-clean by construction, there is no
+violation term. The energy/schedule knobs exposed on the CLI are `--via-weight`,
+`--unrouted-weight`, and `--anneal-temps START END`; `rip_neighbours` and the
+A* bend/via cost weights remain `AnnealParams`/`RouteParams` defaults.
 
 ### `autoroute.py` — CLI & orchestration
 Argument parsing, the parse → grid → route → (anneal) → write flow, the live
