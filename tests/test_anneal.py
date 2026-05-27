@@ -69,3 +69,20 @@ def test_anneal_no_snapshots_without_callback():
     # snapshots requested but no callback -> nothing fires, run still completes
     out = anneal.anneal(state, conns, list(result.results), ap)
     assert out.iterations == 10
+
+
+def test_rip_cluster_reroutes_whole_cluster():
+    # the cluster move rips a seed + nearest neighbours and reroutes the same set
+    state, conns, result = _setup()
+    ap = anneal.AnnealParams(rip_neighbours=3, seed=0)
+    a = anneal._Annealer(state, conns, list(result.results), ap)
+    routed = [i for i, r in enumerate(a.results) if r is not None]
+    seed = routed[0]
+
+    cluster, order = a._rip_cluster(seed, shuffle=True)
+    assert seed in cluster
+    assert len(cluster) == 1 + min(ap.rip_neighbours, len(routed) - 1)
+    assert set(order) == set(cluster)          # everything ripped is rerouted
+
+    _, order_seeded = a._rip_cluster(seed, shuffle=False)
+    assert order_seeded[0] == seed             # unshuffled routes the seed first

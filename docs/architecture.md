@@ -121,9 +121,13 @@ to two-pin connections via a **minimum spanning tree** over pad centroids
 shortest-first for the initial routing pass.
 
 ### `anneal.py` — simulated annealing
-Incremental rip-up & reroute over an already-committed routing. Moves: reroute one
-connection, swap the routing order of two, or rip up a failed connection plus its
-nearest neighbours and retry. Energy
+Incremental rip-up & reroute over an already-committed routing. Moves: rip a
+connection (failed *or* routed) plus its nearest neighbours and reroute the freed
+cluster, swap the routing order of two, or reroute one. The cluster rip-and-reroute
+is the move that shortens an already-complete board — freeing a local group and
+re-routing it in a fresh order lets a connection take a more direct path than it
+won in the sequential greedy pass (a plain single-connection reroute on unchanged
+occupancy just returns the same path). Energy
 `E = wirelength + via_weight·#vias + unrouted_weight·#unrouted`. Metropolis
 acceptance under a geometric cooling schedule (`t_start` → `t_end`); the best-seen
 routing is kept. Because the router is DRC-clean by construction, there is no

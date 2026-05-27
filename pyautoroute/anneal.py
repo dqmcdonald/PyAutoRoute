@@ -1,11 +1,14 @@
 """Simulated-annealing optimisation over an initial routing.
 
-Starting from a committed greedy routing, SA applies local moves — reroute one
-connection, swap the routing order of two, or rip up a failed connection plus its
-neighbours and retry — each evaluated incrementally against the live
-``RoutingState`` (rip-up/reroute, never a full-board re-route). Worse moves are
-accepted with Metropolis probability under a geometric cooling schedule; the
-best-seen routing is kept and returned.
+Starting from a committed greedy routing, SA applies local moves — rip up a
+connection (failed *or* already routed) plus its nearest neighbours and reroute
+the freed cluster, swap the routing order of two, or reroute one — each evaluated
+incrementally against the live ``RoutingState`` (rip-up/reroute, never a
+full-board re-route). The cluster rip-and-reroute is what shortens an
+already-complete board: freeing a local group and re-routing it in a fresh order
+lets a connection claim a more direct path than it won during the original
+sequential pass. Worse moves are accepted with Metropolis probability under a
+geometric cooling schedule; the best-seen routing is kept and returned.
 
 Energy E = wirelength + via_weight·(#vias) + unrouted_weight·(#unrouted).
 DRC cleanliness is guaranteed by the router, so there is no violation term.
@@ -109,18 +112,35 @@ class _Annealer:
             if old is not None:
                 self.state.commit(idx, old)
 
+    def _rip_cluster(self, seed: int, shuffle: bool) -> tuple[list[int], list[int]]:
+        """Rip the seed connection plus its nearest routed neighbours and reroute
+        the cluster. Ripping the whole cluster before re-routing frees the local
+        space, so a connection routed first can take a more direct path than it
+        held in the original sequential routing. ``shuffle`` randomises the
+        re-route order (for optimising routed nets); otherwise the seed is routed
+        first (to give a previously-failed net priority)."""
+        cs = _centroid(self.conns[seed])
+        neighbours = sorted(
+            (i for i, r in enumerate(self.results) if r is not None and i != seed),
+            key=lambda i: math.dist(cs, _centroid(self.conns[i])))
+        cluster = [seed] + neighbours[:self.p.rip_neighbours]
+        order = list(cluster)
+        if shuffle:
+            self.rng.shuffle(order)
+        return cluster, order
+
     def _propose(self) -> tuple[list[int], list[int]]:
         n = len(self.conns)
         unrouted = [i for i, r in enumerate(self.results) if r is None]
         if unrouted and self.rng.random() < 0.5:
-            u = self.rng.choice(unrouted)
-            cu = _centroid(self.conns[u])
-            others = sorted(
-                (i for i in range(n) if i != u and self.results[i] is not None),
-                key=lambda i: math.dist(cu, _centroid(self.conns[i])))
-            ripped = [u] + others[:self.p.rip_neighbours]
-            return ripped, ripped                      # route the failed one first
-        if n >= 2 and self.rng.random() < 0.4:
+            return self._rip_cluster(self.rng.choice(unrouted), shuffle=False)
+
+        routed = [i for i, r in enumerate(self.results) if r is not None]
+        r = self.rng.random()
+        if routed and r < 0.7:
+            # rip a routed cluster + reroute in a fresh order to shorten the wiring
+            return self._rip_cluster(self.rng.choice(routed), shuffle=True)
+        if n >= 2 and r < 0.9:
             i, j = self.rng.sample(range(n), 2)
             return [i, j], [j, i]                       # swap routing order
         i = self.rng.randrange(n)
