@@ -25,6 +25,15 @@ from .sexpr import Atom, SList
 # --- small s-expr accessors --------------------------------------------------
 
 def child(node: SList, key: str) -> SList | None:
+    """Return the first sub-list of `node` whose head symbol is `key`.
+
+    Args:
+        node: the parent list to search.
+        key: the head symbol to match, e.g. ``"at"`` or ``"layers"``.
+
+    Returns:
+        The first matching child list, or `None` if there is none.
+    """
     for it in node:
         if isinstance(it, SList) and sexpr.head_symbol(it) == key:
             return it
@@ -32,20 +41,53 @@ def child(node: SList, key: str) -> SList | None:
 
 
 def children(node: SList, key: str):
+    """Return every sub-list of `node` whose head symbol is `key`.
+
+    Args:
+        node: the parent list to search.
+        key: the head symbol to match, e.g. ``"footprint"`` or ``"pad"``.
+
+    Returns:
+        A list of all matching child lists (possibly empty).
+    """
     return [it for it in node if isinstance(it, SList) and sexpr.head_symbol(it) == key]
 
 
 def atoms_after_head(node: SList) -> list[Atom]:
+    """Return the atom tokens following a list's head symbol.
+
+    Args:
+        node: the list whose trailing atoms are wanted, e.g. ``(at 1 2 90)``.
+
+    Returns:
+        The `Atom` items after index 0 (sub-lists are skipped).
+    """
     return [it for it in node[1:] if isinstance(it, Atom)]
 
 
 def floats(node: SList | None) -> list[float]:
+    """Read a list's trailing atoms as floats, e.g. ``(at 1 2)`` -> ``[1.0, 2.0]``.
+
+    Args:
+        node: the list to read, or `None`.
+
+    Returns:
+        The parsed floats, or ``[]`` when `node` is `None`.
+    """
     if node is None:
         return []
     return [a.as_float() for a in atoms_after_head(node)]
 
 
 def strings(node: SList | None) -> list[str]:
+    """Read a list's trailing atoms as decoded strings.
+
+    Args:
+        node: the list to read, or `None`.
+
+    Returns:
+        The decoded text of each trailing atom, or ``[]`` when `node` is `None`.
+    """
     if node is None:
         return []
     return [a.text for a in atoms_after_head(node)]
@@ -54,7 +96,16 @@ def strings(node: SList | None) -> list[str]:
 # --- geometry transform ------------------------------------------------------
 
 def rotate(x: float, y: float, angle_deg: float) -> tuple[float, float]:
-    """Rotate a point using KiCad's RotatePoint convention (matches pcbnew)."""
+    """Rotate a point using KiCad's RotatePoint convention (matches pcbnew).
+
+    Args:
+        x: x offset from the rotation centre (mm).
+        y: y offset from the rotation centre (mm).
+        angle_deg: rotation angle in degrees (KiCad's sign convention).
+
+    Returns:
+        The rotated ``(x, y)`` offset.
+    """
     a = math.radians(angle_deg)
     s, c = math.sin(a), math.cos(a)
     return (x * c + y * s, -x * s + y * c)
@@ -121,13 +172,21 @@ class Board:
 
     @property
     def front_layer(self) -> str:
+        """The preferred front copper layer (first in the stack), e.g. ``F.Cu``."""
         return self.copper_layers[0]
 
     @property
     def back_layer(self) -> str:
+        """The back copper layer (last in the stack), e.g. ``B.Cu``."""
         return self.copper_layers[-1]
 
     def pads_by_net(self) -> dict[str, list[Pad]]:
+        """Group the board's pads by net name.
+
+        Returns:
+            A mapping of net name -> pads on that net; pads with no net (``""``)
+            are omitted.
+        """
         out: dict[str, list[Pad]] = {}
         for p in self.pads:
             if p.net:
@@ -138,7 +197,16 @@ class Board:
 # --- net reference parsing ---------------------------------------------------
 
 def _net_name(net_node: SList | None, numbered: dict[int, str]) -> str:
-    """Resolve a ``(net ...)`` reference to a net name across both file styles."""
+    """Resolve a ``(net ...)`` reference to a net name across both file styles.
+
+    Args:
+        net_node: the ``(net ...)`` node, or `None` (treated as no net).
+        numbered: the board's net-number -> name table (empty for name-only
+            KiCad 10 files), used to resolve a bare numeric reference.
+
+    Returns:
+        The net name, or ``""`` when there is no net reference.
+    """
     if net_node is None:
         return ""
     items = atoms_after_head(net_node)
@@ -156,6 +224,15 @@ def _net_name(net_node: SList | None, numbered: dict[int, str]) -> str:
 # --- layer helpers -----------------------------------------------------------
 
 def _copper_layers(tree: SList) -> list[str]:
+    """Extract the ordered copper-layer names from the board's ``(layers ...)``.
+
+    Args:
+        tree: the parsed board tree.
+
+    Returns:
+        Copper layer names (those ending in ``.Cu``) in board order; falls back
+        to ``["F.Cu", "B.Cu"]`` if none are found.
+    """
     layers_node = child(tree, "layers")
     out: list[str] = []
     if layers_node is None:
@@ -173,6 +250,16 @@ def _copper_layers(tree: SList) -> list[str]:
 
 
 def _resolve_pad_layers(layer_strings: list[str], copper: list[str]) -> list[str]:
+    """Resolve a pad's layer tokens to concrete copper-layer names.
+
+    Args:
+        layer_strings: the pad's raw ``(layers ...)`` tokens, which may include
+            the wildcard ``"*.Cu"``.
+        copper: the board's copper-layer names, used to expand ``"*.Cu"``.
+
+    Returns:
+        The copper layers the pad occupies (all of `copper` for a ``*.Cu`` pad).
+    """
     out: list[str] = []
     for ls in layer_strings:
         if ls == "*.Cu":
@@ -186,6 +273,21 @@ def _resolve_pad_layers(layer_strings: list[str], copper: list[str]) -> list[str
 
 def _parse_pad(pad_node: SList, fx: float, fy: float, fa: float,
                copper: list[str], numbered: dict[int, str], fp_ref: str) -> Pad | None:
+    """Parse one ``(pad ...)`` node into an absolute-positioned `Pad`.
+
+    Args:
+        pad_node: the ``(pad ...)`` s-expression.
+        fx: the parent footprint's x origin (mm).
+        fy: the parent footprint's y origin (mm).
+        fa: the parent footprint's rotation (degrees), applied to the pad offset.
+        copper: the board's copper-layer names (for layer resolution).
+        numbered: the net-number -> name table (for net resolution).
+        fp_ref: the parent footprint's reference designator, stored on the pad.
+
+    Returns:
+        The `Pad` with absolute centre/rotation, or `None` if the node lacks the
+        expected number/type/shape header.
+    """
     head = atoms_after_head(pad_node)
     # (pad "1" smd roundrect ...) -> [number, type, shape]
     if len(head) < 3:
@@ -229,6 +331,14 @@ def _parse_pad(pad_node: SList, fx: float, fy: float, fa: float,
 
 
 def _footprint_ref(fp_node: SList) -> str:
+    """Read a footprint's reference designator from its ``Reference`` property.
+
+    Args:
+        fp_node: the ``(footprint ...)`` node.
+
+    Returns:
+        The reference (e.g. ``"R2"``), or ``""`` if absent.
+    """
     for prop in children(fp_node, "property"):
         vals = atoms_after_head(prop)
         if vals and vals[0].text == "Reference" and len(vals) >= 2:
@@ -239,6 +349,15 @@ def _footprint_ref(fp_node: SList) -> str:
 # --- outline parsing ---------------------------------------------------------
 
 def _parse_outline(tree: SList) -> list[OutlineShape]:
+    """Collect the board-edge graphic shapes from the ``Edge.Cuts`` layer.
+
+    Args:
+        tree: the parsed board tree.
+
+    Returns:
+        One `OutlineShape` per ``gr_poly`` / ``gr_line`` / ``gr_rect`` /
+        ``gr_arc`` / ``gr_circle`` found on ``Edge.Cuts``.
+    """
     shapes: list[OutlineShape] = []
     for it in tree:
         if not isinstance(it, SList):
@@ -277,6 +396,14 @@ def _parse_outline(tree: SList) -> list[OutlineShape]:
 
 
 def _pts(pts_node: SList | None) -> list[tuple[float, float]]:
+    """Extract ``(xy x y)`` coordinate pairs from a ``(pts ...)`` node.
+
+    Args:
+        pts_node: the ``(pts ...)`` node, or `None`.
+
+    Returns:
+        The ``(x, y)`` points in order, or ``[]`` when `pts_node` is `None`.
+    """
     if pts_node is None:
         return []
     out = []
@@ -291,6 +418,16 @@ def _pts(pts_node: SList | None) -> list[tuple[float, float]]:
 # --- top-level via / segment / zone parsing ----------------------------------
 
 def _parse_free_vias(tree: SList, numbered: dict[int, str]) -> list[Via]:
+    """Parse the top-level (dangling) ``(via ...)`` nodes, keeping their source.
+
+    Args:
+        tree: the parsed board tree.
+        numbered: the net-number -> name table (for net resolution).
+
+    Returns:
+        One `Via` per top-level via, each retaining its source node so the
+        writer can strip it.
+    """
     out = []
     for it in children(tree, "via"):
         at = floats(child(it, "at"))
@@ -309,6 +446,15 @@ def _parse_free_vias(tree: SList, numbered: dict[int, str]) -> list[Via]:
 
 
 def _parse_segments(tree: SList, numbered: dict[int, str]) -> list[Segment]:
+    """Parse the existing ``(segment ...)`` tracks (routing obstacles).
+
+    Args:
+        tree: the parsed board tree.
+        numbered: the net-number -> name table (for net resolution).
+
+    Returns:
+        One `Segment` per track segment with valid start/end points.
+    """
     out = []
     for it in children(tree, "segment"):
         s = floats(child(it, "start"))
@@ -326,6 +472,15 @@ def _parse_segments(tree: SList, numbered: dict[int, str]) -> list[Segment]:
 
 
 def _parse_zones(tree: SList, numbered: dict[int, str]) -> list[dict]:
+    """Parse copper ``(zone ...)`` regions into ``{net, layers, polygon}`` dicts.
+
+    Args:
+        tree: the parsed board tree.
+        numbered: the net-number -> name table (for net resolution).
+
+    Returns:
+        One dict per zone with its net name, layer list, and outline points.
+    """
     out = []
     for it in children(tree, "zone"):
         out.append({
@@ -338,7 +493,14 @@ def _parse_zones(tree: SList, numbered: dict[int, str]) -> list[dict]:
 
 
 def _numbered_net_table(tree: SList) -> dict[int, str]:
-    """Top-level (net N "name") declarations (KiCad 6-9). Empty for name-only."""
+    """Read the top-level ``(net N "name")`` declarations (KiCad 6-9).
+
+    Args:
+        tree: the parsed board tree.
+
+    Returns:
+        A net-number -> name mapping; empty for name-only (KiCad 10) files.
+    """
     table: dict[int, str] = {}
     for it in children(tree, "net"):
         a = atoms_after_head(it)
@@ -350,6 +512,19 @@ def _numbered_net_table(tree: SList) -> dict[int, str]:
 # --- public API --------------------------------------------------------------
 
 def load_board(pcb_path: str | Path) -> Board:
+    """Parse a ``.kicad_pcb`` file into a `Board` model.
+
+    Reads the s-expression directly (no `pcbnew`) and collects the copper stack,
+    every pad with its absolute position/rotation/shape, existing tracks/vias/
+    zones, the free (dangling) vias, the net-reference style, and the Edge.Cuts
+    outline.
+
+    Args:
+        pcb_path: path to the ``.kicad_pcb`` file.
+
+    Returns:
+        The populated `Board`.
+    """
     tree = sexpr.loads(Path(pcb_path).read_text())
     copper = _copper_layers(tree)
     numbered = _numbered_net_table(tree)
@@ -382,7 +557,16 @@ def load_board(pcb_path: str | Path) -> Board:
 # --- node builders for the writer --------------------------------------------
 
 def _net_ref_node(board: Board, net: str) -> SList:
-    """Build a ``(net ...)`` node in the board's own reference style."""
+    """Build a ``(net ...)`` node in the board's own reference style.
+
+    Args:
+        board: the board, providing the net style and number table.
+        net: the net name to reference.
+
+    Returns:
+        A ``(net "GND")`` node for name-only boards, or ``(net <code>)`` for
+        numbered boards.
+    """
     node = SList([sexpr.sym("net")])
     if board.name_only_nets:
         node.append(sexpr.string(net))
@@ -393,10 +577,35 @@ def _net_ref_node(board: Board, net: str) -> SList:
 
 
 def _xy_node(head: str, x: float, y: float) -> SList:
+    """Build a two-coordinate node such as ``(start x y)`` or ``(at x y)``.
+
+    Args:
+        head: the leading symbol, e.g. ``"start"``, ``"end"``, or ``"at"``.
+        x: the x coordinate (mm).
+        y: the y coordinate (mm).
+
+    Returns:
+        The ``(head x y)`` node.
+    """
     return SList([sexpr.sym(head), sexpr.number(x), sexpr.number(y)])
 
 
 def make_segment(board: Board, x1, y1, x2, y2, width, layer, net) -> SList:
+    """Build a ``(segment ...)`` node for a routed track.
+
+    Args:
+        board: the board (for the net-reference style).
+        x1: start x (mm).
+        y1: start y (mm).
+        x2: end x (mm).
+        y2: end y (mm).
+        width: track width (mm).
+        layer: copper layer name, e.g. ``"F.Cu"``.
+        net: the segment's net name.
+
+    Returns:
+        A ``(segment ...)`` node with a fresh uuid.
+    """
     return SList([
         sexpr.sym("segment"),
         _xy_node("start", x1, y1),
@@ -409,6 +618,21 @@ def make_segment(board: Board, x1, y1, x2, y2, width, layer, net) -> SList:
 
 
 def make_via(board: Board, x, y, size, drill, layer_a, layer_b, net) -> SList:
+    """Build a ``(via ...)`` node for a layer transition.
+
+    Args:
+        board: the board (for the net-reference style).
+        x: via centre x (mm).
+        y: via centre y (mm).
+        size: via copper diameter (mm).
+        drill: via drill diameter (mm).
+        layer_a: one connected copper layer, e.g. ``"F.Cu"``.
+        layer_b: the other connected copper layer, e.g. ``"B.Cu"``.
+        net: the via's net name.
+
+    Returns:
+        A ``(via ...)`` node with a fresh uuid.
+    """
     return SList([
         sexpr.sym("via"),
         _xy_node("at", x, y),
@@ -423,7 +647,19 @@ def make_via(board: Board, x, y, size, drill, layer_a, layer_b, net) -> SList:
 def write_board(board: Board, out_path: str | Path,
                 new_nodes: list[SList] | None = None,
                 strip_free_vias: bool = True) -> None:
-    """Serialize a routed copy: drop free vias, append new segment/via nodes."""
+    """Serialize a routed copy: drop free vias, append new segment/via nodes.
+
+    Clones the parsed tree (untouched subtrees keep their source spans, so the
+    diff against the input stays limited to the routing edits).
+
+    Args:
+        board: the source board whose tree is cloned.
+        out_path: destination path for the routed ``.kicad_pcb``.
+        new_nodes: freshly-built ``(segment ...)`` / ``(via ...)`` nodes to
+            append (from `make_segment` / `make_via`); `None` for none.
+        strip_free_vias: when True, omit the board's dangling free vias from the
+            output.
+    """
     strip_ids = {id(v.node) for v in board.free_vias} if strip_free_vias else set()
     new_root = SList()
     for ch in board.tree:

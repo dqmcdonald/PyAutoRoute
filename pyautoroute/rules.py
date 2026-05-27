@@ -45,8 +45,17 @@ class DesignRules:
     min_hole_to_hole: float
 
     def class_for(self, net_name: str) -> NetClass:
-        """Resolve a net to its class: explicit assignment, then first matching
-        pattern, then the Default class."""
+        """Resolve a net to its class.
+
+        Resolution order: explicit assignment, then the first matching wildcard
+        pattern, then the Default class.
+
+        Args:
+            net_name: the net name to resolve.
+
+        Returns:
+            The `NetClass` governing `net_name`.
+        """
         cls_name = self.assignments.get(net_name)
         if cls_name is None:
             for pattern, name in self.patterns:
@@ -58,24 +67,73 @@ class DesignRules:
         return self.default_class
 
     def clearance_for(self, net_name: str) -> float:
+        """Effective clearance for a net (its class value floored by the board min).
+
+        Args:
+            net_name: the net name.
+
+        Returns:
+            The clearance in mm.
+        """
         return max(self.class_for(net_name).clearance, self.min_clearance)
 
     def track_width_for(self, net_name: str) -> float:
+        """Effective track width for a net (class value floored by the board min).
+
+        Args:
+            net_name: the net name.
+
+        Returns:
+            The track width in mm.
+        """
         return max(self.class_for(net_name).track_width, self.min_track_width)
 
     def via_diameter_for(self, net_name: str) -> float:
+        """Effective via diameter for a net (class value floored by the board min).
+
+        Args:
+            net_name: the net name.
+
+        Returns:
+            The via copper diameter in mm.
+        """
         return max(self.class_for(net_name).via_diameter, self.min_via_diameter)
 
     def via_drill_for(self, net_name: str) -> float:
+        """Effective via drill for a net (class value floored by the board min).
+
+        Args:
+            net_name: the net name.
+
+        Returns:
+            The via drill diameter in mm.
+        """
         return max(self.class_for(net_name).via_drill, self.min_via_drill)
 
     def pair_clearance(self, net_a: str, net_b: str) -> float:
-        """Clearance required between two different nets = the larger of their
-        individual clearances (KiCad uses the maximum of the two)."""
+        """Clearance required between two different nets.
+
+        KiCad uses the larger of the two nets' individual clearances.
+
+        Args:
+            net_a: one net name.
+            net_b: the other net name.
+
+        Returns:
+            The required spacing in mm.
+        """
         return max(self.clearance_for(net_a), self.clearance_for(net_b))
 
 
 def _net_class_from_dict(d: dict) -> NetClass:
+    """Build a `NetClass` from a ``.kicad_pro`` net-class dict, filling defaults.
+
+    Args:
+        d: the raw net-class mapping from the project file.
+
+    Returns:
+        The parsed `NetClass` (KiCad defaults for any missing field).
+    """
     return NetClass(
         name=d.get("name", "Default"),
         clearance=float(d.get("clearance", _DEFAULT_CLEARANCE)),
@@ -106,8 +164,14 @@ def default_rules() -> DesignRules:
 
 
 def load_rules(pro_path: str | Path) -> DesignRules:
-    """Parse a ``.kicad_pro`` file into DesignRules; fall back to defaults if the
-    file is missing."""
+    """Parse a ``.kicad_pro`` file into `DesignRules`.
+
+    Args:
+        pro_path: path to the project ``.kicad_pro`` file.
+
+    Returns:
+        The parsed `DesignRules`, or `default_rules()` if the file is missing.
+    """
     pro_path = Path(pro_path)
     if not pro_path.exists():
         return default_rules()

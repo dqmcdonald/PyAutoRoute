@@ -44,10 +44,28 @@ class RouteParams:
     max_expansions: int = 2_000_000
 
     def bend(self, turn_units: int) -> float:
+        """Penalty for a direction change of `turn_units` 45-degree steps.
+
+        Args:
+            turn_units: number of 45-degree increments turned (0-4).
+
+        Returns:
+            The bend penalty in mm-equivalent (0 for going straight).
+        """
         return (0.0, self.bend45, self.bend90, self.bend135, self.bend180)[turn_units]
 
 
 def _turn_units(a: int, b: int) -> int:
+    """Turn magnitude between two of the 8 compass directions, in 45-deg steps.
+
+    Args:
+        a: previous direction index (0-7), or ``< 0`` for "no previous step".
+        b: next direction index (0-7).
+
+    Returns:
+        The smaller turn magnitude in 45-degree units (0-4); 0 if either index
+        is negative.
+    """
     if a < 0 or b < 0:
         return 0
     d = abs(a - b)
@@ -81,12 +99,29 @@ class RoutingState:
     """
 
     def __init__(self, grid: Grid):
+        """Layer dynamic routed-copper occupancy over a static grid.
+
+        Args:
+            grid: the static routing grid (pad/edge occupancy) to build on.
+        """
         self.grid = grid
         self.cover: dict[tuple[int, int, int], set[int]] = {}   # node -> {conn_idx}
         self.conn_cover: dict[int, set[tuple[int, int, int]]] = {}
         self.conn_net: dict[int, int] = {}
 
     def is_free(self, layer_idx: int, col: int, row: int, net_id: int) -> bool:
+        """Whether `net_id` may occupy a node, considering routed copper too.
+
+        Args:
+            layer_idx: copper layer index.
+            col: node column.
+            row: node row.
+            net_id: the routing net's id.
+
+        Returns:
+            True if the static grid permits it and no *other* net's committed
+            copper covers the node.
+        """
         if not self.grid.is_free(layer_idx, col, row, net_id):
             return False
         occ = self.cover.get((layer_idx, col, row))
@@ -97,6 +132,17 @@ class RoutingState:
         return True
 
     def can_via(self, col: int, row: int, net_id: int) -> bool:
+        """Whether a via for `net_id` fits at a node, over static + routed copper.
+
+        Args:
+            col: node column for the via centre.
+            row: node row for the via centre.
+            net_id: the routing net's id.
+
+        Returns:
+            True if every node in the via-clearance stencil is free for `net_id`
+            on all copper layers.
+        """
         for dc, dr in self.grid._via_stencil:
             c, r = col + dc, row + dr
             if not self.grid.in_bounds(c, r):
@@ -107,6 +153,12 @@ class RoutingState:
         return True
 
     def commit(self, conn_idx: int, result: RouteResult) -> None:
+        """Record a routed connection's (inflated) copper as occupancy.
+
+        Args:
+            conn_idx: the connection's index, used as the rip-up key.
+            result: the routed path to commit.
+        """
         net_id = self.grid.net_id(result.net)
         nodes = self._covered_nodes(result)
         self.conn_net[conn_idx] = net_id
@@ -115,6 +167,11 @@ class RoutingState:
             self.cover.setdefault(nd, set()).add(conn_idx)
 
     def ripup(self, conn_idx: int) -> None:
+        """Remove a connection's committed copper from the occupancy.
+
+        Args:
+            conn_idx: the connection index previously passed to `commit`.
+        """
         for nd in self.conn_cover.pop(conn_idx, ()):
             occ = self.cover.get(nd)
             if occ is not None:
@@ -124,6 +181,13 @@ class RoutingState:
         self.conn_net.pop(conn_idx, None)
 
     def _raster(self, geom, layer_idx: int, out: set):
+        """Add every grid node whose centre lies inside `geom` to `out`.
+
+        Args:
+            geom: the shapely area to rasterise.
+            layer_idx: the layer index tagged onto each added node.
+            out: the ``(layer, col, row)`` node set extended in place.
+        """
         m = self.grid._mesh_in_bbox(geom.bounds)
         if m is None:
             return
@@ -136,6 +200,15 @@ class RoutingState:
             out.add((layer_idx, int(cols[cc[k]]), int(rows[rr[k]])))
 
     def _covered_nodes(self, result: RouteResult) -> set:
+        """Grid nodes a routed path occupies, inflated by the clearance margin.
+
+        Args:
+            result: the routed path.
+
+        Returns:
+            The ``(layer, col, row)`` nodes the path's copper (tracks + via
+            disks) claims for clearance bookkeeping.
+        """
         grid = self.grid
         width = grid.rules.track_width_for(result.net)
         via_r = grid.rules.via_diameter_for(result.net) / 2.0
@@ -165,7 +238,19 @@ def astar(state: RoutingState, net_id: int,
           sources: list[tuple[int, int, int]],
           targets: list[tuple[int, int, int]],
           params: RouteParams | None = None) -> list[tuple[int, int, int]] | None:
-    """Find a min-cost node path from any source to any target, or None."""
+    """Find a min-cost node path from any source to any target.
+
+    Args:
+        state: the live routing state (occupancy the search must respect).
+        net_id: the routing net's id (nodes owned by other nets are blocked).
+        sources: candidate start nodes ``(layer, col, row)`` (a pad's accesses).
+        targets: candidate goal nodes ``(layer, col, row)``.
+        params: cost-model parameters; defaults are used when `None`.
+
+    Returns:
+        The ``(layer, col, row)`` path from a source to a target, or `None` if
+        none is reachable within the expansion budget.
+    """
     params = params or RouteParams()
     grid = state.grid
     if not sources or not targets:
@@ -243,6 +328,16 @@ def astar(state: RoutingState, net_id: int,
 
 
 def _reconstruct(came, st) -> list[tuple[int, int, int]]:
+    """Rebuild the node path from the A* came-from map.
+
+    Args:
+        came: mapping of search state -> predecessor state.
+        st: the goal search state to walk back from.
+
+    Returns:
+        The ``(layer, col, row)`` path from source to goal, with consecutive
+        duplicates removed.
+    """
     out = []
     while st is not None:
         li, c, r, _ = st
@@ -260,6 +355,18 @@ def route_connection(state: RoutingState, net: str,
                      sources: list[tuple[int, int, int]],
                      targets: list[tuple[int, int, int]],
                      params: RouteParams | None = None) -> RouteResult | None:
+    """Route one connection and package the path with its metrics.
+
+    Args:
+        state: the live routing state (occupancy).
+        net: the connection's net name.
+        sources: candidate start nodes (one pad's access nodes).
+        targets: candidate goal nodes (the other pad's access nodes).
+        params: cost-model parameters; defaults are used when `None`.
+
+    Returns:
+        The `RouteResult` (path + length + vias), or `None` if unroutable.
+    """
     net_id = state.grid.net_id(net)
     path = astar(state, net_id, sources, targets, params)
     if path is None:
@@ -269,6 +376,16 @@ def route_connection(state: RoutingState, net: str,
 
 
 def _path_metrics(grid: Grid, path) -> tuple[float, int]:
+    """Measure a node path's wirelength and via count.
+
+    Args:
+        grid: the grid (for the pitch / coordinate scale).
+        path: the ``(layer, col, row)`` node path.
+
+    Returns:
+        ``(length_mm, n_vias)`` — layer changes count as vias, in-layer steps
+        add their geometric length.
+    """
     length = 0.0
     vias = 0
     for (l0, c0, r0), (l1, c1, r1) in zip(path, path[1:]):
@@ -284,7 +401,19 @@ def _path_metrics(grid: Grid, path) -> tuple[float, int]:
 def route_all(state: RoutingState, connections, order: list[int],
               params: RouteParams | None = None,
               on_progress=None) -> BoardRouting:
-    """Route connections in the given order, committing each success to `state`."""
+    """Route connections in the given order, committing each success to `state`.
+
+    Args:
+        state: the routing state to commit successful routes into.
+        connections: the connections to route (indexed by `order`).
+        order: indices into `connections` giving the routing order.
+        params: cost-model parameters; defaults are used when `None`.
+        on_progress: optional callback ``(done, total, routed, unrouted)`` after
+            each connection.
+
+    Returns:
+        A `BoardRouting` with per-connection results and aggregate metrics.
+    """
     results: list[RouteResult | None] = [None] * len(connections)
     routed = unrouted = 0
     total_len = 0.0
@@ -310,7 +439,18 @@ def route_all(state: RoutingState, connections, order: list[int],
 # --- node path -> KiCad nodes -------------------------------------------------
 
 def path_to_nodes(board, grid: Grid, result: RouteResult) -> list[SList]:
-    """Convert a node path into KiCad (segment ...) / (via ...) s-expr nodes."""
+    """Convert a routed node path into KiCad ``(segment ...)`` / ``(via ...)`` nodes.
+
+    Collinear runs are merged into single segments and layer changes become vias.
+
+    Args:
+        board: the board (net-reference style for the new nodes).
+        grid: the grid (node -> coordinate conversion, layer names).
+        result: the routed path to serialise.
+
+    Returns:
+        The s-expression nodes to append to the routed board.
+    """
     from .pcb import make_via
 
     path = result.path
@@ -351,10 +491,28 @@ def path_to_nodes(board, grid: Grid, result: RouteResult) -> list[SList]:
 
 
 def _sign(v: int) -> int:
+    """Return the sign of `v` as -1, 0, or 1.
+
+    Args:
+        v: the value.
+    """
     return (v > 0) - (v < 0)
 
 
 def _seg(board, grid: Grid, net: str, a, b, width: float) -> SList:
+    """Build a ``(segment ...)`` node spanning two grid nodes on one layer.
+
+    Args:
+        board: the board (net-reference style).
+        grid: the grid (node -> coordinate conversion).
+        net: the segment's net name.
+        a: the start ``(layer, col, row)`` node.
+        b: the end ``(layer, col, row)`` node.
+        width: the track width (mm).
+
+    Returns:
+        The ``(segment ...)`` node.
+    """
     from .pcb import make_segment
     x1, y1 = grid.node_xy(a[1], a[2])
     x2, y2 = grid.node_xy(b[1], b[2])

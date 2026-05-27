@@ -33,6 +33,17 @@ _SQRT2 = math.sqrt(2.0)
 
 class Grid:
     def __init__(self, board: Board, rules: DesignRules, pitch: float):
+        """Build the routing grid: node lattice, inflation margins, occupancy.
+
+        Lays a uniform node lattice over the board's bounding box, computes the
+        clearance inflation margins, then marks each node's owner from the board
+        edge, copper obstacles, and pad interiors.
+
+        Args:
+            board: the parsed board (outline, pads, copper) to grid.
+            rules: design rules giving clearances, track widths, via geometry.
+            pitch: grid spacing in mm (finer = better coverage, slower).
+        """
         self.board = board
         self.rules = rules
         self.pitch = pitch
@@ -82,6 +93,14 @@ class Grid:
         self._force_pad_interiors()
 
     def _disk_stencil(self, radius: float) -> list[tuple[int, int]]:
+        """Precompute the ``(dcol, drow)`` offsets within a disk of `radius`.
+
+        Args:
+            radius: the disk radius in mm (e.g. the via clearance radius).
+
+        Returns:
+            Node-index offsets whose centres lie within `radius` of the origin.
+        """
         rc = int(math.ceil(radius / self.pitch))
         out = []
         for dc in range(-rc, rc + 1):
@@ -93,10 +112,26 @@ class Grid:
     # --- net id helpers ------------------------------------------------------
 
     def _known_nets(self, board: Board) -> list[str]:
+        """Return the distinct net names that have pads.
+
+        Args:
+            board: the board to scan.
+
+        Returns:
+            The net names with at least one pad, or ``["Default"]`` if none.
+        """
         nets = {p.net for p in board.pads if p.net}
         return list(nets) or ["Default"]
 
     def net_id(self, net: str) -> int:
+        """Map a net name to a small integer id, assigning one on first use.
+
+        Args:
+            net: the net name.
+
+        Returns:
+            The stable integer id used in the occupancy grid for this net.
+        """
         if net not in self._net_id:
             i = len(self._net_id)
             self._net_id[net] = i
@@ -104,14 +139,40 @@ class Grid:
         return self._net_id[net]
 
     def layer_index(self, layer: str) -> int:
+        """Return the grid layer index for a copper-layer name.
+
+        Args:
+            layer: a copper-layer name such as ``"F.Cu"``.
+
+        Returns:
+            The 0-based layer index (0 is the front layer).
+        """
         return self._layer_idx[layer]
 
     # --- coordinate conversion ----------------------------------------------
 
     def node_xy(self, col: int, row: int) -> tuple[float, float]:
+        """Convert a grid node index to board coordinates.
+
+        Args:
+            col: the node column.
+            row: the node row.
+
+        Returns:
+            The node's ``(x, y)`` in board mm.
+        """
         return (self.minx + col * self.pitch, self.miny + row * self.pitch)
 
     def nearest_node(self, x: float, y: float) -> tuple[int, int]:
+        """Find the grid node nearest a board coordinate (clamped in-bounds).
+
+        Args:
+            x: board x in mm.
+            y: board y in mm.
+
+        Returns:
+            The clamped ``(col, row)`` of the closest node.
+        """
         col = int(round((x - self.minx) / self.pitch))
         row = int(round((y - self.miny) / self.pitch))
         col = min(max(col, 0), self.nx - 1)
@@ -119,12 +180,26 @@ class Grid:
         return col, row
 
     def in_bounds(self, col: int, row: int) -> bool:
+        """Return whether ``(col, row)`` lies within the grid.
+
+        Args:
+            col: the node column.
+            row: the node row.
+        """
         return 0 <= col < self.nx and 0 <= row < self.ny
 
     # --- occupancy build -----------------------------------------------------
 
     def _mesh_in_bbox(self, bounds):
-        """Grid node indices + coordinates whose bbox overlaps `bounds`."""
+        """Return the grid node indices + coordinates overlapping a bbox.
+
+        Args:
+            bounds: a ``(minx, miny, maxx, maxy)`` bounding box in board mm.
+
+        Returns:
+            ``(cols, rows, xx, yy)`` index/coordinate meshgrids for the covered
+            region, or `None` if the box falls outside the grid.
+        """
         bx0, by0, bx1, by1 = bounds
         c0 = max(int(np.floor((bx0 - self.minx) / self.pitch)), 0)
         c1 = min(int(np.ceil((bx1 - self.minx) / self.pitch)), self.nx - 1)
@@ -150,7 +225,16 @@ class Grid:
             self.owner[li][outside] = BLOCKED
 
     def _mark(self, layer_idx, rows, cols, mask, net_id):
-        """Assign ownership for the masked nodes, resolving conflicts to BLOCKED."""
+        """Assign ownership for the masked nodes, resolving conflicts to BLOCKED.
+
+        Args:
+            layer_idx: the copper layer index to mark.
+            rows: the row indices of the sub-grid being marked.
+            cols: the column indices of the sub-grid being marked.
+            mask: boolean array (over ``rows`` x ``cols``) of nodes to claim.
+            net_id: the net id to assign; FREE nodes take it, same-net nodes are
+                unchanged, and a different existing owner becomes BLOCKED.
+        """
         sub = self.owner[layer_idx][np.ix_(rows, cols)]
         # FREE -> net_id; same net -> unchanged; anything else -> BLOCKED
         take = mask & (sub == FREE)
@@ -202,14 +286,38 @@ class Grid:
     # --- queries -------------------------------------------------------------
 
     def is_free(self, layer_idx: int, col: int, row: int, net_id: int) -> bool:
+        """Return whether a net may route through a node.
+
+        Args:
+            layer_idx: the copper layer index.
+            col: the node column.
+            row: the node row.
+            net_id: the routing net's id.
+
+        Returns:
+            True if the node is in bounds and either FREE or already owned by
+            `net_id` (a net may always use its own copper).
+        """
         if not self.in_bounds(col, row):
             return False
         o = self.owner[layer_idx, row, col]
         return o == FREE or o == net_id
 
     def can_via(self, col: int, row: int, net_id: int) -> bool:
-        """A via needs its whole pad+clearance disk free for this net on every
-        copper layer (vias are larger than tracks, so they clear more area)."""
+        """Return whether a via for `net_id` may be placed at a node.
+
+        A via needs its whole pad+clearance disk free for this net on every
+        copper layer (vias are larger than tracks, so they clear more area).
+
+        Args:
+            col: the node column for the via centre.
+            row: the node row for the via centre.
+            net_id: the routing net's id.
+
+        Returns:
+            True if every node in the via-clearance stencil is free for
+            `net_id` on all layers.
+        """
         for dc, dr in self._via_stencil:
             c, r = col + dc, row + dr
             if not self.in_bounds(c, r):
@@ -221,7 +329,16 @@ class Grid:
         return True
 
     def pad_access_nodes(self, pad: Pad) -> list[tuple[int, int, int]]:
-        """Grid nodes (layer_idx, col, row) lying inside the pad on its layers."""
+        """Return the grid nodes a router can use to enter a pad.
+
+        Args:
+            pad: the pad to find access nodes for.
+
+        Returns:
+            ``(layer_idx, col, row)`` for each node inside the pad polygon on
+            each of the pad's copper layers; if the pad falls between nodes, the
+            single nearest node on each layer.
+        """
         poly = geometry.pad_polygon(pad)
         m = self._mesh_in_bbox(poly.bounds)
         if m is None:

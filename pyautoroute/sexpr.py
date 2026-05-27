@@ -50,6 +50,11 @@ class Atom:
         return self.raw
 
     def as_float(self) -> float:
+        """Parse the atom's raw text as a float.
+
+        Returns:
+            The numeric value of `raw` (raises `ValueError` if non-numeric).
+        """
         return float(self.raw)
 
     def __repr__(self) -> str:
@@ -57,32 +62,68 @@ class Atom:
 
 
 def sym(s: str) -> Atom:
-    """Bare symbol atom, e.g. sym('segment') -> segment."""
+    """Build a bare symbol atom, e.g. ``sym('segment')`` -> ``segment``.
+
+    Args:
+        s: the symbol text, emitted verbatim (no quoting or escaping).
+
+    Returns:
+        An `Atom` whose `raw` is `s`.
+    """
     return Atom(s)
 
 
 def string(s: str) -> Atom:
-    """Quoted-string atom with KiCad escaping, e.g. string('GND') -> \"GND\"."""
+    """Build a quoted-string atom with KiCad escaping, e.g. ``string('GND')`` -> ``"GND"``.
+
+    Args:
+        s: the decoded string value; backslashes and double quotes are escaped.
+
+    Returns:
+        An `Atom` whose `raw` is the quoted, escaped form of `s`.
+    """
     return Atom('"' + _escape(s) + '"')
 
 
 def number(x: float | int) -> Atom:
-    """Numeric atom. Integers render without a decimal point; floats use repr."""
+    """Build a numeric atom; whole values render without a decimal point.
+
+    Args:
+        x: the numeric value. Integers and whole-valued floats render as
+            integers; other floats use the shortest round-trippable form.
+
+    Returns:
+        An `Atom` carrying the formatted number text.
+    """
     if isinstance(x, int) or (isinstance(x, float) and x.is_integer()):
         return Atom(str(int(x)))
     return Atom(_fmt_float(x))
 
 
 def _fmt_float(x: float) -> str:
-    # KiCad trims trailing zeros; repr gives the shortest round-trippable form.
+    """Format a float as the shortest round-trippable text (KiCad trims zeros).
+
+    Args:
+        x: the value to format.
+    """
     return repr(float(x))
 
 
 def _escape(s: str) -> str:
+    """Escape backslashes and double quotes for a KiCad quoted string.
+
+    Args:
+        s: the raw string value to escape.
+    """
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _unescape(s: str) -> str:
+    """Reverse `_escape`: drop backslash escapes from a quoted-string body.
+
+    Args:
+        s: the inner text of a quoted atom (without surrounding quotes).
+    """
     out = []
     i = 0
     while i < len(s):
@@ -99,7 +140,15 @@ def _unescape(s: str) -> str:
 # --- tokenizer ---------------------------------------------------------------
 
 def _tokenize(text: str) -> Iterator[tuple[str, int, int]]:
-    """Yield (token_text, start, end) with end exclusive."""
+    """Split s-expression source into tokens, preserving source offsets.
+
+    Args:
+        text: the full s-expression source.
+
+    Yields:
+        ``(token_text, start, end)`` for each paren, quoted string, or bare
+        atom, where `end` is exclusive.
+    """
     i, n = 0, len(text)
     while i < n:
         c = text[i]
@@ -137,6 +186,15 @@ def loads(text: str) -> SList:
 
     Each SList records its source span so an unmodified subtree serializes back
     to its exact original bytes.
+
+    Args:
+        text: the s-expression source (e.g. the contents of a `.kicad_pcb`).
+
+    Returns:
+        The root `SList`.
+
+    Raises:
+        ValueError: on unbalanced parentheses, a stray atom, or empty input.
     """
     stack: list[tuple[SList, int]] = []
     root: SList | None = None
@@ -166,22 +224,42 @@ def loads(text: str) -> SList:
 # --- serializer --------------------------------------------------------------
 
 def head_symbol(node: Node) -> str | None:
-    """The leading symbol of a list node, e.g. 'pad' for (pad ...). None otherwise."""
+    """Return the leading symbol of a list node, e.g. ``'pad'`` for ``(pad ...)``.
+
+    Args:
+        node: any node; only a non-empty list with an `Atom` head qualifies.
+
+    Returns:
+        The head atom's `raw` text, or `None` for atoms / empty / atomless-head
+        lists.
+    """
     if isinstance(node, list) and node and isinstance(node[0], Atom):
         return node[0].raw
     return None
 
 
 def _is_atom(node: Node) -> bool:
+    """Return whether `node` is an `Atom` (leaf) rather than an `SList`.
+
+    Args:
+        node: the node to test.
+    """
     return isinstance(node, Atom)
 
 
 def dumps(node: Node, indent: str = "", verbatim: bool = True) -> str:
     """Serialize a node using KiCad's formatting style (no trailing newline).
 
-    When `verbatim` is True an SList that still carries its source span is
-    emitted byte-for-byte; pass `verbatim=False` to force generic formatting
-    (used to exercise the formatter and to re-render mutated subtrees).
+    Args:
+        node: the `Atom` or `SList` to serialize.
+        indent: the indent prefix for this node's lines (grows by a tab per
+            level during recursion).
+        verbatim: when True, an `SList` that still carries its source span is
+            emitted byte-for-byte; pass False to force generic formatting (used
+            to exercise the formatter and to re-render mutated subtrees).
+
+    Returns:
+        The serialized text, without a trailing newline.
     """
     if _is_atom(node):
         return node.raw
@@ -213,5 +291,12 @@ def dumps(node: Node, indent: str = "", verbatim: bool = True) -> str:
 
 
 def dump_file(node: Node) -> str:
-    """Serialize a top-level node as a complete file (trailing newline)."""
+    """Serialize a top-level node as a complete file (with trailing newline).
+
+    Args:
+        node: the root node to serialize.
+
+    Returns:
+        The full file text, including the trailing newline KiCad expects.
+    """
     return dumps(node) + "\n"

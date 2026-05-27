@@ -23,7 +23,17 @@ _ARC_SEGMENTS = 24
 # --- pad / track / via shapes ------------------------------------------------
 
 def _base_pad_shape(pad: Pad) -> Polygon:
-    """Pad shape centred at the origin, unrotated."""
+    """Build the pad's copper outline centred at the origin and unrotated.
+
+    Handles circle / oval / roundrect / trapezoid; rect and custom (and any
+    unknown shape) fall back to the bounding box.
+
+    Args:
+        pad: the pad whose shape/size fields define the polygon.
+
+    Returns:
+        The origin-centred, unrotated pad polygon.
+    """
     w, h = pad.w, pad.h
     shape = pad.shape
     if shape == "circle":
@@ -56,7 +66,14 @@ def _base_pad_shape(pad: Pad) -> Polygon:
 
 
 def pad_polygon(pad: Pad) -> Polygon:
-    """Absolute pad polygon (rotated by the pad's absolute angle, translated)."""
+    """Build a pad's absolute copper polygon (rotated then translated).
+
+    Args:
+        pad: the pad, whose `angle`/`cx`/`cy` place the base shape on the board.
+
+    Returns:
+        The pad polygon in board coordinates.
+    """
     base = _base_pad_shape(pad)
     # KiCad rotate(x,y,a) == CCW rotation by -a, so undo with shapely's CCW
     rotated = affinity.rotate(base, -pad.angle, origin=(0, 0))
@@ -64,16 +81,40 @@ def pad_polygon(pad: Pad) -> Polygon:
 
 
 def segment_polygon(seg: Segment) -> Polygon:
+    """Build the copper polygon of a track segment (a width-thick capsule).
+
+    Args:
+        seg: the segment, whose endpoints and `width` define the capsule.
+
+    Returns:
+        The segment's copper area as a round-capped buffer.
+    """
     line = LineString([(seg.x1, seg.y1), (seg.x2, seg.y2)])
     return line.buffer(seg.width / 2.0, cap_style="round")
 
 
 def via_polygon(via: Via) -> Polygon:
+    """Build a via's copper polygon (a disk of its annular-ring diameter).
+
+    Args:
+        via: the via, whose centre and `size` define the disk.
+
+    Returns:
+        The via's circular copper area.
+    """
     return Point(via.cx, via.cy).buffer(via.size / 2.0)
 
 
 def inflate(geom, dist: float):
-    """Grow a geometry outward by `dist` (clearance), rounded corners."""
+    """Grow a geometry outward by `dist` with rounded corners.
+
+    Args:
+        geom: the shapely geometry to grow.
+        dist: the offset distance (mm); ``<= 0`` returns `geom` unchanged.
+
+    Returns:
+        The buffered geometry (or `geom` itself when `dist <= 0`).
+    """
     if dist <= 0:
         return geom
     return geom.buffer(dist, join_style="round")
@@ -82,7 +123,17 @@ def inflate(geom, dist: float):
 # --- board outline -----------------------------------------------------------
 
 def _arc_points(start, mid, end) -> list[tuple[float, float]]:
-    """Sample a circular arc defined by three points."""
+    """Sample a circular arc defined by three points into a polyline.
+
+    Args:
+        start: the arc start point ``(x, y)``.
+        mid: a point on the arc between start and end (fixes the sweep).
+        end: the arc end point ``(x, y)``.
+
+    Returns:
+        ``_ARC_SEGMENTS + 1`` points along the arc; falls back to
+        ``[start, end]`` if the three points are collinear.
+    """
     (x1, y1), (x2, y2), (x3, y3) = start, mid, end
     # circumcentre of the three points
     d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
@@ -120,7 +171,22 @@ def _arc_points(start, mid, end) -> list[tuple[float, float]]:
 
 
 def outline_to_polygon(shapes: list[OutlineShape]) -> Polygon:
-    """Assemble Edge.Cuts shapes into a single board-area polygon."""
+    """Assemble Edge.Cuts shapes into a single board-area polygon.
+
+    Closed shapes (poly/rect/circle) are taken directly; loose edges
+    (line/arc) are noded and polygonized so outlines with overlapping or
+    collinear-redundant segments still close. The largest resulting region is
+    returned.
+
+    Args:
+        shapes: the Edge.Cuts shapes from `pyautoroute.pcb.Board.outline`.
+
+    Returns:
+        The board-area polygon.
+
+    Raises:
+        ValueError: if no closed outline can be formed.
+    """
     closed: list[Polygon] = []
     edges: list[LineString] = []
     for s in shapes:
@@ -164,7 +230,15 @@ class Obstacle:
 
 
 def board_obstacles(board: Board) -> list[Obstacle]:
-    """Raw (un-inflated) copper obstacles tagged with net and layer."""
+    """Collect raw (un-inflated) copper obstacles tagged with net and layer.
+
+    Args:
+        board: the board whose pads, segments, free vias, and zones become
+            obstacles.
+
+    Returns:
+        One `Obstacle` per copper shape per layer it occupies.
+    """
     obs: list[Obstacle] = []
     for pad in board.pads:
         poly = pad_polygon(pad)
@@ -187,11 +261,18 @@ def board_obstacles(board: Board) -> list[Obstacle]:
 
 
 def clearance_violations(board: Board, rules) -> list[tuple[str, str, str, float]]:
-    """In-repo DRC: report (layer, net_a, net_b, gap) where two different-net
-    copper shapes are closer than the required clearance. Empty list == clean.
+    """Run the in-repo DRC self-check for inter-net clearance.
 
     This is the fast self-check that runs without kicad-cli: it re-derives copper
     from the (routed) board and checks pairwise spacing per layer via an STRtree.
+
+    Args:
+        board: the (routed) board to check.
+        rules: the `pyautoroute.rules.DesignRules` giving per-net clearances.
+
+    Returns:
+        One ``(layer, net_a, net_b, gap)`` tuple per different-net pair closer
+        than the required clearance; an empty list means the board is clean.
     """
     obs = board_obstacles(board)
     by_layer: dict[str, list[Obstacle]] = {}
@@ -222,6 +303,11 @@ class ObstacleIndex:
     """Per-layer STRtree of obstacle polygons for fast spatial queries."""
 
     def __init__(self, obstacles: list[Obstacle]):
+        """Bucket obstacles by layer and build a per-layer STRtree.
+
+        Args:
+            obstacles: the obstacles to index (e.g. from `board_obstacles`).
+        """
         self._by_layer: dict[str, list[Obstacle]] = {}
         for o in obstacles:
             self._by_layer.setdefault(o.layer, []).append(o)
@@ -230,10 +316,20 @@ class ObstacleIndex:
             self._trees[layer] = STRtree([o.geom for o in obs])
 
     def layers(self) -> list[str]:
+        """Return the layer names that have at least one indexed obstacle."""
         return list(self._by_layer.keys())
 
     def query(self, layer: str, geom) -> list[Obstacle]:
-        """Obstacles on `layer` whose bounding box intersects `geom`."""
+        """Find obstacles on a layer whose bounding box intersects `geom`.
+
+        Args:
+            layer: the copper layer to query.
+            geom: the shapely geometry to test against.
+
+        Returns:
+            Candidate obstacles on `layer` (bbox-level overlap; refine with an
+            exact predicate if needed), or ``[]`` if the layer is unknown.
+        """
         tree = self._trees.get(layer)
         if tree is None:
             return []

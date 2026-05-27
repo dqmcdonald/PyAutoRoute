@@ -16,10 +16,14 @@ When you make such a change, update all three in the same piece of work:
 3. **API docs** — regenerate from the docstrings:
    ```bash
    pip install -e ".[docs]"      # pdoc, into the tf venv
-   pdoc pyautoroute -o docs/api
+   pdoc -d google --mermaid pyautoroute -o docs/api
    ```
    (Also update the relevant module/function docstrings themselves, since the API
-   docs are generated from them.)
+   docs are generated from them. Docstrings use **Google style** — an `Args:`
+   block documents each parameter, `Returns:` the result — so `-d google` renders
+   them. `--mermaid` draws the architecture diagram, which is included on the
+   package landing page via the `.. include:: ../docs/architecture.md` directive
+   in `pyautoroute/__init__.py`, so `docs/architecture.md` is the single source.)
 
 Treat docs as part of "done": a change isn't complete until the docs reflect it.
 

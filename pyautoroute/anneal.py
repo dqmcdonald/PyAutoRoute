@@ -52,6 +52,16 @@ class AnnealResult:
 
 
 def _energy(results, via_weight: float, unrouted_weight: float) -> float:
+    """Compute the optimisation energy of a routing.
+
+    Args:
+        results: per-connection `RouteResult` or `None` (unrouted).
+        via_weight: mm-equivalent cost per via.
+        unrouted_weight: mm-equivalent penalty per unrouted connection.
+
+    Returns:
+        ``wirelength + via_weight*vias + unrouted_weight*unrouted``.
+    """
     length = vias = 0.0
     unrouted = 0
     for r in results:
@@ -64,6 +74,14 @@ def _energy(results, via_weight: float, unrouted_weight: float) -> float:
 
 
 def _aggregate(results):
+    """Summarise a routing's totals.
+
+    Args:
+        results: per-connection `RouteResult` or `None`.
+
+    Returns:
+        ``(routed, unrouted, total_length, total_vias)``.
+    """
     routed = sum(1 for r in results if r is not None)
     length = sum(r.length for r in results if r is not None)
     vias = sum(r.vias for r in results if r is not None)
@@ -71,11 +89,27 @@ def _aggregate(results):
 
 
 def _centroid(conn):
+    """Midpoint of a connection's two pad centres.
+
+    Args:
+        conn: the `pyautoroute.netlist.Connection`.
+
+    Returns:
+        The ``(x, y)`` midpoint in board mm.
+    """
     return ((conn.a.cx + conn.b.cx) / 2.0, (conn.a.cy + conn.b.cy) / 2.0)
 
 
 class _Annealer:
     def __init__(self, state: RoutingState, connections, results, params: AnnealParams):
+        """Set up the annealer over an already-committed routing.
+
+        Args:
+            state: the live routing state (occupancy), mutated in place.
+            connections: the full connection list.
+            results: the current per-connection results; mutated during the run.
+            params: the annealing parameters.
+        """
         self.state = state
         self.conns = connections
         self.results = results
@@ -84,6 +118,14 @@ class _Annealer:
         self.via_weight = params.route_params.via_cost
 
     def _route(self, idx):
+        """Route connection `idx` against the current state.
+
+        Args:
+            idx: the connection index.
+
+        Returns:
+            Its `RouteResult`, or `None` if unroutable now.
+        """
         conn = self.conns[idx]
         grid = self.state.grid
         return router.route_connection(
@@ -92,6 +134,16 @@ class _Annealer:
             self.p.route_params)
 
     def _apply(self, ripped: list[int], suborder: list[int]) -> dict:
+        """Rip up `ripped`, then re-route `suborder`, committing successes.
+
+        Args:
+            ripped: connection indices to rip up first.
+            suborder: connection indices to re-route, in order (same set as
+                `ripped`).
+
+        Returns:
+            A snapshot ``{idx: previous_result}`` for `_revert`.
+        """
         snapshot = {idx: self.results[idx] for idx in ripped}
         for idx in ripped:
             if self.results[idx] is not None:
@@ -104,6 +156,11 @@ class _Annealer:
         return snapshot
 
     def _revert(self, snapshot: dict):
+        """Undo an `_apply`, restoring the pre-move results.
+
+        Args:
+            snapshot: the ``{idx: previous_result}`` returned by `_apply`.
+        """
         for idx in snapshot:
             if self.results[idx] is not None:
                 self.state.ripup(idx)
@@ -130,6 +187,12 @@ class _Annealer:
         return cluster, order
 
     def _propose(self) -> tuple[list[int], list[int]]:
+        """Pick the next move.
+
+        Returns:
+            ``(ripped, suborder)`` — the indices to rip up and the order to
+            re-route them in. See the module docstring for the move mix.
+        """
         n = len(self.conns)
         unrouted = [i for i, r in enumerate(self.results) if r is None]
         if unrouted and self.rng.random() < 0.5:
@@ -147,6 +210,17 @@ class _Annealer:
         return [i], [i]                                 # reroute one
 
     def run(self, on_progress=None, on_snapshot=None) -> AnnealResult:
+        """Run the annealing loop and return the best routing seen.
+
+        Args:
+            on_progress: optional callback ``(it, total, routed, unrouted,
+                energy, best, temp)`` invoked each iteration.
+            on_snapshot: optional callback ``(k, n, results)`` fired
+                ``params.snapshots`` times across the run (see `anneal`).
+
+        Returns:
+            The `AnnealResult` with the best routing and run statistics.
+        """
         E = _energy(self.results, self.via_weight, self.p.unrouted_weight)
         start_E = E
         best_E = E
@@ -208,10 +282,21 @@ def anneal(state: RoutingState, connections, results, params: AnnealParams,
            on_progress=None, on_snapshot=None) -> AnnealResult:
     """Optimise an already-committed routing in place; return the best seen.
 
-    If ``params.snapshots`` is set and ``on_snapshot`` is given, the callback is
-    invoked ``params.snapshots`` times across the run as ``on_snapshot(k, n,
-    results)`` — the intermediate calls capture the live (current) routing as the
-    run crosses each ``k/n`` of its progress, and the final call captures the best
-    routing found. Useful for visualising how annealing improves the board.
+    Args:
+        state: the live routing state (occupancy), mutated in place.
+        connections: the full connection list.
+        results: the current per-connection results to optimise from.
+        params: the annealing parameters (budget, schedule, weights, snapshots).
+        on_progress: optional per-iteration progress callback (see
+            `_Annealer.run`).
+        on_snapshot: optional snapshot callback. When `params.snapshots` is set
+            and this is given, it is invoked ``params.snapshots`` times across
+            the run as ``on_snapshot(k, n, results)`` — intermediate calls
+            capture the live routing as the run crosses each ``k/n`` of its
+            progress, and the final call captures the best routing found. Useful
+            for visualising how annealing improves the board.
+
+    Returns:
+        The `AnnealResult` with the best routing and run statistics.
     """
     return _Annealer(state, connections, results, params).run(on_progress, on_snapshot)

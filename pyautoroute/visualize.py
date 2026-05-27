@@ -9,6 +9,16 @@ _LAYER_COLOR = {"F.Cu": "#cc3333", "B.Cu": "#3366cc"}
 
 
 def render(board: Board, out_path: str, title: str = "PyAutoRoute") -> None:
+    """Write a matplotlib PNG of the board: outline, pads, tracks, and vias.
+
+    Layers are colour-coded (F.Cu red, B.Cu blue) and the Y axis is inverted to
+    match KiCad's Y-down board coordinates.
+
+    Args:
+        board: the (routed) board to render.
+        out_path: destination path for the PNG.
+        title: the plot title.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
