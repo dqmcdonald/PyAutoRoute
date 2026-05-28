@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import configparser
 import datetime
+import textwrap
 import sys
 import time
 from pathlib import Path
@@ -780,27 +781,90 @@ def _format_config_value(action, value) -> str:
     return str(value)
 
 
+def _config_comment(action) -> str:
+    """Return the help text for `action` with %(default)s expanded."""
+    if not action.help:
+        return ""
+    try:
+        return action.help % {"default": action.default,
+                               "metavar": action.metavar or ""}
+    except (KeyError, TypeError):
+        return action.help
+
+
+def _append_option(lines: list, dest: str, action, value,
+                   commented: bool) -> None:
+    """Append one INI entry (comment + key = value) to *lines*.
+
+    If *commented* is True the key=value line is prefixed with ``#`` so it
+    acts as a placeholder the user can uncomment.
+    """
+    help_text = _config_comment(action)
+    if help_text:
+        for chunk in textwrap.wrap(help_text, width=76,
+                                   initial_indent="# ",
+                                   subsequent_indent="# "):
+            lines.append(chunk + "\n")
+    if commented:
+        val_str = _format_config_value(action, value) if value is not None else ""
+        lines.append(f"# {dest} = {val_str}\n")
+    else:
+        lines.append(f"{dest} = {_format_config_value(action, value)}\n")
+    lines.append("\n")
+
+
 def write_config(parser: argparse.ArgumentParser, args, path: str | Path) -> None:
-    """Write the effective settings to an INI file.
+    """Write the effective settings to an INI file with per-option comments.
+
+    Every configurable option is included: options that have a value are
+    written as ``key = value``; options that are unset (``None``) are written
+    as ``# key =`` so they act as documented placeholders.  Within mutually
+    exclusive groups only the active member is written un-commented; the
+    alternatives appear as commented-out placeholders below it.
 
     Args:
-        parser: the CLI parser (for the option set).
+        parser: the CLI parser (for the option set and help strings).
         args: the parsed namespace whose effective values are written.
         path: destination settings-file path.
     """
-    cp = configparser.ConfigParser()
-    cp[_CONFIG_SECTION] = {}
-    for dest, action in _configurable_actions(parser).items():
-        value = getattr(args, dest, None)
-        if value is None:
+    skip = _CONFIG_SKIP
+    ordered = [(a.dest, a) for a in parser._actions
+               if a.option_strings and a.dest not in skip]
+    action_map = dict(ordered)
+
+    # Build a map from dest -> sibling dests for mutually exclusive groups.
+    mutex_siblings: dict[str, list[str]] = {}
+    for group in parser._mutually_exclusive_groups:
+        dests = [a.dest for a in group._group_actions if a.dest not in skip]
+        for dest in dests:
+            mutex_siblings[dest] = [d for d in dests if d != dest]
+
+    lines = [
+        "# PyAutoRoute settings — pass with --config FILE.\n",
+        "# CLI options override these. Lists are comma-separated.\n",
+        "\n",
+        f"[{_CONFIG_SECTION}]\n",
+        "\n",
+    ]
+    written: set[str] = set()
+    for dest, action in ordered:
+        if dest in written:
             continue
-        # key by dest (underscores) so options whose flag differs from their dest
-        # — e.g. --time -> time_budget — round-trip unambiguously
-        cp[_CONFIG_SECTION][dest] = _format_config_value(action, value)
+        written.add(dest)
+        value = getattr(args, dest, None)
+        _append_option(lines, dest, action, value, commented=(value is None))
+
+        # Immediately follow with any mutex siblings, always commented out.
+        for sib in mutex_siblings.get(dest, []):
+            if sib in written:
+                continue
+            written.add(sib)
+            sib_val = getattr(args, sib, None)
+            _append_option(lines, sib, action_map[sib], sib_val,
+                           commented=True)
+
     with open(path, "w") as f:
-        f.write("# PyAutoRoute settings — pass with --config FILE.\n"
-                "# CLI options override these. Lists are comma-separated.\n")
-        cp.write(f)
+        f.writelines(lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
