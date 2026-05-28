@@ -39,14 +39,17 @@ class ToolTip:
         x = self._widget.winfo_rootx() + self._widget.winfo_width() // 2
         y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
         self._tip = tw = tk.Toplevel(self._widget)
+        tw.withdraw()                     # hide before configuring (macOS fix)
         tw.wm_overrideredirect(True)
-        tw.attributes("-topmost", True)   # stay above main window on macOS
+        tw.attributes("-topmost", True)
         tw.wm_geometry(f"+{x}+{y}")
         lbl = tk.Label(tw, text=self._text, justify=tk.LEFT,
                        background="#ffffe0", relief=tk.SOLID, borderwidth=1,
                        font=("TkDefaultFont", 9), wraplength=300,
                        padx=self._PAD, pady=self._PAD)
         lbl.pack()
+        tw.update_idletasks()             # measure label before showing
+        tw.deiconify()                    # show after geometry is settled
 
     def _hide(self) -> None:
         if self._tip is not None:

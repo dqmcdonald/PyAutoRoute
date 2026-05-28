@@ -189,12 +189,28 @@ class App:
     # ── queue drain ───────────────────────────────────────────────────
 
     def _drain(self) -> None:
+        # Drain all pending events; keep only the last BoardSnap to avoid
+        # spending the main thread on intermediate board renders.
+        events: list = []
         try:
             while True:
-                event = self._queue.get_nowait()
-                self._handle_event(event)
+                events.append(self._queue.get_nowait())
         except queue.Empty:
             pass
+
+        last_snap_idx = next(
+            (i for i in range(len(events) - 1, -1, -1)
+             if isinstance(events[i], BoardSnap)),
+            None,
+        )
+        for i, ev in enumerate(events):
+            if isinstance(ev, BoardSnap) and i != last_snap_idx:
+                continue  # skip intermediate board renders
+            try:
+                self._handle_event(ev)
+            except Exception:
+                pass  # don't let one bad event kill the drain loop
+
         # Update elapsed time label while running
         if self._worker is not None and not self._worker.join(0):
             elapsed = time.monotonic() - self._t_run_start

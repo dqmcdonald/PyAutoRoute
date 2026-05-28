@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 
-from matplotlib.collections import LineCollection
+from matplotlib.collections import LineCollection, PolyCollection
 
 from . import geometry
 from .pcb import Board
@@ -139,10 +139,16 @@ def draw_board(ax, board: Board, *, results=None, grid=None,
                             alpha=0.7)
         ax.add_collection(lc)
 
+    pads_by_layer: dict[str, list] = {}
     for pad in board.pads:
         poly = geometry.pad_polygon(pad)
+        coords = list(poly.exterior.coords)
         for layer in pad.copper_layers:
-            ax.fill(*poly.exterior.xy, color=_LAYER_COLOR.get(layer, "#999"), alpha=0.45)
+            pads_by_layer.setdefault(layer, []).append(coords)
+    for layer, polys in pads_by_layer.items():
+        pc = PolyCollection(polys, facecolor=_LAYER_COLOR.get(layer, "#999"),
+                            alpha=0.45, edgecolor="none")
+        ax.add_collection(pc)
 
     if results is not None and grid is not None:
         _draw_results(ax, grid, results)

@@ -33,9 +33,8 @@ def test_draw_board_draws_pads_and_segments():
                    segments=[Segment(5, 5, 15, 5, 0.2, "F.Cu", "A")])
     ax = _ax()
     visualize.draw_board(ax, board, title="t")
-    assert len(ax.patches) == 2                 # one fill per pad
     assert len(ax.lines) >= 1                   # board outline
-    assert len(ax.collections) >= 1             # segment LineCollection
+    assert len(ax.collections) >= 2             # pad PolyCollection + segment LineCollection
     assert ax.get_title() == "t"
     assert ax.yaxis_inverted()                  # KiCad Y-down
 
@@ -45,7 +44,7 @@ def test_draw_board_clears_between_calls():
     ax = _ax()
     visualize.draw_board(ax, board)
     visualize.draw_board(ax, board)             # redraw must not accumulate
-    assert len(ax.patches) == 1
+    assert len(ax.collections) == 1
 
 
 def test_draw_board_renders_in_progress_results():
