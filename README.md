@@ -49,7 +49,8 @@ The original file is never modified — a routed copy is written alongside it.
 | Option | Meaning |
 |---|---|
 | `--pro PROJECT.kicad_pro` | Project file with the design rules (default: the sibling `.kicad_pro`). |
-| `-o, --output FILE` | Output path (default: `INPUT_routed.kicad_pcb`). |
+| `-o, --output FILE` | Output path. Default is named for the run: `INPUT_routed` (route), `INPUT_placed_routed` (`--place`), or `INPUT_placed` (`--place-only`). |
+| `--place-only` | Place the footprints (see `--place`) and write `INPUT_placed.kicad_pcb` **without routing**. |
 | `--grid MM` | Routing grid pitch in mm (default: derived from the rules, ≈ `track/2 + clearance`). Finer = better coverage but slower. A pitch more than ~2× the derived one prints a warning: a coarse grid can't fit a node in the gap beside a pad and so forces vias where a finer grid would route on one layer. |
 | `--iters N` | Run simulated-annealing optimisation for N iterations. |
 | `--time SECONDS` | Run optimisation for a wall-clock budget instead. |
@@ -84,7 +85,11 @@ pyautoroute MyBoard.kicad_pcb --iters 5000 --snapshots 10 --log
 # -> snapshots/MyBoard_anneal_01of10.kicad_pcb ... 10of10, and MyBoard_routed.log
 
 # Experimental: place the footprints first (30 s budget), then route:
+# -> MyBoard_placed_routed.kicad_pcb
 pyautoroute MyBoard.kicad_pcb --place --place-time 30 --time 60 --debug-plot
+
+# Place only, no routing: -> MyBoard_placed.kicad_pcb
+pyautoroute MyBoard.kicad_pcb --place-only --place-time 30 --debug-plot
 ```
 
 ### Auto-placement (experimental)
@@ -111,6 +116,10 @@ Two footprint attributes steer it:
   value of `overlap` (Footprint Properties → Fields → `+`) and that footprint's
   *body* may overlap others (e.g. an Arduino shield sitting over the board it plugs
   into). Its **pads** are still kept clear of other copper.
+
+When `--place` runs and routing follows, the output is named `INPUT_placed_routed`.
+Use `--place-only` to stop after placement and write `INPUT_placed` (no routing) —
+handy for reviewing or hand-tweaking the layout before routing it.
 
 It is experimental: it optimises placement heuristically and does not understand
 mechanical/thermal intent, so review the result. Because it rewrites footprint

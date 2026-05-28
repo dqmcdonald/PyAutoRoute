@@ -308,7 +308,12 @@ the write. The whole stage is transparent to the router, which already consumes
 <p>Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
 text progress <code>Reporter</code> (single-line <code>\r</code> updates on a TTY, line-by-line
 otherwise, silent under <code>--quiet</code>), the metrics report, and the post-write
-self-check. Exit code 2 if the self-check finds a violation. The version
+self-check. <code>default_output</code> names the file for the run — <code>_routed</code>,
+<code>_placed_routed</code> (<code>--place</code>), or <code>_placed</code> (<code>--place-only</code>). <code>--place-only</code> runs
+the placement pass then writes the placed board and returns <em>before</em> the
+netlist/grid/route phases; <code>_finish</code> (debug plot + timing + log close) and the
+self-check are shared with the routing path. Exit code 2 if the self-check finds a
+violation. The version
 (<code>pyautoroute.__version__</code>, read from the installed package metadata) is printed
 on startup and written to the <code>--log</code> header; <code>--version</code> prints it and exits.</p>
 

@@ -164,13 +164,26 @@ class Reporter:
             self.stream.write(msg + "\n")
 
 
-def default_output(input_path: Path) -> Path:
-    """Default routed-output path: ``<input>_routed<suffix>`` beside the input.
+def default_output(input_path: Path, place: bool = False,
+                   place_only: bool = False) -> Path:
+    """Default output path beside the input, named for what the run produced.
 
     Args:
         input_path: the input ``.kicad_pcb`` path.
+        place: whether the run placed the footprints before routing.
+        place_only: whether the run only placed (no routing).
+
+    Returns:
+        ``<input>_placed`` (place only), ``<input>_placed_routed`` (place then
+        route), or ``<input>_routed`` (route only), with the input's suffix.
     """
-    return input_path.with_name(input_path.stem + "_routed" + input_path.suffix)
+    if place_only:
+        tag = "_placed"
+    elif place:
+        tag = "_placed_routed"
+    else:
+        tag = "_routed"
+    return input_path.with_name(input_path.stem + tag + input_path.suffix)
 
 
 def default_pro(input_path: Path) -> Path:
@@ -346,7 +359,9 @@ def run(args: argparse.Namespace) -> int:
         clearance violation.
     """
     input_path = Path(args.input)
-    out_path = Path(args.output) if args.output else default_output(input_path)
+    out_path = (Path(args.output) if args.output
+                else default_output(input_path, place=args.place,
+                                    place_only=args.place_only))
     pro_path = Path(args.pro) if args.pro else default_pro(input_path)
     rep = Reporter(quiet=args.quiet, log_path=_resolve_log_path(args, out_path))
     print(f"PyAutoRoute {__version__}")
@@ -356,7 +371,7 @@ def run(args: argparse.Namespace) -> int:
     rules = load_rules(pro_path)
     pitch = args.grid if args.grid else default_pitch(rules)
 
-    if args.place:
+    if args.place or args.place_only:
         rep.phase(f"placing {len(board.footprints)} footprints (annealing)")
         if args.place_buffer is None:
             args.place_buffer = default_place_buffer(rules)
@@ -374,6 +389,15 @@ def run(args: argparse.Namespace) -> int:
         rep.log(summary)
         if not args.quiet:
             print(f"\n  {summary}")
+
+    if args.place_only:
+        rep.phase("writing placed board")
+        pcb.write_board(board, out_path, new_nodes=None, strip_free_vias=True)
+        placed_board = pcb.load_board(out_path)
+        violations = geometry.clearance_violations(placed_board, rules)
+        rep.done()
+        _report_placed(rep, out_path, board, violations)
+        return _finish(rep, args, out_path, placed_board, violations)
 
     rep.phase("building netlist (MST rats-nest)")
     conns = netlist.build_connections(board, exclude=args.exclude_net)
@@ -455,11 +479,28 @@ def run(args: argparse.Namespace) -> int:
 
     _report(rep, out_path, len(conns), routed, unrouted, length, vias,
             violations, excluded)
+    return _finish(rep, args, out_path, routed_board, violations)
 
+
+def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
+    """Render the optional debug plot, report timing, and close the log.
+
+    Shared tail of both the routing and place-only paths.
+
+    Args:
+        rep: the reporter.
+        args: the parsed CLI namespace.
+        out_path: the output board path (basis for the plot/log names).
+        board: the reloaded output board (rendered when ``--debug-plot``).
+        violations: the self-check violations (empty == clean) for the exit code.
+
+    Returns:
+        Process exit code: 0 if `violations` is empty, else 2.
+    """
     if args.debug_plot:
         from . import visualize
         plot_path = str(out_path.with_suffix(".png"))
-        visualize.render(routed_board, plot_path, title=out_path.name)
+        visualize.render(board, plot_path, title=out_path.name)
         if not args.quiet:
             print(f"  debug plot:    {plot_path}")
         rep.log(f"debug plot -> {plot_path}")
@@ -513,6 +554,36 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
         rep.log(ln)
 
 
+def _report_placed(rep: Reporter, out_path, board, violations) -> None:
+    """Print the place-only metrics summary and mirror it to the log.
+
+    Args:
+        rep: the reporter (for logging the same lines).
+        out_path: the placed-output path.
+        board: the placed board (for the moved-footprint count and outline size).
+        violations: clearance-violation tuples from the self-check (empty ==
+            clean).
+    """
+    moved = sum(1 for fp in board.footprints if fp.moved)
+    rect = next((s for s in board.outline if s.kind == "rect"), None)
+    lines = [
+        f"output:        {out_path}",
+        f"footprints:    {moved}/{len(board.footprints)} moved",
+    ]
+    if rect is not None:
+        (x0, y0), (x1, y1) = rect.data["start"], rect.data["end"]
+        lines.append(f"board outline: {abs(x1 - x0):.1f} x {abs(y1 - y0):.1f} mm")
+    if violations:
+        lines.append(f"SELF-CHECK:    {len(violations)} clearance violation(s)! "
+                     f"e.g. {violations[0]}")
+    else:
+        lines.append("self-check:    clean (0 clearance violations)")
+    print()
+    for ln in lines:
+        print(f"  {ln}")
+        rep.log(ln)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser.
 
@@ -525,12 +596,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"PyAutoRoute {__version__}")
     p.add_argument("input", help="input .kicad_pcb")
     p.add_argument("--pro", help="project .kicad_pro (default: sibling)")
-    p.add_argument("-o", "--output", help="output .kicad_pcb (default: INPUT_routed.kicad_pcb)")
+    p.add_argument("-o", "--output", help="output .kicad_pcb (default: INPUT_routed, "
+                                          "or _placed_routed / _placed when placing)")
     p.add_argument("--grid", type=float, help="grid pitch in mm (default derived from rules)")
     p.add_argument("--place", action="store_true",
                    help="experimental: place footprints (simulated annealing) before "
                         "routing — honours locked footprints and the Autoroute=overlap "
                         "property, and regenerates the Edge.Cuts outline")
+    p.add_argument("--place-only", action="store_true",
+                   help="place the footprints and write the placed board "
+                        "(<input>_placed.kicad_pcb) without routing")
     pg = p.add_mutually_exclusive_group()
     pg.add_argument("--place-iters", type=int, metavar="N",
                     help="placement iteration budget (with --place)")
@@ -598,8 +673,10 @@ def main(argv=None) -> int:
         parser.error("--place-margin must be >= 0")
     if args.place_buffer is not None and args.place_buffer < 0:
         parser.error("--place-buffer must be >= 0")
-    if (args.place_iters or args.place_time) and not args.place:
-        parser.error("--place-iters/--place-time require --place")
+    if (args.place_iters or args.place_time) and not (args.place or args.place_only):
+        parser.error("--place-iters/--place-time require --place or --place-only")
+    if args.place_only and (args.iters or args.time_budget):
+        parser.error("--place-only does not route; drop --iters/--time")
     return run(args)
 
 
