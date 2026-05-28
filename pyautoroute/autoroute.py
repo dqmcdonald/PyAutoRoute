@@ -38,6 +38,7 @@ class Reporter:
         self._t0 = time.time()
         self._c0 = time.process_time()
         self.log_file = open(log_path, "w") if log_path else None
+        self.tag = ""
 
     def phase(self, name: str) -> None:
         """Announce a new phase on the display and in the log.
@@ -61,7 +62,7 @@ class Reporter:
             routed: count routed successfully.
             unrouted: count that failed.
         """
-        msg = (f"routing {done}/{total}  routed={routed} failed={unrouted}")
+        msg = (f"{self.tag}routing {done}/{total}  routed={routed} failed={unrouted}")
         if done == total or done % 10 == 0:
             self.log(msg)
         if self.quiet:
@@ -86,7 +87,7 @@ class Reporter:
             temp: current annealing temperature.
             accept: fraction of recent moves accepted (0..1); falls as T cools.
         """
-        msg = (f"anneal {it}/{total}  T={temp:5.2f}  E={energy:7.1f}  "
+        msg = (f"{self.tag}anneal {it}/{total}  T={temp:5.2f}  E={energy:7.1f}  "
                f"best={best:7.1f}  acc={accept*100:3.0f}%  "
                f"routed={routed} failed={unrouted}")
         if it % 25 == 0:
@@ -495,6 +496,7 @@ def run(args: argparse.Namespace) -> int:
     routed = unrouted = length = vias = 0
     for k in range(runs):
         tag = f"run {k + 1}/{runs}: " if runs > 1 else ""
+        rep.tag = tag
         rep.phase(f"{tag}routing {len(conns)} connections")
         state = router.RoutingState(grid)
         result = router.route_all(state, conns, order, params, on_progress=rep.routing)
