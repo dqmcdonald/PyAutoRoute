@@ -1,0 +1,248 @@
+"""Background worker thread: runs the place/route pipeline and posts events.
+
+The worker's only interaction with the UI is to push immutable event objects
+onto a ``queue.Queue``.  All board mutations happen here; the snapshot copies
+placed in ``BoardSnap`` events are made while the board is in a consistent
+state so the main thread can read them safely.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import queue
+import threading
+import time
+import traceback
+from pathlib import Path
+
+from .events import BoardSnap, Done, Error, Phase, Progress
+
+
+# Throttle placement board snapshots: min seconds between BoardSnap events.
+_PLACE_SNAP_INTERVAL = 0.3
+# Routing annealing snapshot count for live board updates.
+_ANNEAL_SNAP_COUNT = 40
+
+
+def _snap_pads(board):
+    """Return a shallow Board copy with frozen pad positions (for placement)."""
+    pads_copy = [dataclasses.replace(p) for p in board.pads]
+    return dataclasses.replace(board, pads=pads_copy)
+
+
+class Worker:
+    """Runs the pipeline in a daemon thread; cancel via ``cancel_event``."""
+
+    def __init__(self, event_queue: queue.Queue,
+                 cancel_event: threading.Event):
+        self._q = event_queue
+        self._cancel = cancel_event
+        self._thread: threading.Thread | None = None
+
+    def start(self, cfg) -> None:
+        """Launch the pipeline for the given ``RunConfig`` *cfg*."""
+        self._thread = threading.Thread(
+            target=self._run, args=(cfg,), daemon=True)
+        self._thread.start()
+
+    def join(self, timeout: float = 0) -> bool:
+        if self._thread is None:
+            return True
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    # ------------------------------------------------------------------
+    def _post(self, event) -> None:
+        self._q.put(event)
+
+    def _run(self, cfg) -> None:
+        try:
+            self._pipeline(cfg)
+        except Exception as exc:
+            self._post(Error(exc, traceback.format_exc()))
+
+    def _pipeline(self, cfg) -> None:
+        from pathlib import Path as _P
+
+        from pyautoroute import anneal, netlist, pcb
+        from pyautoroute import placement as place_mod
+        from pyautoroute import router
+        from pyautoroute.autoroute import (
+            default_output, default_pitch, default_place_buffer,
+            _results_to_nodes,
+        )
+        from pyautoroute import geometry
+        from pyautoroute.grid import Grid
+        from pyautoroute.rules import load_rules
+
+        input_path = _P(cfg.input)
+        place = cfg.place
+        place_only = cfg.place_only
+        out_path = default_output(input_path, place=place,
+                                  place_only=place_only)
+
+        self._post(Phase("parsing board + rules"))
+        board = pcb.load_board(input_path)
+        pro_path = (_P(cfg.pro) if cfg.pro
+                    else input_path.with_suffix(".kicad_pro"))
+        if not pro_path.exists():
+            pro_path = input_path.with_name(
+                input_path.stem + ".kicad_pro")
+        rules = load_rules(pro_path)
+        pitch = cfg.grid if cfg.grid else default_pitch(rules)
+
+        # ---- placement -----------------------------------------------
+        if place or place_only:
+            self._post(Phase(f"placing {len(board.footprints)} footprints"))
+            if cfg.place_buffer is None:
+                buf = default_place_buffer(rules)
+            else:
+                buf = cfg.place_buffer
+
+            last_snap = [0.0]
+
+            def on_place(it, total, energy, best, temp, accept):
+                self._post(Progress("placing", it, total, energy, best,
+                                    temp, accept, 0, 0))
+                now = time.monotonic()
+                if now - last_snap[0] > _PLACE_SNAP_INTERVAL:
+                    last_snap[0] = now
+                    self._post(BoardSnap(_snap_pads(board)))
+                if self._cancel.is_set():
+                    return
+
+            pp = place_mod.PlaceParams(
+                iters=cfg.place_iters,
+                time_budget=cfg.place_time,
+                seed=cfg.seed,
+                exclude=cfg.exclude_net or [],
+                overlap_weight=cfg.place_overlap_weight,
+                compact_weight=cfg.place_compact_weight,
+                buffer=buf,
+                t_start=cfg.place_temps[0],
+                t_end=cfg.place_temps[1],
+                step=cfg.place_step,
+                rotate_mode=cfg.place_rotate,
+            )
+            place_mod.place(board, pp,
+                            on_progress=on_place,
+                            runs=max(1, cfg.place_runs),
+                            cancel=self._cancel)
+            pcb.apply_placement(board, margin=cfg.place_margin)
+            pcb.sync_tree_from_placement(board)
+            # Final placement snapshot
+            self._post(BoardSnap(_snap_pads(board)))
+
+        if place_only:
+            self._post(Phase("writing placed board"))
+            pcb.write_board(board, out_path, new_nodes=None,
+                            strip_free_vias=True)
+            placed = pcb.load_board(out_path)
+            violations = geometry.clearance_violations(placed, rules)
+            self._post(Done(str(out_path), 0, 0, 0, 0.0, 0,
+                            violations, placed))
+            return
+
+        if self._cancel.is_set():
+            self._post(Phase("cancelled"))
+            return
+
+        # ---- routing -------------------------------------------------
+        self._post(Phase("building netlist"))
+        conns = netlist.build_connections(board, exclude=cfg.exclude_net or [])
+
+        self._post(Phase(f"building {pitch}mm routing grid"))
+        grid = Grid(board, rules, pitch)
+
+        annealing = bool(cfg.iters or cfg.time_budget)
+        runs = max(1, cfg.runs)
+        if runs > 1 and not annealing:
+            runs = 1  # greedy is deterministic
+
+        params = router.RouteParams(via_cost=cfg.via_weight)
+        order = netlist.greedy_order(conns)
+
+        best_energy = float("inf")
+        final_results = None
+        routed = unrouted = length = vias = 0
+
+        for k in range(runs):
+            if self._cancel.is_set():
+                break
+            tag = f"run {k + 1}/{runs}: " if runs > 1 else ""
+            self._post(Phase(f"{tag}routing {len(conns)} connections"))
+
+            def on_route(done, total, r, u):
+                self._post(Progress("routing", done, total, 0.0, 0.0,
+                                    0.0, 0.0, r, u))
+
+            state = router.RoutingState(grid)
+            result = router.route_all(state, conns, order, params,
+                                      on_progress=on_route)
+            # Board snap after greedy routing
+            self._post(BoardSnap(
+                dataclasses.replace(board),
+                results=list(result.results),
+                grid=grid,
+            ))
+            run_results = result.results
+            run_metrics = (result.routed, result.unrouted,
+                           result.total_length, result.total_vias)
+
+            if annealing:
+                self._post(Phase(f"{tag}annealing"))
+
+                def on_anneal(it, total, r, u, energy, best, temp, accept):
+                    self._post(Progress("annealing", it, total, energy,
+                                        best, temp, accept, r, u))
+
+                def on_snap(snap_k, snap_n, snap_results):
+                    self._post(BoardSnap(
+                        dataclasses.replace(board),
+                        results=snap_results,
+                        grid=grid,
+                    ))
+
+                ap = anneal.AnnealParams(
+                    iters=cfg.iters,
+                    time_budget=cfg.time_budget,
+                    seed=cfg.seed + k,
+                    snapshots=_ANNEAL_SNAP_COUNT,
+                    unrouted_weight=cfg.unrouted_weight,
+                    t_start=cfg.anneal_temps[0],
+                    t_end=cfg.anneal_temps[1],
+                    route_params=params,
+                )
+                aout = anneal.anneal(
+                    state, conns, list(result.results), ap,
+                    on_progress=on_anneal,
+                    on_snapshot=on_snap,
+                    cancel=self._cancel,
+                )
+                run_results = aout.results
+                run_metrics = (aout.routed, aout.unrouted,
+                               aout.total_length, aout.total_vias)
+                run_energy = aout.best_energy
+            else:
+                run_energy = anneal._energy(run_results, cfg.via_weight,
+                                            cfg.unrouted_weight)
+
+            if run_energy < best_energy:
+                best_energy = run_energy
+                final_results = run_results
+                routed, unrouted, length, vias = run_metrics
+
+        if final_results is None:
+            self._post(Phase("cancelled before routing completed"))
+            return
+
+        self._post(Phase("writing routed board"))
+        pcb.write_board(board, out_path,
+                        new_nodes=_results_to_nodes(board, grid, final_results),
+                        strip_free_vias=True)
+        routed_board = pcb.load_board(out_path)
+        violations = geometry.clearance_violations(routed_board, rules)
+        total = routed + unrouted
+        self._post(BoardSnap(routed_board))
+        self._post(Done(str(out_path), total, routed, unrouted,
+                        length, vias, violations, routed_board))
