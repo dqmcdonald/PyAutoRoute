@@ -162,6 +162,7 @@ class App:
             on_stop=self._cancel_run,
             on_apply=self._apply_to_project,
             on_suggest=self._suggest,
+            on_open=self._open_board,
         )
         pw.add(self._controls, weight=0)
 

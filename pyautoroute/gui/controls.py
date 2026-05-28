@@ -119,12 +119,14 @@ class ControlsPanel(ttk.Frame):
     def __init__(self, parent,
                  on_run: Callable, on_stop: Callable,
                  on_apply: Callable, on_suggest: Callable,
+                 on_open: Callable | None = None,
                  **kw):
         super().__init__(parent, **kw)
         self._on_run = on_run
         self._on_stop = on_stop
         self._on_apply = on_apply
         self._on_suggest = on_suggest
+        self._on_open = on_open
 
         # ── vars ──
         self._input_path = tk.StringVar()
@@ -214,16 +216,16 @@ class ControlsPanel(ttk.Frame):
             ttk.Radiobutton(brow, text=lbl, variable=self._budget_kind,
                             value=val).pack(side=tk.LEFT, padx=2)
         budget_e = _entry(rf, self._budget_val)
-        budget_e.grid(row=1, column=1, sticky=tk.EW, padx=4)
+        budget_e.grid(row=2, column=1, sticky=tk.EW, padx=4)
         add_tooltip(budget_e,
                     "Iteration count or time budget (seconds) for annealing. "
                     "Leave blank for greedy-only routing.")
         runs_e = _entry(rf, self._runs, width=6)
-        _row(rf, 2, "Runs:", runs_e,
+        _row(rf, 3, "Runs:", runs_e,
              "Number of independent routing runs; the lowest-energy result is kept. "
              "Only useful with an iteration/time budget.")
         excl_e = _entry(rf, self._exclude_net, width=20)
-        _row(rf, 3, "Exclude net:", excl_e,
+        _row(rf, 4, "Exclude net:", excl_e,
              "Comma-separated net names or glob patterns to leave un-routed "
              "(e.g. GND, PWR_*).")
 
@@ -237,23 +239,23 @@ class ControlsPanel(ttk.Frame):
                             variable=self._place_budget_kind,
                             value=val).pack(side=tk.LEFT, padx=2)
         pbudget_e = _entry(pf, self._place_budget_val)
-        pbudget_e.grid(row=0, column=1, sticky=tk.EW, padx=4)
+        pbudget_e.grid(row=1, column=1, sticky=tk.EW, padx=4)
         add_tooltip(pbudget_e,
                     "Iteration count or time budget for placement annealing.")
         pruns_e = _entry(pf, self._place_runs, width=6)
-        _row(pf, 1, "Runs:", pruns_e,
+        _row(pf, 2, "Runs:", pruns_e,
              "Number of independent placement runs; the lowest-energy is kept.")
         pm_e = _entry(pf, self._place_margin, width=8)
-        _row(pf, 2, "Margin (mm):", pm_e,
+        _row(pf, 3, "Margin (mm):", pm_e,
              "Gap (mm) around parts for the regenerated board outline.")
         pb_e = _entry(pf, self._place_buffer, width=8)
-        _row(pf, 3, "Buffer (mm):", pb_e,
+        _row(pf, 4, "Buffer (mm):", pb_e,
              "Keep-out gap between footprints during placement. "
              "Leave blank to derive from design-rule clearance.")
         rot_cb = ttk.Combobox(pf, textvariable=self._place_rotate,
                               values=["ortho", "free", "none"],
                               state="readonly", width=10)
-        _row(pf, 4, "Rotation:", rot_cb,
+        _row(pf, 5, "Rotation:", rot_cb,
              "Placement rotation moves: ortho (±90/180°), free (any angle), "
              "or none.")
 
@@ -337,6 +339,8 @@ class ControlsPanel(ttk.Frame):
         if not path:
             return
         self.set_input(path)
+        if self._on_open:
+            self._on_open(path)
 
     def set_input(self, path: str) -> None:
         p = Path(path)
