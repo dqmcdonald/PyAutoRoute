@@ -98,7 +98,7 @@ class Reporter:
         elif it % 25 == 0:
             self.stream.write(line + "\n")
 
-    def placing(self, it, total, energy, best, temp) -> None:
+    def placing(self, it, total, energy, best, temp, accept) -> None:
         """Report a placement-annealing iteration.
 
         Args:
@@ -107,8 +107,10 @@ class Reporter:
             energy: current placement energy.
             best: best energy seen so far.
             temp: current annealing temperature.
+            accept: fraction of recent moves accepted (0..1); falls as T cools.
         """
-        msg = (f"place {it}/{total}  T={temp:5.2f}  E={energy:8.1f}  best={best:8.1f}")
+        msg = (f"place {it}/{total}  T={temp:5.2f}  E={energy:8.1f}  "
+               f"best={best:8.1f}  acc={accept*100:3.0f}%")
         if it % 25 == 0:
             self.log(msg)
         if self.quiet:
@@ -321,6 +323,8 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
                 f"buffer {args.place_buffer} mm, "
                 f"overlap wt {args.place_overlap_weight}, "
                 f"compact wt {args.place_compact_weight})")
+        rep.log(f"place temps    {args.place_temps[0]} -> {args.place_temps[1]}")
+        rep.log(f"place step     {args.place_step} mm, rotate {args.place_rotate}")
         if args.place_iters:
             rep.log(f"place iters    {args.place_iters}")
         if args.place_time:
@@ -378,17 +382,25 @@ def run(args: argparse.Namespace) -> int:
         pp = placement.PlaceParams(
             iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
             exclude=args.exclude_net, overlap_weight=args.place_overlap_weight,
-            compact_weight=args.place_compact_weight, buffer=args.place_buffer)
+            compact_weight=args.place_compact_weight, buffer=args.place_buffer,
+            t_start=args.place_temps[0], t_end=args.place_temps[1],
+            step=args.place_step, rotate_mode=args.place_rotate)
         pout = placement.place(board, pp, on_progress=rep.placing)
         pcb.apply_placement(board, margin=args.place_margin)
         pcb.sync_tree_from_placement(board)
         rep.done()
-        summary = (f"place: {pout.iterations} iters, {pout.accepted} accepted, "
+        summary = (f"place: {pout.iterations} iters, "
+                   f"{pout.accepted} accepted ({pout.accept_ratio*100:.0f}%), "
                    f"{pout.moved} moved, energy "
                    f"{pout.start_energy:.1f} -> {pout.best_energy:.1f}")
+        breakdown = (f"placement: ratsnest {pout.final_ratsnest:.1f} mm, "
+                     f"overlap {pout.final_overlap:.1f} mm2, "
+                     f"bbox {pout.final_bbox:.0f} mm2")
         rep.log(summary)
+        rep.log(breakdown)
         if not args.quiet:
             print(f"\n  {summary}")
+            print(f"  {breakdown}")
 
     if args.place_only:
         rep.phase("writing placed board")
@@ -626,6 +638,18 @@ def build_parser() -> argparse.ArgumentParser:
                    default=placement.PlaceParams.compact_weight, metavar="W",
                    help="placement cost per mm² of layout bounding box, pulling the "
                         "parts together (default %(default)s)")
+    p.add_argument("--place-temps", nargs=2, type=float, metavar=("START", "END"),
+                   default=(placement.PlaceParams.t_start, placement.PlaceParams.t_end),
+                   help="placement annealing start/end temperature for the geometric "
+                        "cooling schedule; START>END>0 (default %(default)s)")
+    p.add_argument("--place-step", type=float,
+                   default=placement.PlaceParams.step, metavar="MM",
+                   help="max placement translate step (mm) at the start temperature "
+                        "(default %(default)s)")
+    p.add_argument("--place-rotate", choices=("ortho", "free", "none"),
+                   default=placement.PlaceParams.rotate_mode,
+                   help="placement rotation moves: ortho (+/-90/180), free (any "
+                        "angle), or none (default %(default)s)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--iters", type=int, help="optimisation iteration budget")
     g.add_argument("--time", type=float, dest="time_budget", help="optimisation time budget (s)")
@@ -673,6 +697,11 @@ def main(argv=None) -> int:
         parser.error("--place-margin must be >= 0")
     if args.place_buffer is not None and args.place_buffer < 0:
         parser.error("--place-buffer must be >= 0")
+    pt_start, pt_end = args.place_temps
+    if not (pt_start > pt_end > 0):
+        parser.error("--place-temps requires START > END > 0")
+    if args.place_step <= 0:
+        parser.error("--place-step must be > 0")
     if (args.place_iters or args.place_time) and not (args.place or args.place_only):
         parser.error("--place-iters/--place-time require --place or --place-only")
     if args.place_only and (args.iters or args.time_budget):

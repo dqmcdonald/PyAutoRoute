@@ -21,8 +21,9 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
   from this term under cooling, with no separate phase.
 
 Moves (over the *movable* footprints — locked ones are fixed obstacles): translate
-by a temperature-scaled random step, rotate by ±90°/180°, or swap two footprints'
-origins. Worse moves are accepted with Metropolis probability under a geometric
+by a temperature-scaled random step, rotate (``rotate_mode``: ``ortho`` = ±90°/180°,
+``free`` = any angle, ``none`` = no rotation), or swap two footprints' origins.
+Worse moves are accepted with Metropolis probability under a geometric
 ``t_start → t_end`` schedule; the best-seen placement is kept and left on the
 board. Pad absolute coordinates are kept in sync on every move
 (`pcb.Footprint.sync_pads`) so the energy geometry stays consistent; after the run
@@ -35,6 +36,7 @@ from __future__ import annotations
 import math
 import random
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from shapely.geometry import box
@@ -42,6 +44,11 @@ from shapely.strtree import STRtree
 
 from . import netlist
 from .pcb import Board, Footprint, Pad
+
+# Window (in iterations) over which the live acceptance ratio is measured, so the
+# reported rate tracks how the cooling schedule bites (it falls towards zero as T
+# cools) rather than being dominated by the hot start. Mirrors `anneal`.
+_ACCEPT_WINDOW = 100
 
 
 @dataclass
@@ -54,6 +61,7 @@ class PlaceParams:
     compact_weight: float = 0.02      # mm-equivalent cost per mm² of layout bbox
     step: float = 20.0                # max translate step (mm) at t_start
     buffer: float = 0.5               # keep-out gap (mm) enforced between footprints
+    rotate_mode: str = "ortho"        # "ortho" (+/-90/180), "free" (any angle), "none"
     seed: int = 0
     exclude: list[str] = field(default_factory=list)
 
@@ -65,6 +73,14 @@ class PlaceResult:
     iterations: int
     accepted: int
     moved: int                        # footprints whose pose changed from the input
+    final_ratsnest: float = 0.0       # energy breakdown at the best placement
+    final_overlap: float = 0.0        # penalised footprint overlap area (mm²)
+    final_bbox: float = 0.0           # layout bounding-box area (mm²)
+
+    @property
+    def accept_ratio(self) -> float:
+        """Fraction of proposed moves accepted over the run (0 if none made)."""
+        return self.accepted / self.iterations if self.iterations else 0.0
 
 
 def _half_extent(pad: Pad) -> float:
@@ -141,8 +157,8 @@ class _Placer:
                     total += bi.intersection(boxes[j]).area
         return total
 
-    def _energy(self) -> float:
-        """Current placement energy (see the module docstring)."""
+    def _energy_components(self) -> tuple[float, float, float]:
+        """Return the ``(ratsnest, overlap_area, bbox_area)`` energy terms."""
         rats = sum(c.est_length
                    for c in netlist.build_connections(self.board, self.p.exclude))
         boxes = [self._fp_box(fp) for fp in self.boxed]
@@ -155,6 +171,11 @@ class _Placer:
             bbox_area = max(0.0, maxx - minx) * max(0.0, maxy - miny)
         else:
             bbox_area = 0.0
+        return rats, overlap, bbox_area
+
+    def _energy(self) -> float:
+        """Current placement energy (see the module docstring)."""
+        rats, overlap, bbox_area = self._energy_components()
         return rats + self.p.overlap_weight * overlap + self.p.compact_weight * bbox_area
 
     @staticmethod
@@ -190,8 +211,11 @@ class _Placer:
             return snap
         fp = self.rng.choice(self.movable)
         snap = self._snapshot([fp])
-        if r < 0.5:                                          # rotate
-            fp.angle = (fp.angle + self.rng.choice((90.0, -90.0, 180.0))) % 360.0
+        if self.p.rotate_mode != "none" and r < 0.5:         # rotate
+            if self.p.rotate_mode == "free":
+                fp.angle = self.rng.uniform(0.0, 360.0)
+            else:                                            # "ortho"
+                fp.angle = (fp.angle + self.rng.choice((90.0, -90.0, 180.0))) % 360.0
         else:                                                # translate
             s = self.p.step * temp_frac
             fp.x += self.rng.uniform(-s, s)
@@ -203,22 +227,26 @@ class _Placer:
         """Run the annealing loop; leave the board at the best placement seen.
 
         Args:
-            on_progress: optional callback ``(it, total, energy, best, temp)``
-                invoked each iteration.
+            on_progress: optional callback ``(it, total, energy, best, temp,
+                accept)`` invoked each iteration, where ``accept`` is the fraction
+                of moves accepted over the last ``_ACCEPT_WINDOW`` iterations.
 
         Returns:
-            The `PlaceResult` with start/best energy and run statistics.
+            The `PlaceResult` with start/best energy, run statistics, and the
+            energy breakdown at the best placement.
         """
         for fp in self.boxed:
             fp.sync_pads()
         if not self.movable:
             E = self._energy()
-            return PlaceResult(E, E, 0, 0, 0)
+            rats, overlap, bbox = self._energy_components()
+            return PlaceResult(E, E, 0, 0, 0, rats, overlap, bbox)
 
         E = self._energy()
         start_E = best_E = E
         best = self._snapshot(self.movable)
         accepted = 0
+        recent = deque(maxlen=_ACCEPT_WINDOW)   # 1/0 per recent move, for the live ratio
 
         total = self.p.iters if self.p.iters else 1_000_000
         t0 = time.time()
@@ -239,7 +267,8 @@ class _Placer:
             snap = self._move(T / self.p.t_start)
             E_new = self._energy()
             dE = E_new - E
-            if dE <= 0 or self.rng.random() < math.exp(-dE / max(T, 1e-9)):
+            accept = dE <= 0 or self.rng.random() < math.exp(-dE / max(T, 1e-9))
+            if accept:
                 E = E_new
                 accepted += 1
                 if E < best_E:
@@ -247,14 +276,16 @@ class _Placer:
                     best = self._snapshot(self.movable)
             else:
                 self._restore(snap)
+            recent.append(1 if accept else 0)
 
             it += 1
             if on_progress is not None:
-                on_progress(it, total, E, best_E, T)
+                on_progress(it, total, E, best_E, T, sum(recent) / len(recent))
 
         self._restore(best)
         moved = sum(1 for fp in self.board.footprints if fp.moved)
-        return PlaceResult(start_E, best_E, it, accepted, moved)
+        rats, overlap, bbox = self._energy_components()
+        return PlaceResult(start_E, best_E, it, accepted, moved, rats, overlap, bbox)
 
 
 def place(board: Board, params: PlaceParams | None = None,

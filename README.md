@@ -121,6 +121,23 @@ When `--place` runs and routing follows, the output is named `INPUT_placed_route
 Use `--place-only` to stop after placement and write `INPUT_placed` (no routing) —
 handy for reviewing or hand-tweaking the layout before routing it.
 
+Placement options (all also work with `--place-only`):
+
+| Option | Meaning |
+|---|---|
+| `--place-iters N` / `--place-time S` | Placement budget (iterations or wall-clock seconds). |
+| `--place-temps START END` | Start/end temperature of the placement cooling schedule (default `8.0 0.05`); `START > END > 0`. |
+| `--place-step MM` | Max translate step (mm) at the start temperature (default 20). Shrinks as the schedule cools. |
+| `--place-rotate {ortho,free,none}` | Rotation moves: `ortho` (±90/180, default), `free` (any angle), or `none`. |
+| `--place-buffer MM` | Keep-out gap enforced between footprints (default: derived from the design-rule clearance). |
+| `--place-margin MM` | Margin around the parts for the regenerated outline (default 2). |
+| `--place-overlap-weight W` / `--place-compact-weight W` | Energy weights for overlap area and layout compactness. |
+
+The live placement progress shows the temperature, current/best energy, and the
+recent **acceptance ratio** (`acc=…%`, which falls as the schedule cools); the
+end-of-placement summary reports the acceptance ratio and an energy breakdown
+(ratsnest length, overlap area, bounding-box area).
+
 It is experimental: it optimises placement heuristically and does not understand
 mechanical/thermal intent, so review the result. Because it rewrites footprint
 positions and the outline, inspect the output in KiCad before relying on it.

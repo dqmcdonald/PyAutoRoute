@@ -179,6 +179,27 @@ def test_cli_place_only_rejects_routing_flags():
         autoroute.main(["b.kicad_pcb", "--place-only", "--iters", "10"])
 
 
+def test_cli_placement_control_flags_parse():
+    from pyautoroute import placement
+    p = autoroute.build_parser()
+    a = p.parse_args(["b.kicad_pcb"])
+    assert tuple(a.place_temps) == (placement.PlaceParams.t_start,
+                                    placement.PlaceParams.t_end)
+    assert a.place_step == placement.PlaceParams.step
+    assert a.place_rotate == placement.PlaceParams.rotate_mode
+    a2 = p.parse_args(["b.kicad_pcb", "--place-temps", "6", "0.1",
+                       "--place-step", "8", "--place-rotate", "none"])
+    assert tuple(a2.place_temps) == (6.0, 0.1)
+    assert a2.place_step == 8.0 and a2.place_rotate == "none"
+
+
+def test_cli_rejects_invalid_placement_controls():
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--place-temps", "0.1", "6"])
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--place-step", "0"])
+
+
 def test_coarse_grid_note():
     # no warning at the derived pitch or up to 2x it; warn beyond that, and the
     # message suggests the derived pitch as the remedy

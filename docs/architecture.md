@@ -161,10 +161,14 @@ A* bend/via cost weights remain `AnnealParams`/`RouteParams` defaults.
 
 ### `placement.py` — optional footprint placement
 The placement analogue of `anneal.py`, enabled by `--place`. Simulated annealing
-over **footprint poses** (not tracks): moves are translate (a temperature-scaled
-random step), rotate ±90°/180°, or swap two footprints' origins, with Metropolis
-acceptance under the same geometric `t_start → t_end` schedule and the best-seen
-placement kept. Energy
+over **footprint poses** (not tracks): moves are translate (a `--place-step`,
+temperature-scaled random step), rotate (`--place-rotate`: `ortho` ±90°/180°,
+`free` any angle, or `none`), or swap two footprints' origins, with Metropolis
+acceptance under a geometric `--place-temps` (`t_start → t_end`) schedule and the
+best-seen placement kept. A recent-window **acceptance ratio** is tracked (as in
+`anneal`) and reported via the progress callback; `PlaceResult` also carries the
+energy breakdown (`final_ratsnest`/`final_overlap`/`final_bbox`) at the best
+placement. Energy
 `E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area`:
 
 - **ratsnest** — total MST length over pad centroids, reusing `netlist`
@@ -187,7 +191,8 @@ the board at the best placement; `autoroute` then calls `pcb.apply_placement` (p
 + new outline) before building the grid, and `pcb.sync_tree_from_placement` before
 the write. The whole stage is transparent to the router, which already consumes
 `Board.pads` and `Board.outline`. CLI knobs: `--place-iters`/`--place-time`
-(budget), `--place-margin`, `--place-buffer` (inter-footprint keep-out),
+(budget), `--place-temps` (schedule), `--place-step`, `--place-rotate`,
+`--place-margin`, `--place-buffer` (inter-footprint keep-out),
 `--place-overlap-weight`, `--place-compact-weight`; `--seed` is shared.
 
 ### `autoroute.py` — CLI & orchestration

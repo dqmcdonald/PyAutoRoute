@@ -160,6 +160,42 @@ def test_apply_placement_outline_encloses_pads_with_margin():
     assert min(p.cx for p in board.pads) - x0 >= 3.0 - 1e-6
 
 
+def test_place_rotate_none_keeps_angles():
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    board = _board([a, b])
+    placement.place(board, placement.PlaceParams(iters=2000, seed=5,
+                                                 rotate_mode="none"))
+    assert a.angle == 0.0 and b.angle == 0.0
+
+
+def test_place_reports_acceptance_and_breakdown():
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    board = _board([a, b])
+    seen = []
+    res = placement.place(board, placement.PlaceParams(iters=500, seed=6),
+                          on_progress=lambda *a: seen.append(a))
+    assert 0.0 <= res.accept_ratio <= 1.0
+    assert res.iterations == 500
+    # progress callback now carries the live acceptance fraction as a 6th arg
+    assert seen and len(seen[-1]) == 6 and 0.0 <= seen[-1][5] <= 1.0
+    # energy breakdown is populated and roughly reconstitutes the best energy
+    p = placement.PlaceParams()
+    recon = (res.final_ratsnest + p.overlap_weight * res.final_overlap
+             + p.compact_weight * res.final_bbox)
+    assert math.isclose(recon, res.best_energy, rel_tol=1e-6)
+
+
+def test_place_custom_temps_and_step_run():
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0")])
+    b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0")])
+    board = _board([a, b])
+    res = placement.place(board, placement.PlaceParams(
+        iters=300, seed=7, t_start=2.0, t_end=0.1, step=5.0))
+    assert res.best_energy <= res.start_energy + 1e-6
+
+
 def test_place_no_movable_footprints_is_noop():
     fixed = _fp("LOCK", 10.0, 10.0, [(0.0, 0.0, "N0")], locked=True)
     board = _board([fixed])

@@ -269,10 +269,14 @@ A* bend/via cost weights remain <code>AnnealParams</code>/<code>RouteParams</cod
 <h3 id="placementpy-optional-footprint-placement"><code>placement.py</code> — optional footprint placement</h3>
 
 <p>The placement analogue of <code>anneal.py</code>, enabled by <code>--place</code>. Simulated annealing
-over <strong>footprint poses</strong> (not tracks): moves are translate (a temperature-scaled
-random step), rotate ±90°/180°, or swap two footprints' origins, with Metropolis
-acceptance under the same geometric <code>t_start → t_end</code> schedule and the best-seen
-placement kept. Energy
+over <strong>footprint poses</strong> (not tracks): moves are translate (a <code>--place-step</code>,
+temperature-scaled random step), rotate (<code>--place-rotate</code>: <code>ortho</code> ±90°/180°,
+<code>free</code> any angle, or <code>none</code>), or swap two footprints' origins, with Metropolis
+acceptance under a geometric <code>--place-temps</code> (<code>t_start → t_end</code>) schedule and the
+best-seen placement kept. A recent-window <strong>acceptance ratio</strong> is tracked (as in
+<code>anneal</code>) and reported via the progress callback; <code>PlaceResult</code> also carries the
+energy breakdown (<code>final_ratsnest</code>/<code>final_overlap</code>/<code>final_bbox</code>) at the best
+placement. Energy
 <code>E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area</code>:</p>
 
 <ul>
@@ -299,7 +303,8 @@ the board at the best placement; <code>autoroute</code> then calls <code>pcb.app
 <li>new outline) before building the grid, and <code>pcb.sync_tree_from_placement</code> before
 the write. The whole stage is transparent to the router, which already consumes
 <code>Board.pads</code> and <code>Board.outline</code>. CLI knobs: <code>--place-iters</code>/<code>--place-time</code>
-(budget), <code>--place-margin</code>, <code>--place-buffer</code> (inter-footprint keep-out),
+(budget), <code>--place-temps</code> (schedule), <code>--place-step</code>, <code>--place-rotate</code>,
+<code>--place-margin</code>, <code>--place-buffer</code> (inter-footprint keep-out),
 <code>--place-overlap-weight</code>, <code>--place-compact-weight</code>; <code>--seed</code> is shared.</li>
 </ul>
 
