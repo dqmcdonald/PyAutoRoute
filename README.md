@@ -65,6 +65,7 @@ The original file is never modified — a routed copy is written alongside it.
 | `--config FILE` | Read options from an INI settings file (see below). Options given on the command line override it. |
 | `--write-config [FILE]` | Write the effective settings to an INI file and exit. Bare `--write-config` writes `<input>.pyautoroute.cfg` beside the board. |
 | `--log [FILE]` | Write a verbose log of the input parameters and routing/annealing progress. Bare `--log` writes `<output>.log`; `--log FILE` uses the given path. |
+| `--fix-values` | Move footprint **Value** text to the silkscreen layer before routing. KiCad libraries often default to `F.Fab`/`B.Fab` for Value text; this flag moves it to `F.SilkS`/`B.SilkS` so it appears on the physical silkscreen. The fix is applied in-memory and written to the output file. Off by default. Also available as a standalone `pyautoroute-fix --values` command and in the GUI's Advanced settings. |
 | `--debug-plot` | Also write a `.png` render of the routed board. |
 | `--quiet` | Suppress the live progress display (final summary only). |
 | `--version` | Print the version and exit. (The version is also printed on startup and written to the `--log` header.) |

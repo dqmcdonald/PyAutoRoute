@@ -390,6 +390,11 @@ def run(args: argparse.Namespace) -> int:
     rules = load_rules(pro_path)
     pitch = args.grid if args.grid else default_pitch(rules)
 
+    if getattr(args, "fix_values", False):
+        n = pcb.fix_value_layers(board)
+        if n:
+            print(f"  fix-values:    moved {n} Value text node(s) to silkscreen")
+
     if board.segments:
         from pyautoroute.report import routing_stats
         init = routing_stats(board, rules)
@@ -1005,6 +1010,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--log", nargs="?", const="", default=None, metavar="FILE",
                    help="write a verbose log of parameters and routing/anneal "
                         "progress (bare --log uses <output>.log)")
+    p.add_argument("--fix-values", action="store_true",
+                   help="move footprint Value text to the silkscreen layer before routing")
     p.add_argument("--debug-plot", action="store_true", help="write a PNG render")
     p.add_argument("--quiet", action="store_true", help="suppress live progress display")
     return p

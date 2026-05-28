@@ -85,6 +85,8 @@ class Worker:
 
         self._post(Phase("parsing board + rules"))
         board = pcb.load_board(input_path)
+        if getattr(cfg, "fix_values", False):
+            pcb.fix_value_layers(board)
         pro_path = (_P(cfg.pro) if cfg.pro
                     else input_path.with_suffix(".kicad_pro"))
         if not pro_path.exists():

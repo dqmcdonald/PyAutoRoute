@@ -96,6 +96,7 @@ class RunConfig:
         "snapshots",
         "debug_plot", "quiet", "log",
         "auto", "auto_yes", "auto_probe_time",
+        "fix_values",
     )
 
     def __init__(self, **kw):
@@ -164,6 +165,7 @@ class ControlsPanel(ttk.Frame):
         self._place_cw = tk.StringVar(value="0.02")
         self._snapshots = tk.StringVar(value="0")
         self._auto_probe_time = tk.StringVar(value="3.0")
+        self._fix_values = tk.BooleanVar(value=False)
 
         self._build_ui()
         self._mode.trace_add("write", self._on_mode_change)
@@ -447,6 +449,8 @@ class ControlsPanel(ttk.Frame):
             self._debug_plot.set(bool(d["debug_plot"]))
         if "quiet" in d:
             self._quiet.set(bool(d["quiet"]))
+        if "fix_values" in d:
+            self._fix_values.set(bool(d["fix_values"]))
 
     # ── advanced dialog ───────────────────────────────────────────────
 
@@ -489,8 +493,16 @@ class ControlsPanel(ttk.Frame):
             e.grid(row=r, column=1, sticky=tk.EW, padx=4, pady=2)
             add_tooltip(e, tip)
 
+        cb_fv = ttk.Checkbutton(f, text="Fix Value layers",
+                                 variable=self._fix_values)
+        cb_fv.grid(row=len(rows), column=0, columnspan=2, sticky=tk.W,
+                   padx=4, pady=4)
+        add_tooltip(cb_fv,
+                    "Move footprint Value text to the silkscreen layer "
+                    "(F.SilkS / B.SilkS) before routing. Off by default.")
+
         ttk.Button(f, text="OK", command=dlg.destroy).grid(
-            row=len(rows), column=0, columnspan=2, pady=8)
+            row=len(rows) + 1, column=0, columnspan=2, pady=8)
         dlg.transient(self)
         dlg.grab_set()
         self.wait_window(dlg)
@@ -576,6 +588,7 @@ class ControlsPanel(ttk.Frame):
             auto=False,
             auto_yes=False,
             auto_probe_time=_f(self._auto_probe_time, 3.0),
+            fix_values=self._fix_values.get(),
         )
 
     def _to_namespace(self, parser) -> argparse.Namespace:
@@ -614,4 +627,5 @@ class ControlsPanel(ttk.Frame):
             auto=False,
             auto_yes=False,
             auto_probe_time=cfg.auto_probe_time or 3.0,
+            fix_values=cfg.fix_values or False,
         )
