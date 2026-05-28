@@ -384,6 +384,11 @@ def run(args: argparse.Namespace) -> int:
     rules = load_rules(pro_path)
     pitch = args.grid if args.grid else default_pitch(rules)
 
+    if board.segments:
+        from pyautoroute.report import routing_stats
+        init = routing_stats(board, rules)
+        print(f"  initial board: {init.summary()}")
+
     if args.place or args.place_only:
         rep.phase(f"placing {len(board.footprints)} footprints (annealing)")
         if args.place_buffer is None:

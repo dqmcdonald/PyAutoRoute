@@ -96,6 +96,20 @@ class _MetricsPanel(ttk.Frame):
         self._vars["check"].set("PASS" if n_viol == 0
                                 else f"{n_viol} violation(s)")
 
+    def set_initial_stats(self, stats) -> None:
+        """Populate the panel with pre-run board routing statistics."""
+        for key in ("elapsed", "iter", "energy", "accept", "temp"):
+            self._vars[key].set("—")
+        self._pb_var.set(0)
+        self._t0 = None
+        self._vars["phase"].set("Initial board state")
+        self._vars["routed"].set(
+            f"{stats.routed}/{stats.total}  ({stats.length:.1f} mm, {stats.vias} vias)")
+        self._vars["unrouted"].set(str(stats.unrouted))
+        n_viol = len(stats.violations)
+        self._vars["check"].set("PASS" if n_viol == 0
+                                else f"{n_viol} violation(s)")
+
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
@@ -113,6 +127,9 @@ class App:
         self._last_done: Done | None = None
         self._last_plot_refresh = 0.0
         self._t_run_start = 0.0
+        self._initial_board = None
+        self._initial_stats = None
+        self._show_initial = tk.BooleanVar(value=False)
 
         self._build_menu()
         self._build_layout()
@@ -166,9 +183,22 @@ class App:
         )
         pw.add(self._controls, weight=0)
 
-        # Centre: board canvas
-        self._board_canvas = BoardCanvas(pw)
-        pw.add(self._board_canvas, weight=3)
+        # Centre: board canvas + view toggle
+        canvas_frame = ttk.Frame(pw)
+        pw.add(canvas_frame, weight=3)
+        self._board_canvas = BoardCanvas(canvas_frame)
+        self._board_canvas.pack(fill=tk.BOTH, expand=True)
+        view_bar = ttk.Frame(canvas_frame)
+        view_bar.pack(fill=tk.X, padx=4, pady=2)
+        self._toggle_cb = ttk.Checkbutton(
+            view_bar, text="Show initial state",
+            variable=self._show_initial,
+            command=self._on_view_toggle,
+            state=tk.DISABLED,
+        )
+        self._toggle_cb.pack(side=tk.LEFT)
+        self._toggle_label = ttk.Label(view_bar, text="", foreground="#666")
+        self._toggle_label.pack(side=tk.LEFT, padx=8)
 
         # Right: metrics + energy graph (vertical stack)
         right = ttk.Frame(pw)
@@ -246,6 +276,9 @@ class App:
         self._controls.set_running(True)
         self._controls.set_apply_enabled(False)
         self._last_done = None
+        self._show_initial.set(False)
+        self._toggle_cb.configure(state=tk.DISABLED)
+        self._toggle_label.configure(text="")
         self._metrics.reset()
         self._energy_plot.reset()
         self._t_run_start = time.monotonic()
@@ -267,6 +300,14 @@ class App:
         msg = (f"Done — {ev.routed}/{ev.total} routed, "
                f"{ev.length:.0f} mm, {ev.vias} vias.  {check}")
         self._status_var.set(msg)
+        # Enable initial/final toggle when we have both states
+        if self._initial_board is not None:
+            self._toggle_cb.configure(state=tk.NORMAL)
+            if self._initial_stats is not None:
+                s = self._initial_stats
+                self._toggle_label.configure(
+                    text=f"Initial: {s.routed}/{s.total} routed, "
+                         f"{s.length:.0f} mm, {s.vias} vias")
         if n_viol:
             messagebox.showwarning("Self-check",
                                    f"{n_viol} clearance violation(s) found.\n"
@@ -335,18 +376,60 @@ class App:
     def _open_board(self, path: str) -> None:
         try:
             from pyautoroute import pcb
+            from pyautoroute.report import routing_stats
+            from pyautoroute.rules import load_rules
             board = pcb.load_board(path)
+            self._initial_board = board
+            self._initial_stats = None
+            self._last_done = None
+            self._show_initial.set(False)
+            self._toggle_cb.configure(state=tk.DISABLED)
+            self._toggle_label.configure(text="")
+
             self._board_canvas.show_board(board, title=Path(path).name)
+
             outline_note = (
                 "  ⚠ No Edge.Cuts found — default outline added."
                 if board.outline_synthesized else ""
             )
-            self._status_var.set(
+            base_msg = (
                 f"Opened {Path(path).name} — "
                 f"{len(board.pads)} pads, {len(board.copper_layers)} Cu layers"
-                f"{outline_note}")
+                f"{outline_note}"
+            )
+
+            if board.segments:
+                pro_path = Path(path).with_suffix(".kicad_pro")
+                if not pro_path.exists():
+                    pro_path = Path(path).with_name(Path(path).stem + ".kicad_pro")
+                try:
+                    rules = load_rules(pro_path)
+                except Exception:
+                    rules = None
+                stats = routing_stats(board, rules)
+                self._initial_stats = stats
+                self._metrics.set_initial_stats(stats)
+                self._status_var.set(f"{base_msg}  —  initial: {stats.summary()}")
+            else:
+                self._status_var.set(base_msg)
         except Exception as exc:
             messagebox.showerror("Open failed", str(exc))
+
+    def _on_view_toggle(self) -> None:
+        """Switch the canvas between initial and final board state."""
+        inp = self._controls._full_input_path()
+        title_base = Path(inp).name if inp else "board"
+        if self._show_initial.get():
+            if self._initial_board is not None:
+                self._board_canvas.show_board(
+                    self._initial_board, title=f"{title_base} (initial)")
+            if self._initial_stats is not None:
+                self._metrics.set_initial_stats(self._initial_stats)
+        else:
+            ev = self._last_done
+            if ev is not None and ev.board is not None:
+                self._board_canvas.show_board(ev.board, title=f"{title_base} (routed)")
+                self._metrics.set_done(ev)
 
     # ── menu actions ─────────────────────────────────────────────────
 
