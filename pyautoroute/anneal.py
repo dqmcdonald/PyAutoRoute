@@ -217,7 +217,7 @@ class _Annealer:
         i = self.rng.randrange(n)
         return [i], [i]                                 # reroute one
 
-    def run(self, on_progress=None, on_snapshot=None) -> AnnealResult:
+    def run(self, on_progress=None, on_snapshot=None, cancel=None) -> AnnealResult:
         """Run the annealing loop and return the best routing seen.
 
         Args:
@@ -227,6 +227,9 @@ class _Annealer:
                 ``_ACCEPT_WINDOW`` iterations.
             on_snapshot: optional callback ``(k, n, results)`` fired
                 ``params.snapshots`` times across the run (see `anneal`).
+            cancel: optional `threading.Event`; when set, the loop stops early
+                and the best routing found so far is returned (for a GUI Stop
+                button).
 
         Returns:
             The `AnnealResult` with the best routing and run statistics.
@@ -245,6 +248,8 @@ class _Annealer:
         next_snap = 1
         it = 0
         while True:
+            if cancel is not None and cancel.is_set():
+                break
             if self.p.iters is not None and it >= self.p.iters:
                 break
             if self.p.time_budget is not None and time.time() - t0 >= self.p.time_budget:
@@ -292,7 +297,7 @@ class _Annealer:
 
 
 def anneal(state: RoutingState, connections, results, params: AnnealParams,
-           on_progress=None, on_snapshot=None) -> AnnealResult:
+           on_progress=None, on_snapshot=None, cancel=None) -> AnnealResult:
     """Optimise an already-committed routing in place; return the best seen.
 
     Args:
@@ -308,8 +313,11 @@ def anneal(state: RoutingState, connections, results, params: AnnealParams,
             capture the live routing as the run crosses each ``k/n`` of its
             progress, and the final call captures the best routing found. Useful
             for visualising how annealing improves the board.
+        cancel: optional `threading.Event`; when set, the run stops early and
+            returns the best routing found so far.
 
     Returns:
         The `AnnealResult` with the best routing and run statistics.
     """
-    return _Annealer(state, connections, results, params).run(on_progress, on_snapshot)
+    return _Annealer(state, connections, results, params).run(
+        on_progress, on_snapshot, cancel)

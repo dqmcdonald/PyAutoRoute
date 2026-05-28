@@ -241,8 +241,13 @@ Two diagnostic options hook into this flow:
   and the final metrics — all timestamped. The `Reporter` owns the file and
   writes regardless of `--quiet`. Bare `--log` uses `<output>.log`.
 
-### `visualize.py` — optional render
-matplotlib render of outline + pads + tracks + vias (`--debug-plot`).
+### `visualize.py` — board rendering
+`draw_board(ax, board, *, results=None, grid=None, title=None)` paints the outline,
+pads, tracks, and vias onto a caller-supplied matplotlib Axes (clearing it first, so
+it can refresh a live view). `render()` is a thin Agg wrapper around it for the
+`--debug-plot` PNG; the planned GUI canvas embeds a Figure and calls `draw_board`
+directly. Passing `results` (+ `grid`) draws an in-progress routing straight from the
+router's node paths, before any segments are written to the board.
 
 ### `tune.py` — parameter sweep & scoring
 Scores a routing with a single objective
@@ -351,6 +356,9 @@ moves are forbidden from cutting a blocked corner.
   is returned regardless of where the walk ends.
 - Per-route A* is expansion-capped during annealing so a hard net fails fast
   instead of exploring forever.
+- **Cancellation** = an optional `threading.Event` passed to `anneal`/`placement`;
+  when set, the loop stops early and returns the best-so-far. This backs a GUI Stop
+  button (the SA runs on a worker thread; see `docs/gui-plan.md`).
 
 ## Testing
 
