@@ -379,6 +379,8 @@ def run(args: argparse.Namespace) -> int:
 
     rep.phase("parsing board + rules")
     board = pcb.load_board(input_path)
+    if board.outline_synthesized:
+        print("  note: no Edge.Cuts outline found — default bounding-box outline added")
     rules = load_rules(pro_path)
     pitch = args.grid if args.grid else default_pitch(rules)
 

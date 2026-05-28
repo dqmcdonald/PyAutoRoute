@@ -337,9 +337,14 @@ class App:
             from pyautoroute import pcb
             board = pcb.load_board(path)
             self._board_canvas.show_board(board, title=Path(path).name)
+            outline_note = (
+                "  ⚠ No Edge.Cuts found — default outline added."
+                if board.outline_synthesized else ""
+            )
             self._status_var.set(
                 f"Opened {Path(path).name} — "
-                f"{len(board.pads)} pads, {len(board.copper_layers)} Cu layers")
+                f"{len(board.pads)} pads, {len(board.copper_layers)} Cu layers"
+                f"{outline_note}")
         except Exception as exc:
             messagebox.showerror("Open failed", str(exc))
 

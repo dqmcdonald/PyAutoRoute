@@ -220,6 +220,7 @@ class Board:
     numbered_nets: dict[int, str] = field(default_factory=dict)
     name_only_nets: bool = True
     footprints: list[Footprint] = field(default_factory=list)
+    outline_synthesized: bool = False   # True when no Edge.Cuts found and a default was generated
 
     @property
     def front_layer(self) -> str:
@@ -653,7 +654,7 @@ def load_board(pcb_path: str | Path) -> Board:
                 x0=fx, y0=fy, angle0=fa,
             ))
 
-    return Board(
+    board = Board(
         tree=tree,
         copper_layers=copper,
         pads=pads,
@@ -665,6 +666,8 @@ def load_board(pcb_path: str | Path) -> Board:
         name_only_nets=name_only,
         footprints=footprints,
     )
+    ensure_outline(board)
+    return board
 
 
 # --- node builders for the writer --------------------------------------------
@@ -818,6 +821,36 @@ def apply_placement(board: Board, margin: float = 2.0) -> None:
     x1 = max(p.cx + _pad_half_extent(p) for p in board.pads) + margin
     y1 = max(p.cy + _pad_half_extent(p) for p in board.pads) + margin
     board.outline = [OutlineShape("rect", {"start": (x0, y0), "end": (x1, y1)})]
+
+
+def ensure_outline(board: Board, margin: float = 2.0) -> bool:
+    """Synthesize a default Edge.Cuts outline if the board has none.
+
+    When a board file has no shapes on the ``Edge.Cuts`` layer, this function
+    derives a rectangle from the pad extents (grown by *margin* mm) and both
+    sets ``board.outline`` and appends the matching ``(gr_rect ...)`` node to
+    ``board.tree`` so the outline is written to the output file.
+
+    Args:
+        board: the board to update in place.
+        margin: extra space (mm) added around the pad bounding box.
+
+    Returns:
+        True if an outline already existed (no change), False if a default was
+        synthesised.
+    """
+    if board.outline:
+        return True
+    if not board.pads:
+        return True   # nothing to bound; leave outline empty
+    x0 = min(p.cx - _pad_half_extent(p) for p in board.pads) - margin
+    y0 = min(p.cy - _pad_half_extent(p) for p in board.pads) - margin
+    x1 = max(p.cx + _pad_half_extent(p) for p in board.pads) + margin
+    y1 = max(p.cy + _pad_half_extent(p) for p in board.pads) + margin
+    board.outline = [OutlineShape("rect", {"start": (x0, y0), "end": (x1, y1)})]
+    board.tree.append(make_edge_rect(x0, y0, x1, y1))
+    board.outline_synthesized = True
+    return False
 
 
 def _is_edge_graphic(node) -> bool:
