@@ -34,7 +34,8 @@ def test_draw_board_draws_pads_and_segments():
     ax = _ax()
     visualize.draw_board(ax, board, title="t")
     assert len(ax.patches) == 2                 # one fill per pad
-    assert len(ax.lines) >= 2                   # outline + the segment
+    assert len(ax.lines) >= 1                   # board outline
+    assert len(ax.collections) >= 1             # segment LineCollection
     assert ax.get_title() == "t"
     assert ax.yaxis_inverted()                  # KiCad Y-down
 
@@ -56,7 +57,8 @@ def test_draw_board_renders_in_progress_results():
                            grid.pad_access_nodes(b))
     ax = _ax()
     visualize.draw_board(ax, board, results=[res], grid=grid)
-    assert len(ax.lines) > 1                     # outline + the routed path
+    assert len(ax.lines) >= 1                    # board outline
+    assert len(ax.collections) >= 1             # routed path LineCollection
 
 
 def test_render_writes_png(tmp_path):

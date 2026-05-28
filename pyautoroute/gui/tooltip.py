@@ -40,6 +40,7 @@ class ToolTip:
         y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
         self._tip = tw = tk.Toplevel(self._widget)
         tw.wm_overrideredirect(True)
+        tw.attributes("-topmost", True)   # stay above main window on macOS
         tw.wm_geometry(f"+{x}+{y}")
         lbl = tk.Label(tw, text=self._text, justify=tk.LEFT,
                        background="#ffffe0", relief=tk.SOLID, borderwidth=1,
