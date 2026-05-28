@@ -200,6 +200,30 @@ def test_cli_rejects_invalid_placement_controls():
         autoroute.main(["b.kicad_pcb", "--place-step", "0"])
 
 
+def test_cli_runs_flags_parse_and_validate():
+    p = autoroute.build_parser()
+    a = p.parse_args(["b.kicad_pcb"])
+    assert a.runs == 1 and a.place_runs == 1
+    a2 = p.parse_args(["b.kicad_pcb", "--runs", "4", "--place-runs", "3"])
+    assert a2.runs == 4 and a2.place_runs == 3
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--runs", "0"])
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--place-runs", "0"])
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_multi_run_routes_clean(tmp_path):
+    out = tmp_path / "out.kicad_pcb"
+    args = autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out), "--iters", "40", "--runs", "3",
+         "--log", "--quiet"])
+    assert autoroute.run(args) == 0                 # best-of-3, clean self-check
+    text = out.with_suffix(".log").read_text()
+    assert "runs           3" in text
+    assert "best of 3 runs" in text
+
+
 def test_coarse_grid_note():
     # no warning at the derived pitch or up to 2x it; warn beyond that, and the
     # message suggests the derived pitch as the remedy

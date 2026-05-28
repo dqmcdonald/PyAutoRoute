@@ -196,6 +196,13 @@ the write. The whole stage is transparent to the router, which already consumes
 `--place-overlap-weight`, `--place-compact-weight`; `--seed` is shared.
 
 ### `autoroute.py` — CLI & orchestration
+**Best-of-N.** `--runs N` repeats the route + anneal loop N times (seed stepped per
+run, fresh `RoutingState` over the one deterministic `Grid`) and keeps the
+lowest-energy routing (scored by `anneal._energy`); without annealing the greedy
+route is deterministic so N collapses to 1. `--place-runs N` is the placement
+analogue, implemented in `placement.place(runs=N)` (each run restarts from the
+original poses, the best placement is kept).
+
 Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
 text progress `Reporter` (single-line `\r` updates on a TTY, line-by-line
 otherwise, silent under `--quiet`), the metrics report, and the post-write

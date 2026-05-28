@@ -37,7 +37,7 @@ import math
 import random
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from shapely.geometry import box
 from shapely.strtree import STRtree
@@ -289,7 +289,7 @@ class _Placer:
 
 
 def place(board: Board, params: PlaceParams | None = None,
-          on_progress=None) -> PlaceResult:
+          on_progress=None, runs: int = 1) -> PlaceResult:
     """Place a board's footprints by simulated annealing; return the best seen.
 
     Mutates `board`'s footprint poses (and their pads) in place, leaving them at
@@ -298,12 +298,36 @@ def place(board: Board, params: PlaceParams | None = None,
     `pyautoroute.pcb.apply_placement` afterwards to finalise pad coordinates and
     regenerate the board outline before routing.
 
+    With ``runs > 1`` the placement is repeated that many times — each restarted
+    from the board's original poses with the seed stepped by the run index — and
+    the lowest-energy placement is kept (best-of-N; SA is stochastic, so several
+    short runs often beat one long run).
+
     Args:
         board: the board to place, mutated in place.
         params: the placement parameters; ``None`` uses defaults.
         on_progress: optional per-iteration progress callback (see `_Placer.run`).
+        runs: number of independent placement runs; the best is kept.
 
     Returns:
         The `PlaceResult` with the best placement's energy and run statistics.
     """
-    return _Placer(board, params or PlaceParams()).run(on_progress)
+    params = params or PlaceParams()
+    if runs <= 1:
+        return _Placer(board, params).run(on_progress)
+
+    orig = [(fp, fp.x, fp.y, fp.angle) for fp in board.footprints]
+    best: PlaceResult | None = None
+    best_poses = None
+    for k in range(runs):
+        for fp, x, y, a in orig:                 # restart from the original layout
+            fp.x, fp.y, fp.angle = x, y, a
+            fp.sync_pads()
+        result = _Placer(board, replace(params, seed=params.seed + k)).run(on_progress)
+        if best is None or result.best_energy < best.best_energy:
+            best = result
+            best_poses = [(fp, fp.x, fp.y, fp.angle) for fp in board.footprints]
+    for fp, x, y, a in best_poses:               # leave the board at the best
+        fp.x, fp.y, fp.angle = x, y, a
+        fp.sync_pads()
+    return best

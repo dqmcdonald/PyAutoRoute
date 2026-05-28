@@ -187,6 +187,31 @@ def test_place_reports_acceptance_and_breakdown():
     assert math.isclose(recon, res.best_energy, rel_tol=1e-6)
 
 
+def test_place_best_of_n_never_worse_than_first_run():
+    def board():
+        a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        b = _fp("U2", 21.0, 20.5, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        c = _fp("U3", 50.0, 50.0, [(-2.0, 0.0, "N1"), (2.0, 0.0, "N0")])
+        return _board([a, b, c]), [a, b, c]
+
+    b1, _ = board()
+    first = placement.place(b1, placement.PlaceParams(iters=800, seed=0), runs=1)
+    b3, _ = board()
+    best = placement.place(b3, placement.PlaceParams(iters=800, seed=0), runs=3)
+    # best-of-3 (seeds 0,1,2) includes run 0, so it can never be worse
+    assert best.best_energy <= first.best_energy + 1e-6
+
+
+def test_place_runs_deterministic():
+    def run():
+        a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0")])
+        b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0")])
+        board = _board([a, b])
+        res = placement.place(board, placement.PlaceParams(iters=400, seed=0), runs=3)
+        return res.best_energy, round(sum(p.cx + p.cy for p in board.pads), 6)
+    assert run() == run()
+
+
 def test_place_custom_temps_and_step_run():
     a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0")])
     b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0")])

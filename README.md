@@ -54,6 +54,7 @@ The original file is never modified — a routed copy is written alongside it.
 | `--grid MM` | Routing grid pitch in mm (default: derived from the rules, ≈ `track/2 + clearance`). Finer = better coverage but slower. A pitch more than ~2× the derived one prints a warning: a coarse grid can't fit a node in the gap beside a pad and so forces vias where a finer grid would route on one layer. |
 | `--iters N` | Run simulated-annealing optimisation for N iterations. |
 | `--time SECONDS` | Run optimisation for a wall-clock budget instead. |
+| `--runs N` | Route `N` times with different annealing seeds and keep the lowest-energy result (best-of-N). Default 1. Multiplies runtime ~N×; only varies the result when annealing (`--iters`/`--time`) is on. |
 | `--unrouted-weight W` | Annealing energy penalty per unrouted connection (default 100). Higher ⇒ the optimiser tries harder to complete every connection, at the expense of wirelength/vias; lower ⇒ it tolerates leaving hard nets for manual routing. |
 | `--anneal-temps START END` | Start/end temperature of the geometric cooling schedule (default `4.0 0.05`); `START > END > 0`. Higher `START` explores more (better escape from local minima, slower convergence); lower `END` exploits harder at the finish. |
 | `--exclude-net PATTERN` | Leave matching nets un-routed (repeatable; glob, e.g. `GND` or `"/PWR*"`). Their pads still act as obstacles. |
@@ -67,6 +68,11 @@ The original file is never modified — a routed copy is written alongside it.
 
 `--iters` and `--time` are mutually exclusive; if neither is given, the board is
 routed once (greedy order) without annealing.
+
+`--runs N` repeats the whole route + anneal with seeds `seed, seed+1, …` and keeps
+the result with the lowest annealing energy (`wirelength + via_weight·vias +
+unrouted_weight·unrouted`) — simulated annealing is stochastic, so the best of a
+few short runs often beats one long run. (`--snapshots` needs a single run.)
 
 ### Examples
 
@@ -126,6 +132,7 @@ Placement options (all also work with `--place-only`):
 | Option | Meaning |
 |---|---|
 | `--place-iters N` / `--place-time S` | Placement budget (iterations or wall-clock seconds). |
+| `--place-runs N` | Run placement `N` times (different seeds) and keep the lowest-energy placement (best-of-N). Default 1. |
 | `--place-temps START END` | Start/end temperature of the placement cooling schedule (default `8.0 0.05`); `START > END > 0`. |
 | `--place-step MM` | Max translate step (mm) at the start temperature (default 20). Shrinks as the schedule cools. |
 | `--place-rotate {ortho,free,none}` | Rotation moves: `ortho` (±90/180, default), `free` (any angle), or `none`. |

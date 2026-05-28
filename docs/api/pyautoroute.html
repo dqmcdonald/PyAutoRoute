@@ -310,6 +310,13 @@ the write. The whole stage is transparent to the router, which already consumes
 
 <h3 id="autoroutepy-cli-orchestration"><code>autoroute.py</code> — CLI &amp; orchestration</h3>
 
+<p><strong>Best-of-N.</strong> <code>--runs N</code> repeats the route + anneal loop N times (seed stepped per
+run, fresh <code>RoutingState</code> over the one deterministic <code>Grid</code>) and keeps the
+lowest-energy routing (scored by <code>anneal._energy</code>); without annealing the greedy
+route is deterministic so N collapses to 1. <code>--place-runs N</code> is the placement
+analogue, implemented in <code>placement.place(runs=N)</code> (each run restarts from the
+original poses, the best placement is kept).</p>
+
 <p>Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
 text progress <code>Reporter</code> (single-line <code>\r</code> updates on a TTY, line-by-line
 otherwise, silent under <code>--quiet</code>), the metrics report, and the post-write

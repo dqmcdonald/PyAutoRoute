@@ -325,6 +325,8 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
                 f"compact wt {args.place_compact_weight})")
         rep.log(f"place temps    {args.place_temps[0]} -> {args.place_temps[1]}")
         rep.log(f"place step     {args.place_step} mm, rotate {args.place_rotate}")
+        if args.place_runs > 1:
+            rep.log(f"place runs     {args.place_runs}")
         if args.place_iters:
             rep.log(f"place iters    {args.place_iters}")
         if args.place_time:
@@ -340,6 +342,8 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
     if args.iters or args.time_budget:
         rep.log(f"unrouted wt    {args.unrouted_weight}")
         rep.log(f"anneal temps   {args.anneal_temps[0]} -> {args.anneal_temps[1]}")
+        if args.runs > 1:
+            rep.log(f"runs           {args.runs}")
     if snap_n:
         rep.log(f"snapshots      {snap_n}")
     rep.log(f"copper layers  {', '.join(board.copper_layers)}")
@@ -379,20 +383,24 @@ def run(args: argparse.Namespace) -> int:
         rep.phase(f"placing {len(board.footprints)} footprints (annealing)")
         if args.place_buffer is None:
             args.place_buffer = default_place_buffer(rules)
+        place_runs = max(1, args.place_runs)
         pp = placement.PlaceParams(
             iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
             exclude=args.exclude_net, overlap_weight=args.place_overlap_weight,
             compact_weight=args.place_compact_weight, buffer=args.place_buffer,
             t_start=args.place_temps[0], t_end=args.place_temps[1],
             step=args.place_step, rotate_mode=args.place_rotate)
-        pout = placement.place(board, pp, on_progress=rep.placing)
+        pout = placement.place(board, pp, on_progress=rep.placing, runs=place_runs)
         pcb.apply_placement(board, margin=args.place_margin)
         pcb.sync_tree_from_placement(board)
         rep.done()
+        if place_runs > 1:
+            rep.log(f"best of {place_runs} placement runs: energy {pout.best_energy:.1f}")
         summary = (f"place: {pout.iterations} iters, "
                    f"{pout.accepted} accepted ({pout.accept_ratio*100:.0f}%), "
                    f"{pout.moved} moved, energy "
-                   f"{pout.start_energy:.1f} -> {pout.best_energy:.1f}")
+                   f"{pout.start_energy:.1f} -> {pout.best_energy:.1f}"
+                   + (f"  (best of {place_runs})" if place_runs > 1 else ""))
         breakdown = (f"placement: ratsnest {pout.final_ratsnest:.1f} mm, "
                      f"overlap {pout.final_overlap:.1f} mm2, "
                      f"bbox {pout.final_bbox:.0f} mm2")
@@ -419,10 +427,18 @@ def run(args: argparse.Namespace) -> int:
     rep.phase(f"building {pitch}mm routing grid")
     grid = Grid(board, rules, pitch)
 
-    # snapshots only make sense during annealing
+    runs = max(1, args.runs)
+    if runs > 1 and not (args.iters or args.time_budget):
+        print("  note: --runs > 1 has no effect without --iters/--time "
+              "(greedy routing is deterministic); using 1 run")
+        runs = 1
+    # snapshots only make sense during a single annealing run
     snap_n = args.snapshots
     if snap_n and not (args.iters or args.time_budget):
         print("  note: --snapshots needs --iters or --time (annealing); ignoring")
+        snap_n = 0
+    if snap_n and runs > 1:
+        print("  note: --snapshots needs a single run; ignoring with --runs > 1")
         snap_n = 0
     snap_dir = out_path.parent / "snapshots" if snap_n else None
     if snap_dir is not None:
@@ -445,39 +461,61 @@ def run(args: argparse.Namespace) -> int:
 
     params = router.RouteParams(via_cost=args.via_weight)
     order = netlist.greedy_order(conns)
+    annealing = bool(args.iters or args.time_budget)
 
-    rep.phase(f"routing {len(conns)} connections")
-    state = router.RoutingState(grid)
-    result = router.route_all(state, conns, order, params, on_progress=rep.routing)
-    rep.done()
-
-    final_results = result.results
-    routed, unrouted, length, vias = (result.routed, result.unrouted,
-                                      result.total_length, result.total_vias)
-
-    if args.iters or args.time_budget:
-        rep.phase("annealing (rip-up & reroute)")
-        ap = anneal.AnnealParams(iters=args.iters, time_budget=args.time_budget,
-                                 seed=args.seed, snapshots=snap_n,
-                                 unrouted_weight=args.unrouted_weight,
-                                 t_start=args.anneal_temps[0], t_end=args.anneal_temps[1],
-                                 route_params=params)
-        aout = anneal.anneal(state, conns, list(result.results), ap,
-                             on_progress=rep.annealing,
-                             on_snapshot=on_snapshot if snap_n else None)
+    best_energy = float("inf")
+    final_results = None
+    routed = unrouted = length = vias = 0
+    for k in range(runs):
+        tag = f"run {k + 1}/{runs}: " if runs > 1 else ""
+        rep.phase(f"{tag}routing {len(conns)} connections")
+        state = router.RoutingState(grid)
+        result = router.route_all(state, conns, order, params, on_progress=rep.routing)
         rep.done()
-        final_results = aout.results
-        routed, unrouted, length, vias = (aout.routed, aout.unrouted,
-                                          aout.total_length, aout.total_vias)
-        acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
-        summary = (f"anneal: {aout.iterations} iters, "
-                   f"{aout.accepted} accepted ({acc_pct:.0f}%), "
-                   f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
-        rep.log(summary)
+        run_results = result.results
+        run_metrics = (result.routed, result.unrouted,
+                       result.total_length, result.total_vias)
+
+        if annealing:
+            rep.phase(f"{tag}annealing (rip-up & reroute)")
+            ap = anneal.AnnealParams(iters=args.iters, time_budget=args.time_budget,
+                                     seed=args.seed + k, snapshots=snap_n,
+                                     unrouted_weight=args.unrouted_weight,
+                                     t_start=args.anneal_temps[0], t_end=args.anneal_temps[1],
+                                     route_params=params)
+            aout = anneal.anneal(state, conns, list(result.results), ap,
+                                 on_progress=rep.annealing,
+                                 on_snapshot=on_snapshot if snap_n else None)
+            rep.done()
+            run_results = aout.results
+            run_metrics = (aout.routed, aout.unrouted,
+                           aout.total_length, aout.total_vias)
+            run_energy = aout.best_energy
+            acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
+            summary = (f"{tag}anneal: {aout.iterations} iters, "
+                       f"{aout.accepted} accepted ({acc_pct:.0f}%), "
+                       f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
+            rep.log(summary)
+            if not args.quiet:
+                print(f"\n  {summary}")
+        else:
+            run_energy = anneal._energy(run_results, args.via_weight,
+                                        args.unrouted_weight)
+            if runs > 1:
+                rep.log(f"{tag}energy {run_energy:.1f}")
+
+        if run_energy < best_energy:
+            best_energy = run_energy
+            final_results = run_results
+            routed, unrouted, length, vias = run_metrics
+
+    if runs > 1:
+        best_line = f"best of {runs} runs: energy {best_energy:.1f}"
+        rep.log(best_line)
         if not args.quiet:
-            print(f"\n  {summary}")
-        if snap_n:
-            print(f"  snapshots:     {snap_n} written to {snap_dir}/")
+            print(f"\n  {best_line}")
+    if snap_n:
+        print(f"  snapshots:     {snap_n} written to {snap_dir}/")
 
     rep.phase("writing routed board")
     pcb.write_board(board, out_path,
@@ -650,9 +688,16 @@ def build_parser() -> argparse.ArgumentParser:
                    default=placement.PlaceParams.rotate_mode,
                    help="placement rotation moves: ortho (+/-90/180), free (any "
                         "angle), or none (default %(default)s)")
+    p.add_argument("--place-runs", type=int, default=1, metavar="N",
+                   help="run placement N times (different seeds) and keep the "
+                        "lowest-energy placement (default 1)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--iters", type=int, help="optimisation iteration budget")
     g.add_argument("--time", type=float, dest="time_budget", help="optimisation time budget (s)")
+    p.add_argument("--runs", type=int, default=1, metavar="N",
+                   help="route N times with different annealing seeds and keep the "
+                        "lowest-energy result (default 1; only varies with "
+                        "--iters/--time)")
     p.add_argument("--exclude-net", action="append", default=[], metavar="PATTERN",
                    help="net name/glob to leave un-routed (repeatable)")
     p.add_argument("--seed", type=int, default=0, help="random seed")
@@ -702,6 +747,10 @@ def main(argv=None) -> int:
         parser.error("--place-temps requires START > END > 0")
     if args.place_step <= 0:
         parser.error("--place-step must be > 0")
+    if args.runs < 1:
+        parser.error("--runs must be >= 1")
+    if args.place_runs < 1:
+        parser.error("--place-runs must be >= 1")
     if (args.place_iters or args.place_time) and not (args.place or args.place_only):
         parser.error("--place-iters/--place-time require --place or --place-only")
     if args.place_only and (args.iters or args.time_budget):
