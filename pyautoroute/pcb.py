@@ -943,6 +943,53 @@ def sync_tree_from_placement(board: Board, edge_width: float = 0.05) -> None:
     board.tree.append(make_edge_rect(rx0, ry0, rx1, ry1, edge_width))
 
 
+def stamp_comment(board: Board, text: str) -> None:
+    """Write *text* into the first empty title-block comment slot (1–9).
+
+    If the board's ``(title_block ...)`` node has no ``(comment N ...)``
+    children, slot 1 is used.  The first slot whose current value is the
+    empty string ``""`` is chosen; if all nine are non-empty the call is a
+    no-op (existing comments are not overwritten).
+
+    Args:
+        board: the board to update in place (its tree is mutated).
+        text: the comment text to write (plain string; will be quoted).
+    """
+    tb = child(board.tree, "title_block")
+    if tb is None:
+        tb = SList([sexpr.sym("title_block")])
+        board.tree.append(tb)
+
+    # Clear the verbatim source span so the serializer re-renders this node
+    # (appending to a parsed SList doesn't auto-invalidate its span).
+    tb.span = None
+
+    # Collect existing comment slots: slot_num -> node
+    existing: dict[int, SList] = {}
+    for node in children(tb, "comment"):
+        atoms = atoms_after_head(node)
+        if atoms:
+            try:
+                existing[int(atoms[0].raw)] = node
+            except (ValueError, IndexError):
+                pass
+
+    # Find the first empty slot in 1-9
+    for slot in range(1, 10):
+        if slot not in existing:
+            tb.append(SList([sexpr.sym("comment"),
+                             sexpr.number(slot),
+                             sexpr.string(text)]))
+            return
+        # Check whether the existing comment is empty
+        node = existing[slot]
+        atoms = atoms_after_head(node)
+        if len(atoms) >= 2 and atoms[1].text == "":
+            node[node.index(atoms[1])] = sexpr.string(text)
+            return
+    # All 9 slots occupied — leave unchanged
+
+
 def write_board(board: Board, out_path: str | Path,
                 new_nodes: list[SList] | None = None,
                 strip_free_vias: bool = True) -> None:

@@ -261,6 +261,12 @@ def coarse_grid_note(pitch: float, natural: float) -> str | None:
             f"(or omit --grid)")
 
 
+def _stamp(board, mode: str) -> None:
+    """Add a PyAutoRoute provenance comment to the board's title block."""
+    today = datetime.date.today().isoformat()
+    pcb.stamp_comment(board, f"PyAutoRoute v{__version__} — {mode} {today}")
+
+
 def _results_to_nodes(board, grid: Grid, results) -> list:
     """Flatten routed results into the KiCad nodes to append to the board.
 
@@ -422,6 +428,7 @@ def run(args: argparse.Namespace) -> int:
 
     if args.place_only:
         rep.phase("writing placed board")
+        _stamp(board, "placed")
         pcb.write_board(board, out_path, new_nodes=None, strip_free_vias=True)
         placed_board = pcb.load_board(out_path)
         violations = geometry.clearance_violations(placed_board, rules)
@@ -555,6 +562,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"  snapshots:     {snap_n} written to {snap_dir}/")
 
     rep.phase("writing routed board")
+    mode = "placed + routed" if args.place else "routed"
+    _stamp(board, mode)
     pcb.write_board(board, out_path,
                     new_nodes=_results_to_nodes(board, grid, final_results),
                     strip_free_vias=True)

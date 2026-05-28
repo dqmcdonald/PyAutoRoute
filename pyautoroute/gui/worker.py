@@ -9,6 +9,7 @@ state so the main thread can read them safely.
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import queue
 import threading
 import time
@@ -55,6 +56,7 @@ class Worker:
     def _post(self, event) -> None:
         self._q.put(event)
 
+
     def _run(self, cfg) -> None:
         try:
             self._pipeline(cfg)
@@ -64,7 +66,7 @@ class Worker:
     def _pipeline(self, cfg) -> None:
         from pathlib import Path as _P
 
-        from pyautoroute import anneal, netlist, pcb
+        from pyautoroute import __version__, anneal, netlist, pcb
         from pyautoroute import placement as place_mod
         from pyautoroute import router
         from pyautoroute.autoroute import (
@@ -135,6 +137,9 @@ class Worker:
 
         if place_only:
             self._post(Phase("writing placed board"))
+            pcb.stamp_comment(board,
+                f"PyAutoRoute v{__version__} — placed "
+                f"{datetime.date.today().isoformat()}")
             pcb.write_board(board, out_path, new_nodes=None,
                             strip_free_vias=True)
             placed = pcb.load_board(out_path)
@@ -237,6 +242,10 @@ class Worker:
             return
 
         self._post(Phase("writing routed board"))
+        _mode = "placed + routed" if place else "routed"
+        pcb.stamp_comment(board,
+            f"PyAutoRoute v{__version__} — {_mode} "
+            f"{datetime.date.today().isoformat()}")
         pcb.write_board(board, out_path,
                         new_nodes=_results_to_nodes(board, grid, final_results),
                         strip_free_vias=True)
