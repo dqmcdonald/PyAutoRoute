@@ -21,6 +21,10 @@ _LAYER_COLOR = {"F.Cu": "#cc3333", "B.Cu": "#3366cc"}
 _FP_OUTLINE_LAYERS = {"F.CrtYd", "B.CrtYd", "F.Fab", "B.Fab", "F.SilkS", "B.SilkS"}
 _FP_OUTLINE_COLOR = "#888888"
 
+# Silkscreen text layers (both old and new KiCad naming).
+_SILK_LAYERS = {"F.SilkS", "B.SilkS", "F.Silkscreen", "B.Silkscreen"}
+_SILK_TEXT_COLOR = {"front": "#aa8800", "back": "#007799"}
+
 
 def _draw_results(ax, grid, results) -> None:
     """Draw routed node paths (tracks + vias) from router results.
@@ -111,6 +115,112 @@ def _fp_outline_segments(board: Board) -> list:
     return segs
 
 
+def _is_hidden(node) -> bool:
+    """Return True if the node has a ``(hide yes)`` child."""
+    from .pcb import child, atoms_after_head
+    h = child(node, "hide")
+    if h is None:
+        return False
+    vals = atoms_after_head(h)
+    return bool(vals) and vals[0].text == "yes"
+
+
+def _silk_text_items(board: Board):
+    """Yield ``(x, y, text, angle_deg, is_back)`` for visible silkscreen text.
+
+    Covers:
+    - Top-level ``(gr_text ...)`` on a silkscreen layer.
+    - ``(property "Reference" ...)`` and ``(property "Value" ...)`` within
+      footprints, on a silkscreen layer and not hidden.
+    - ``(fp_text ...)`` within footprints on a silkscreen layer (legacy format,
+      resolves ``${REFERENCE}`` to the footprint reference).
+    """
+    from .pcb import children, child, strings, floats, atoms_after_head
+    from .sexpr import SList, head_symbol
+
+    def _layer(node) -> str:
+        ls = strings(child(node, "layer"))
+        return ls[0] if ls else ""
+
+    # 1. Top-level gr_text
+    for node in board.tree:
+        if not isinstance(node, SList) or not node:
+            continue
+        if head_symbol(node) != "gr_text":
+            continue
+        if _is_hidden(node):
+            continue
+        lay = _layer(node)
+        if lay not in _SILK_LAYERS:
+            continue
+        content_atoms = atoms_after_head(node)
+        if not content_atoms:
+            continue
+        content = content_atoms[0].text
+        if not content:
+            continue
+        at_vals = floats(child(node, "at"))
+        if len(at_vals) < 2:
+            continue
+        x, y = at_vals[0], at_vals[1]
+        angle = at_vals[2] if len(at_vals) >= 3 else 0.0
+        yield x, y, content, angle, lay.startswith("B.")
+
+    # 2. Footprint-scoped text
+    for fp in board.footprints:
+        fx, fy, fa = fp.x, fp.y, fp.angle
+        cos_a = math.cos(math.radians(fa))
+        sin_a = math.sin(math.radians(fa))
+
+        def to_board(lx: float, ly: float) -> tuple[float, float]:
+            return (fx + lx * cos_a + ly * sin_a,
+                    fy - lx * sin_a + ly * cos_a)
+
+        fp_node = fp.fp_node
+
+        # property "Reference" / "Value" nodes
+        for prop in children(fp_node, "property"):
+            if _is_hidden(prop):
+                continue
+            lay = _layer(prop)
+            if lay not in _SILK_LAYERS:
+                continue
+            prop_atoms = atoms_after_head(prop)
+            if len(prop_atoms) < 2:
+                continue
+            if prop_atoms[0].text not in ("Reference", "Value"):
+                continue
+            content = prop_atoms[1].text
+            if not content:
+                continue
+            at_vals = floats(child(prop, "at"))
+            if len(at_vals) < 2:
+                continue
+            bx, by = to_board(at_vals[0], at_vals[1])
+            angle = at_vals[2] if len(at_vals) >= 3 else 0.0
+            yield bx, by, content, angle, lay.startswith("B.")
+
+        # fp_text nodes (legacy format)
+        for txt in children(fp_node, "fp_text"):
+            if _is_hidden(txt):
+                continue
+            lay = _layer(txt)
+            if lay not in _SILK_LAYERS:
+                continue
+            txt_atoms = atoms_after_head(txt)
+            if len(txt_atoms) < 2:
+                continue
+            content = txt_atoms[1].text.replace("${REFERENCE}", fp.ref)
+            if not content:
+                continue
+            at_vals = floats(child(txt, "at"))
+            if len(at_vals) < 2:
+                continue
+            bx, by = to_board(at_vals[0], at_vals[1])
+            angle = at_vals[2] if len(at_vals) >= 3 else 0.0
+            yield bx, by, content, angle, lay.startswith("B.")
+
+
 def draw_board(ax, board: Board, *, results=None, grid=None,
                title: str | None = None) -> None:
     """Paint a board (outline, pads, tracks, vias) onto a matplotlib Axes.
@@ -167,6 +277,13 @@ def draw_board(ax, board: Board, *, results=None, grid=None,
     via_ys = [v.cy for v in board.free_vias]
     if via_xs:
         ax.plot(via_xs, via_ys, "o", mfc="none", mec="#11aa11", ms=5)
+
+    # Silkscreen text (gr_text + footprint property/fp_text on SilkS layers)
+    for tx, ty, content, angle, is_back in _silk_text_items(board):
+        color = _SILK_TEXT_COLOR["back" if is_back else "front"]
+        ax.text(tx, ty, content, fontsize=6, color=color,
+                ha="center", va="center", rotation=angle,
+                rotation_mode="anchor", clip_on=True)
 
     ax.set_aspect("equal")
     ax.invert_yaxis()      # KiCad Y points down

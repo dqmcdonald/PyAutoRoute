@@ -60,6 +60,45 @@ def test_draw_board_renders_in_progress_results():
     assert len(ax.collections) >= 1             # routed path LineCollection
 
 
+def test_draw_board_renders_silkscreen_text():
+    """gr_text and property "Value" on SilkS appear as Axes Text artists."""
+    from pyautoroute import sexpr as sx
+    # Build a minimal board with a gr_text on F.SilkS and a footprint with
+    # a visible Value property on F.SilkS.
+    src = (
+        '(kicad_pcb'
+        '  (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+        '    (5 "F.SilkS" user "F.Silkscreen"))'
+        '  (gr_text "GND"'
+        '    (at 5 5 0) (layer "F.SilkS")'
+        '    (effects (font (size 1 1))))'
+        '  (footprint "Lib:R" (layer "F.Cu") (at 10 10 0)'
+        '    (property "Value" "10K"'
+        '      (at 0 0 0) (layer "F.SilkS")'
+        '      (effects (font (size 1 1))))'
+        '    (property "Reference" "R1"'
+        '      (at 0 -2 0) (layer "F.SilkS") (hide yes)'
+        '      (effects (font (size 1 1))))'
+        '    (pad "1" smd rect (at -1 0) (size 1 1)'
+        '      (layers "F.Cu") (net "A")))'
+        ')'
+    )
+    from pyautoroute.pcb import load_board
+    import tempfile, pathlib
+    with tempfile.NamedTemporaryFile(suffix=".kicad_pcb", mode="w",
+                                    delete=False) as f:
+        f.write(src)
+        tmp = pathlib.Path(f.name)
+    board = load_board(tmp)
+    tmp.unlink()
+    ax = _ax()
+    visualize.draw_board(ax, board)
+    texts = [t.get_text() for t in ax.texts]
+    assert "GND" in texts          # gr_text
+    assert "10K" in texts          # visible Value property
+    assert "R1" not in texts       # hidden Reference should be skipped
+
+
 def test_render_writes_png(tmp_path):
     board = _board([_pad("A", 5, 5), _pad("A", 15, 15)])
     out = tmp_path / "b.png"

@@ -228,3 +228,38 @@ def test_fix_value_layers_written_to_file(tmp_path):
     pcb.write_board(board, out, new_nodes=None, strip_free_vias=False)
     reloaded = pcb.load_board(out)
     assert _value_layer(reloaded) == "F.SilkS"
+
+
+# --- _rotate_text_nodes tests ------------------------------------------------
+
+def test_rotate_text_nodes_updates_fp_text_and_property():
+    """After a 90° footprint rotation, fp_text and property (at) angles update."""
+    txt = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+        '  (5 "F.SilkS" user "F.Silkscreen"))'
+        ' (footprint "Lib:R" (layer "F.Cu") (at 0 0 0)'
+        '  (fp_text user "${REFERENCE}" (at 1 0 0) (layer "F.SilkS")'
+        '   (effects (font (size 1 1))))'
+        '  (property "Value" "10K" (at 0 1 0) (layer "F.SilkS")'
+        '   (effects (font (size 1 1))))'
+        '  (pad "1" smd rect (at -1 0) (size 1 1)'
+        '   (layers "F.Cu" "F.Mask") (net "A"))))'
+    )
+    board = _board_from_text(txt)
+    fp = board.footprints[0]
+    fp.angle = 90.0
+    from pyautoroute.pcb import sync_tree_from_placement, children, child, floats
+    # Make footprint appear moved so sync writes it
+    fp.x0, fp.y0, fp.angle0 = fp.x, fp.y, 0.0
+    sync_tree_from_placement(board)
+
+    # Check angles were updated in the tree
+    fp_node = fp.fp_node
+    for txt_node in children(fp_node, "fp_text"):
+        at_vals = floats(child(txt_node, "at"))
+        assert len(at_vals) >= 3
+        assert abs(at_vals[2] - 90.0) < 1e-6, f"fp_text angle {at_vals[2]} != 90"
+    for prop_node in children(fp_node, "property"):
+        at_vals = floats(child(prop_node, "at"))
+        assert len(at_vals) >= 3
+        assert abs(at_vals[2] - 90.0) < 1e-6, f"property angle {at_vals[2]} != 90"

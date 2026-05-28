@@ -931,6 +931,35 @@ def _rotate_pad_nodes(fp_node: SList, delta: float) -> None:
                 break
 
 
+def _rotate_text_nodes(fp_node: SList, delta: float) -> None:
+    """Add `delta` degrees to every text node's absolute angle in a footprint.
+
+    KiCad 7+ stores ``fp_text`` and ``property`` text orientations absolutely
+    (already incorporating the footprint rotation), the same convention as pad
+    angles.  When a footprint is rotated by `delta`, those angles must be
+    updated so KiCad renders the text correctly after reloading.
+
+    Args:
+        fp_node: the ``(footprint ...)`` node whose text nodes to re-angle.
+        delta: the footprint's rotation change (degrees).
+    """
+    for tag in ("fp_text", "property"):
+        for txt in children(fp_node, tag):
+            at = child(txt, "at")
+            vals = floats(at)
+            if len(vals) < 2:
+                continue
+            lx, ly = vals[0], vals[1]
+            old_angle = vals[2] if len(vals) >= 3 else 0.0
+            new_at = _xy_node("at", lx, ly)
+            new_at.append(sexpr.number((old_angle + delta) % 360.0))
+            txt.span = None
+            for i, ch in enumerate(txt):
+                if ch is at:
+                    txt[i] = new_at
+                    break
+
+
 def sync_tree_from_placement(board: Board, edge_width: float = 0.05) -> None:
     """Rewrite the board tree to match the placement result, in place.
 
@@ -966,6 +995,7 @@ def sync_tree_from_placement(board: Board, edge_width: float = 0.05) -> None:
         delta = fp.angle - fp.angle0
         if abs(delta) > 1e-9:
             _rotate_pad_nodes(fp.fp_node, delta)
+            _rotate_text_nodes(fp.fp_node, delta)
 
     rect = next((s for s in board.outline if s.kind == "rect"), None)
     if rect is None:
