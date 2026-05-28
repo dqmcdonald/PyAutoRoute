@@ -362,6 +362,13 @@ writes regardless of <code>--quiet</code>. Bare <code>--log</code> uses <code>&l
 
 <p>matplotlib render of outline + pads + tracks + vias (<code>--debug-plot</code>).</p>
 
+<h3 id="pyautoroutesh-helper-menu"><code>pyautoroute.sh</code> — helper menu</h3>
+
+<p>A repo-root Bash script offering a menu of common tasks (install, regenerate API
+docs via the <code>pdoc</code> recipe, run the short/long test suite, route a test board,
+write a settings file, clean generated outputs). Each action echoes the command it
+runs; the interpreter is overridable with <code>PYTHON=</code>.</p>
+
 <h2 id="coordinate-system-the-pad-angle-gotcha">Coordinate system &amp; the pad-angle gotcha</h2>
 
 <p>All geometry is in <strong>KiCad board coordinates</strong>: millimetres, <strong>Y pointing down</strong>.</p>

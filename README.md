@@ -231,6 +231,14 @@ as attached to the pad and keeps it connected when you move the footprint.
 - Runtime is dominated by a few long/awkward nets; a finer `--grid` improves coverage but is slower.
 - The optimiser improves length and via count; it does not guarantee a global optimum.
 
+## Helper script
+
+`./pyautoroute.sh` is an interactive menu of common tasks — install the package,
+regenerate the API docs from the code, run the short/long test suite, route a test
+board, write a settings file, or clean generated outputs. Each action echoes the
+command it runs, so the script doubles as a cheat-sheet. Override the interpreter
+with `PYTHON=/path/to/python ./pyautoroute.sh`.
+
 ## Tests
 
 ```bash
