@@ -359,9 +359,14 @@ and the final metrics — all timestamped. The <code>Reporter</code> owns the fi
 writes regardless of <code>--quiet</code>. Bare <code>--log</code> uses <code>&lt;output&gt;.log</code>.</li>
 </ul>
 
-<h3 id="visualizepy-optional-render"><code>visualize.py</code> — optional render</h3>
+<h3 id="visualizepy-board-rendering"><code>visualize.py</code> — board rendering</h3>
 
-<p>matplotlib render of outline + pads + tracks + vias (<code>--debug-plot</code>).</p>
+<p><code>draw_board(ax, board, *, results=None, grid=None, title=None)</code> paints the outline,
+pads, tracks, and vias onto a caller-supplied matplotlib Axes (clearing it first, so
+it can refresh a live view). <code>render()</code> is a thin Agg wrapper around it for the
+<code>--debug-plot</code> PNG; the planned GUI canvas embeds a Figure and calls <code>draw_board</code>
+directly. Passing <code>results</code> (+ <code>grid</code>) draws an in-progress routing straight from the
+router's node paths, before any segments are written to the board.</p>
 
 <h3 id="tunepy-parameter-sweep-scoring"><code>tune.py</code> — parameter sweep &amp; scoring</h3>
 
@@ -479,6 +484,9 @@ and re-committing the snapshots (committing is idempotent given a path).</li>
 is returned regardless of where the walk ends.</li>
 <li>Per-route A* is expansion-capped during annealing so a hard net fails fast
 instead of exploring forever.</li>
+<li><strong>Cancellation</strong> = an optional <code>threading.Event</code> passed to <code>anneal</code>/<code>placement</code>;
+when set, the loop stops early and returns the best-so-far. This backs a GUI Stop
+button (the SA runs on a worker thread; see <code>docs/gui-plan.md</code>).</li>
 </ul>
 
 <h2 id="testing">Testing</h2>

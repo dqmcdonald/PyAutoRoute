@@ -223,13 +223,16 @@ class _Placer:
         fp.sync_pads()
         return snap
 
-    def run(self, on_progress=None) -> PlaceResult:
+    def run(self, on_progress=None, cancel=None) -> PlaceResult:
         """Run the annealing loop; leave the board at the best placement seen.
 
         Args:
             on_progress: optional callback ``(it, total, energy, best, temp,
                 accept)`` invoked each iteration, where ``accept`` is the fraction
                 of moves accepted over the last ``_ACCEPT_WINDOW`` iterations.
+            cancel: optional `threading.Event`; when set, the loop stops early and
+                the board is left at the best placement found so far (for a GUI
+                Stop button).
 
         Returns:
             The `PlaceResult` with start/best energy, run statistics, and the
@@ -253,6 +256,8 @@ class _Placer:
         ratio = self.p.t_end / self.p.t_start
         it = 0
         while True:
+            if cancel is not None and cancel.is_set():
+                break
             if self.p.iters is not None and it >= self.p.iters:
                 break
             if self.p.time_budget is not None and time.time() - t0 >= self.p.time_budget:
@@ -289,7 +294,7 @@ class _Placer:
 
 
 def place(board: Board, params: PlaceParams | None = None,
-          on_progress=None, runs: int = 1) -> PlaceResult:
+          on_progress=None, runs: int = 1, cancel=None) -> PlaceResult:
     """Place a board's footprints by simulated annealing; return the best seen.
 
     Mutates `board`'s footprint poses (and their pads) in place, leaving them at
@@ -308,25 +313,32 @@ def place(board: Board, params: PlaceParams | None = None,
         params: the placement parameters; ``None`` uses defaults.
         on_progress: optional per-iteration progress callback (see `_Placer.run`).
         runs: number of independent placement runs; the best is kept.
+        cancel: optional `threading.Event`; when set, stops early (between and
+            within runs) and returns the best placement found so far.
 
     Returns:
         The `PlaceResult` with the best placement's energy and run statistics.
     """
     params = params or PlaceParams()
     if runs <= 1:
-        return _Placer(board, params).run(on_progress)
+        return _Placer(board, params).run(on_progress, cancel)
 
     orig = [(fp, fp.x, fp.y, fp.angle) for fp in board.footprints]
     best: PlaceResult | None = None
     best_poses = None
     for k in range(runs):
+        if cancel is not None and cancel.is_set():
+            break
         for fp, x, y, a in orig:                 # restart from the original layout
             fp.x, fp.y, fp.angle = x, y, a
             fp.sync_pads()
-        result = _Placer(board, replace(params, seed=params.seed + k)).run(on_progress)
+        result = _Placer(board, replace(params, seed=params.seed + k)).run(
+            on_progress, cancel)
         if best is None or result.best_energy < best.best_energy:
             best = result
             best_poses = [(fp, fp.x, fp.y, fp.angle) for fp in board.footprints]
+    if best is None:                             # cancelled before any run finished
+        return _Placer(board, params).run(on_progress, cancel)
     for fp, x, y, a in best_poses:               # leave the board at the best
         fp.x, fp.y, fp.angle = x, y, a
         fp.sync_pads()
