@@ -310,6 +310,14 @@ the write. The whole stage is transparent to the router, which already consumes
 
 <h3 id="autoroutepy-cli-orchestration"><code>autoroute.py</code> — CLI &amp; orchestration</h3>
 
+<p><strong>Settings file.</strong> <code>--config FILE</code> is resolved by a throwaway pre-parser that reads
+only <code>--config</code>; its <code>[pyautoroute]</code> values are coerced to each option's type
+(<code>load_config</code>, keyed by argparse <code>dest</code>) and pushed in via <code>parser.set_defaults</code>,
+so a value given on the command line still wins — precedence is defaults &lt; config &lt;
+CLI, for free. <code>--write-config</code> dumps the effective namespace back to INI
+(<code>write_config</code>) and exits. List/2-tuple options are comma-separated; flags are
+<code>true</code>/<code>false</code>.</p>
+
 <p><strong>Best-of-N.</strong> <code>--runs N</code> repeats the route + anneal loop N times (seed stepped per
 run, fresh <code>RoutingState</code> over the one deterministic <code>Grid</code>) and keeps the
 lowest-energy routing (scored by <code>anneal._energy</code>); without annealing the greedy

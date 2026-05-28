@@ -10,6 +10,7 @@ self-check on the result.
 from __future__ import annotations
 
 import argparse
+import configparser
 import datetime
 import sys
 import time
@@ -634,6 +635,146 @@ def _report_placed(rep: Reporter, out_path, board, violations) -> None:
         rep.log(ln)
 
 
+# --- settings file (INI) -----------------------------------------------------
+
+_CONFIG_SECTION = "pyautoroute"
+# options that are not part of the persisted settings (meta / positional)
+_CONFIG_SKIP = {"help", "version", "config", "write_config", "input"}
+
+
+def _configurable_actions(parser: argparse.ArgumentParser) -> dict:
+    """Map each persisted option's ``dest`` to its argparse action.
+
+    Args:
+        parser: the CLI parser.
+
+    Returns:
+        ``{dest: action}`` for every optional argument that round-trips through
+        the settings file (the meta/positional ones in `_CONFIG_SKIP` excluded).
+    """
+    return {a.dest: a for a in parser._actions
+            if a.option_strings and a.dest not in _CONFIG_SKIP}
+
+
+def _parse_bool(text: str) -> bool:
+    """Parse a boolean from a settings-file value.
+
+    Args:
+        text: the raw value (e.g. ``"true"``, ``"0"``, ``"yes"``).
+
+    Returns:
+        The boolean.
+
+    Raises:
+        ValueError: if `text` is not a recognised boolean.
+    """
+    low = text.strip().lower()
+    if low in ("true", "1", "yes", "on"):
+        return True
+    if low in ("false", "0", "no", "off"):
+        return False
+    raise ValueError(f"not a boolean: {text!r}")
+
+
+def _coerce_config_value(action, raw: str):
+    """Coerce a raw settings-file string to the option's Python type.
+
+    Args:
+        action: the argparse action for the option.
+        raw: the raw string from the settings file.
+
+    Returns:
+        The typed value (bool for flags, list for append/2-tuple options,
+        otherwise the action's ``type`` applied to `raw`).
+    """
+    if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+        return _parse_bool(raw)
+    conv = action.type or str
+    if isinstance(action, argparse._AppendAction):
+        return [conv(s.strip()) for s in raw.split(",") if s.strip()]
+    if action.nargs == 2:
+        parts = [s for s in raw.replace(",", " ").split() if s]
+        if len(parts) != 2:
+            raise ValueError(f"expected 2 values, got {raw!r}")
+        return [conv(p) for p in parts]
+    return conv(raw)
+
+
+def load_config(path: str | Path, parser: argparse.ArgumentParser) -> dict:
+    """Read an INI settings file into a ``{dest: typed_value}`` mapping.
+
+    Args:
+        path: the settings file path.
+        parser: the CLI parser (for option names and types).
+
+    Returns:
+        The settings as a dict suitable for ``parser.set_defaults``.
+
+    Raises:
+        SystemExit: via ``parser.error`` if the file is missing, lacks the
+            ``[pyautoroute]`` section, names an unknown key, or has a bad value.
+    """
+    path = Path(path)
+    if not path.exists():
+        parser.error(f"--config file not found: {path}")
+    cp = configparser.ConfigParser()
+    cp.read(path)
+    if not cp.has_section(_CONFIG_SECTION):
+        parser.error(f"--config file has no [{_CONFIG_SECTION}] section: {path}")
+    actions = _configurable_actions(parser)
+    out = {}
+    for key, raw in cp.items(_CONFIG_SECTION):
+        dest = key.replace("-", "_")
+        if dest not in actions:
+            parser.error(f"--config: unknown option {key!r} in {path}")
+        try:
+            out[dest] = _coerce_config_value(actions[dest], raw)
+        except (ValueError, TypeError) as exc:
+            parser.error(f"--config: bad value for {key!r}: {exc}")
+    return out
+
+
+def _format_config_value(action, value) -> str:
+    """Render an effective option value as a settings-file string.
+
+    Args:
+        action: the argparse action for the option.
+        value: the value from the parsed namespace.
+
+    Returns:
+        The INI-ready string (``true``/``false`` for flags, comma-joined for
+        list/2-tuple options).
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value)
+    return str(value)
+
+
+def write_config(parser: argparse.ArgumentParser, args, path: str | Path) -> None:
+    """Write the effective settings to an INI file.
+
+    Args:
+        parser: the CLI parser (for the option set).
+        args: the parsed namespace whose effective values are written.
+        path: destination settings-file path.
+    """
+    cp = configparser.ConfigParser()
+    cp[_CONFIG_SECTION] = {}
+    for dest, action in _configurable_actions(parser).items():
+        value = getattr(args, dest, None)
+        if value is None:
+            continue
+        # key by dest (underscores) so options whose flag differs from their dest
+        # — e.g. --time -> time_budget — round-trip unambiguously
+        cp[_CONFIG_SECTION][dest] = _format_config_value(action, value)
+    with open(path, "w") as f:
+        f.write("# PyAutoRoute settings — pass with --config FILE.\n"
+                "# CLI options override these. Lists are comma-separated.\n")
+        cp.write(f)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser.
 
@@ -645,6 +786,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Autoroute a 2-layer KiCad PCB (writes a routed copy).")
     p.add_argument("--version", action="version", version=f"PyAutoRoute {__version__}")
     p.add_argument("input", help="input .kicad_pcb")
+    p.add_argument("--config", metavar="FILE",
+                   help="read options from an INI settings file (a [pyautoroute] "
+                        "section); options given on the command line override it")
+    p.add_argument("--write-config", nargs="?", const="", default=None, metavar="FILE",
+                   help="write the effective settings to an INI file and exit "
+                        "(bare: <input>.pyautoroute.cfg beside the board)")
     p.add_argument("--pro", help="project .kicad_pro (default: sibling)")
     p.add_argument("-o", "--output", help="output .kicad_pcb (default: INPUT_routed, "
                                           "or _placed_routed / _placed when placing)")
@@ -731,8 +878,24 @@ def main(argv=None) -> int:
     Returns:
         The process exit code from `run` (0 clean, 2 on a self-check violation).
     """
+    # Resolve --config first so its values become the parser defaults; anything
+    # then given on the command line overrides them (defaults < config < CLI).
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config")
+    known, _ = pre.parse_known_args(argv)
     parser = build_parser()
+    if known.config:
+        parser.set_defaults(**load_config(known.config, parser))
     args = parser.parse_args(argv)
+
+    if args.write_config is not None:
+        cfg_path = (Path(args.write_config) if args.write_config
+                    else Path(args.input).with_name(
+                        Path(args.input).stem + ".pyautoroute.cfg"))
+        write_config(parser, args, cfg_path)
+        print(f"wrote settings to {cfg_path}")
+        return 0
+
     t_start, t_end = args.anneal_temps
     if not (t_start > t_end > 0):
         parser.error("--anneal-temps requires START > END > 0")

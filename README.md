@@ -61,6 +61,8 @@ The original file is never modified — a routed copy is written alongside it.
 | `--via-weight W` | Via cost in mm-equivalent (higher ⇒ fewer vias). Default 2.0. |
 | `--seed S` | Random seed for the optimiser. |
 | `--snapshots N` | During annealing, save `N` intermediate board snapshots to a `snapshots/` subdir (beside the output), so you can watch the optimisation progress. Requires `--iters` or `--time`. |
+| `--config FILE` | Read options from an INI settings file (see below). Options given on the command line override it. |
+| `--write-config [FILE]` | Write the effective settings to an INI file and exit. Bare `--write-config` writes `<input>.pyautoroute.cfg` beside the board. |
 | `--log [FILE]` | Write a verbose log of the input parameters and routing/annealing progress. Bare `--log` writes `<output>.log`; `--log FILE` uses the given path. |
 | `--debug-plot` | Also write a `.png` render of the routed board. |
 | `--quiet` | Suppress the live progress display (final summary only). |
@@ -96,6 +98,38 @@ pyautoroute MyBoard.kicad_pcb --place --place-time 30 --time 60 --debug-plot
 
 # Place only, no routing: -> MyBoard_placed.kicad_pcb
 pyautoroute MyBoard.kicad_pcb --place-only --place-time 30 --debug-plot
+```
+
+### Settings file
+
+To re-run a board with the same options without re-typing them, keep the settings
+in a small INI file and pass it with `--config`:
+
+```ini
+[pyautoroute]
+grid = 0.2
+time_budget = 120
+via_weight = 2.0
+anneal_temps = 4.0, 0.05
+exclude_net = GND, /PWR*
+place = true
+place_buffer = 0.5
+runs = 4
+```
+
+Precedence is **defaults < config file < command line** — any option given on the
+command line overrides the file. Keys are the long option names (the `--time`
+budget is stored as `time_budget`); list options like `exclude_net` are
+comma-separated, and flags take `true`/`false`. An unknown key or bad value is
+reported as an error.
+
+Generate a starting file with `--write-config` (it dumps every effective setting,
+so it doubles as a template):
+
+```bash
+pyautoroute MyBoard.kicad_pcb --grid 0.2 --time 120 --write-config
+# -> MyBoard.pyautoroute.cfg, then later:
+pyautoroute MyBoard.kicad_pcb --config MyBoard.pyautoroute.cfg
 ```
 
 ### Auto-placement (experimental)

@@ -196,6 +196,14 @@ the write. The whole stage is transparent to the router, which already consumes
 `--place-overlap-weight`, `--place-compact-weight`; `--seed` is shared.
 
 ### `autoroute.py` — CLI & orchestration
+**Settings file.** `--config FILE` is resolved by a throwaway pre-parser that reads
+only `--config`; its `[pyautoroute]` values are coerced to each option's type
+(`load_config`, keyed by argparse `dest`) and pushed in via `parser.set_defaults`,
+so a value given on the command line still wins — precedence is defaults < config <
+CLI, for free. `--write-config` dumps the effective namespace back to INI
+(`write_config`) and exits. List/2-tuple options are comma-separated; flags are
+`true`/`false`.
+
 **Best-of-N.** `--runs N` repeats the route + anneal loop N times (seed stepped per
 run, fresh `RoutingState` over the one deterministic `Grid`) and keeps the
 lowest-energy routing (scored by `anneal._energy`); without annealing the greedy
