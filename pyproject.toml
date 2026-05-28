@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyautoroute"
-version = "0.15.0"
+version = "0.16.0"
 description = "Simulated-annealing autorouter for 2-layer KiCad PCBs"
 requires-python = ">=3.10"
 dependencies = [
@@ -23,6 +23,7 @@ docs = ["pdoc"]
 pyautoroute = "pyautoroute.autoroute:main"
 pyautoroute-tune = "pyautoroute.tune:main"
 pyautoroute-gui = "pyautoroute.gui:main"
+pyautoroute-fix = "pyautoroute.fixup:main"
 
 [tool.setuptools.packages.find]
 include = ["pyautoroute*"]

@@ -264,6 +264,21 @@ to confirm on a TTY (`--auto-yes` skips). See [`tuning.md`](tuning.md) for the
 method and roadmap. `tune` imports `default_pitch` from `autoroute`, so `autoroute`
 imports `tune` lazily (inside `--auto`) to avoid a cycle.
 
+### `fixup.py` — board fixup CLI
+`pyautoroute-fix` corrects footprint-level issues that don't affect routing but
+matter for fabrication.  Currently one operation:
+
+- **`--values`** — calls `pcb.fix_value_layers(board)`, which walks every
+  `(property "Value" ...)` (KiCad 7+) and `(fp_text value ...)` (KiCad 6)
+  node in the board tree.  For each node not already on a silkscreen layer
+  the `(layer ...)` atom is replaced with the front or back silk name (`F.SilkS`
+  / `B.SilkS`, discovered from the board's own layer table) that matches the
+  footprint's side.  Span invalidation on the changed `layer`, `property`,
+  and `footprint` nodes ensures `write_board` re-serializes only those subtrees.
+
+`--dry-run` reports what would change without writing.  `-o OUT` writes to a
+separate output path instead of overwriting the input.
+
 ### `pyautoroute.sh` — helper menu
 A repo-root Bash script offering a menu of common tasks (install, regenerate API
 docs via the `pdoc` recipe, run the short/long test suite, route a test board,

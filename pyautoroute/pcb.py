@@ -301,6 +301,38 @@ def _copper_layers(tree: SList) -> list[str]:
     return out or ["F.Cu", "B.Cu"]
 
 
+def _silk_layers(tree: SList) -> tuple[str, str]:
+    """Return the front and back silkscreen layer names from the board's layer table.
+
+    Looks for layer entries whose canonical name contains ``SilkS`` or
+    ``Silkscreen`` (case-insensitive). Falls back to ``"F.SilkS"`` / ``"B.SilkS"``
+    when the board has no layer table or no matching entries.
+
+    Args:
+        tree: the parsed board tree.
+
+    Returns:
+        A ``(front_silk, back_silk)`` pair, e.g. ``("F.SilkS", "B.SilkS")``.
+    """
+    layers_node = child(tree, "layers")
+    front = back = ""
+    if layers_node is not None:
+        for entry in layers_node:
+            if not isinstance(entry, SList):
+                continue
+            toks = [it for it in entry]
+            if len(toks) < 2 or not isinstance(toks[1], Atom):
+                continue
+            name = toks[1].text
+            low = name.lower()
+            if "silks" in low or "silkscreen" in low:
+                if low.startswith("f."):
+                    front = name
+                elif low.startswith("b."):
+                    back = name
+    return front or "F.SilkS", back or "B.SilkS"
+
+
 def _resolve_pad_layers(layer_strings: list[str], copper: list[str]) -> list[str]:
     """Resolve a pad's layer tokens to concrete copper-layer names.
 
@@ -988,6 +1020,81 @@ def stamp_comment(board: Board, text: str) -> None:
             node[node.index(atoms[1])] = sexpr.string(text)
             return
     # All 9 slots occupied — leave unchanged
+
+
+def fix_value_layers(board: Board) -> int:
+    """Move footprint ``Value`` text to the matching silkscreen layer.
+
+    Scans every footprint in the board tree for ``(property "Value" ...)``
+    nodes (KiCad 7+) and ``(fp_text value ...)`` nodes (KiCad 6 and earlier)
+    whose ``(layer ...)`` is **not** already a silkscreen layer.  Each such
+    node is reassigned to the silkscreen layer that matches the footprint's
+    side (front or back).  Hidden text (``(hide yes)``) is moved too — the
+    layer assignment is corrected regardless of visibility.
+
+    The board's s-expression tree is mutated in place; call `write_board` (or
+    `Path.write_text(sexpr.dump_file(...))`) to persist the changes.
+
+    Args:
+        board: the board to update in place.
+
+    Returns:
+        The number of text nodes whose layer was changed.
+    """
+    front_silk, back_silk = _silk_layers(board.tree)
+    silk_names = {front_silk, back_silk,
+                  "F.SilkS", "B.SilkS", "F.Silkscreen", "B.Silkscreen"}
+
+    changed = 0
+    for fp_node in children(board.tree, "footprint"):
+        # Determine front vs back from the footprint's (layer ...) child.
+        fp_layer_strs = strings(child(fp_node, "layer"))
+        fp_layer = fp_layer_strs[0] if fp_layer_strs else "F.Cu"
+        target_silk = back_silk if fp_layer.startswith("B.") else front_silk
+
+        # Modern format: (property "Value" ...) with a nested (layer "...").
+        for prop_node in children(fp_node, "property"):
+            atoms = atoms_after_head(prop_node)
+            if not atoms or atoms[0].text != "Value":
+                continue
+            layer_node = child(prop_node, "layer")
+            if layer_node is None:
+                continue
+            layer_atoms = atoms_after_head(layer_node)
+            if not layer_atoms:
+                continue
+            current = layer_atoms[0].text
+            if current in silk_names:
+                continue
+            # Swap the layer atom and invalidate spans so the serialiser
+            # regenerates this node rather than emitting verbatim source.
+            layer_node[layer_node.index(layer_atoms[0])] = sexpr.string(target_silk)
+            layer_node.span = None
+            prop_node.span = None
+            fp_node.span = None
+            changed += 1
+
+        # Legacy format: (fp_text value ...).
+        for txt_node in children(fp_node, "fp_text"):
+            atoms = atoms_after_head(txt_node)
+            if not atoms or atoms[0].text != "value":
+                continue
+            layer_node = child(txt_node, "layer")
+            if layer_node is None:
+                continue
+            layer_atoms = atoms_after_head(layer_node)
+            if not layer_atoms:
+                continue
+            current = layer_atoms[0].text
+            if current in silk_names:
+                continue
+            layer_node[layer_node.index(layer_atoms[0])] = sexpr.string(target_silk)
+            layer_node.span = None
+            txt_node.span = None
+            fp_node.span = None
+            changed += 1
+
+    return changed
 
 
 def write_board(board: Board, out_path: str | Path,

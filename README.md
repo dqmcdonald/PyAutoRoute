@@ -248,6 +248,23 @@ in front of it, picks the best grid/via setting, and (on a terminal) asks you to
 confirm before routing — pair it with `--write-config` to save the choice. See
 [`docs/tuning.md`](docs/tuning.md) for the objective, method, and roadmap.
 
+## Board fixups (`pyautoroute-fix`)
+
+`pyautoroute-fix` corrects common KiCad PCB file issues that don't affect routing
+but matter for manufacturing.
+
+```bash
+pyautoroute-fix --values BOARD.kicad_pcb           # overwrite in place
+pyautoroute-fix --values BOARD.kicad_pcb -o OUT.kicad_pcb
+pyautoroute-fix --values BOARD.kicad_pcb --dry-run  # report only, no write
+```
+
+| Flag | Meaning |
+|---|---|
+| `--values` | Move footprint **Value** text to the matching silkscreen layer (`F.SilkS` for front-side footprints, `B.SilkS` for back-side). KiCad footprint libraries often place the Value text on `F.Fab`/`B.Fab`, where it is visible only on the fabrication layer, not on the physical silkscreen. This flag reassigns those nodes to the correct silkscreen layer. |
+| `-o OUT` | Write fixed board to `OUT` instead of overwriting the input. |
+| `--dry-run` | Print what would change and exit without writing. |
+
 ## Helper script
 
 `./pyautoroute.sh` is an interactive menu of common tasks — install the package,
