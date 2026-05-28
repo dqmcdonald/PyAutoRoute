@@ -439,7 +439,7 @@ def _path_metrics(grid: Grid, path) -> tuple[float, int]:
 
 def route_all(state: RoutingState, connections, order: list[int],
               params: RouteParams | None = None,
-              on_progress=None) -> BoardRouting:
+              on_progress=None, on_partial=None) -> BoardRouting:
     """Route connections in the given order, committing each success to `state`.
 
     Args:
@@ -449,6 +449,9 @@ def route_all(state: RoutingState, connections, order: list[int],
         params: cost-model parameters; defaults are used when `None`.
         on_progress: optional callback ``(done, total, routed, unrouted)`` after
             each connection.
+        on_partial: optional callback ``(conn_idx, result_or_none)`` called after
+            each connection, for callers that need the partial results list
+            as it builds up (e.g. live board canvas updates).
 
     Returns:
         A `BoardRouting` with per-connection results and aggregate metrics.
@@ -472,6 +475,8 @@ def route_all(state: RoutingState, connections, order: list[int],
             total_vias += res.vias
         else:
             unrouted += 1
+        if on_partial is not None:
+            on_partial(idx, res)
         if on_progress is not None:
             on_progress(k + 1, len(order), routed, unrouted)
     return BoardRouting(results, routed, unrouted, total_len, total_vias)

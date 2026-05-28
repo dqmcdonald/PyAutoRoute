@@ -219,8 +219,11 @@ class App:
     # ── queue drain ───────────────────────────────────────────────────
 
     def _drain(self) -> None:
-        # Drain all pending events; keep only the last BoardSnap to avoid
-        # spending the main thread on intermediate board renders.
+        # Drain all pending events, but collapse redundant ones so the main
+        # thread is never overwhelmed even if the worker posts rapidly:
+        #   - keep only the last BoardSnap (rendering is expensive)
+        #   - keep only the last Progress per kind (metrics just need latest)
+        #   - keep all Phase / Done / Error events (rare, always process)
         events: list = []
         try:
             while True:
@@ -228,14 +231,20 @@ class App:
         except queue.Empty:
             pass
 
-        last_snap_idx = next(
-            (i for i in range(len(events) - 1, -1, -1)
-             if isinstance(events[i], BoardSnap)),
-            None,
-        )
+        # Identify last BoardSnap and last Progress per kind.
+        last_snap_idx: int | None = None
+        last_prog_idx: dict[str, int] = {}
+        for i, ev in enumerate(events):
+            if isinstance(ev, BoardSnap):
+                last_snap_idx = i
+            elif isinstance(ev, Progress):
+                last_prog_idx[ev.kind] = i
+
         for i, ev in enumerate(events):
             if isinstance(ev, BoardSnap) and i != last_snap_idx:
-                continue  # skip intermediate board renders
+                continue
+            if isinstance(ev, Progress) and last_prog_idx.get(ev.kind) != i:
+                continue
             try:
                 self._handle_event(ev)
             except Exception:

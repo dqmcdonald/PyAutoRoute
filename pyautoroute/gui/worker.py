@@ -19,8 +19,11 @@ from pathlib import Path
 from .events import BoardSnap, Done, Error, Phase, Progress
 
 
-# Throttle placement board snapshots: min seconds between BoardSnap events.
-_PLACE_SNAP_INTERVAL = 0.3
+# Minimum seconds between Progress events posted to the UI queue.
+# Keeps the main thread from being overwhelmed by high-iteration-rate callbacks.
+_PROGRESS_INTERVAL = 0.125   # ~8 Hz max
+# Minimum seconds between board canvas snapshots during greedy routing.
+_ROUTE_SNAP_INTERVAL = 1.5
 # Routing annealing snapshot count for live board updates.
 _ANNEAL_SNAP_COUNT = 40
 
@@ -103,17 +106,16 @@ class Worker:
             else:
                 buf = cfg.place_buffer
 
-            last_snap = [0.0]
+            last_place_prog = [0.0]
 
             def on_place(it, total, energy, best, temp, accept):
-                self._post(Progress("placing", it, total, energy, best,
-                                    temp, accept, 0, 0))
-                now = time.monotonic()
-                if now - last_snap[0] > _PLACE_SNAP_INTERVAL:
-                    last_snap[0] = now
-                    self._post(BoardSnap(_snap_pads(board)))
                 if self._cancel.is_set():
                     return
+                now = time.monotonic()
+                if now - last_place_prog[0] >= _PROGRESS_INTERVAL:
+                    last_place_prog[0] = now
+                    self._post(Progress("placing", it, total, energy, best,
+                                        temp, accept, 0, 0))
 
             pp = place_mod.PlaceParams(
                 iters=cfg.place_iters,
@@ -179,13 +181,31 @@ class Worker:
             tag = f"run {k + 1}/{runs}: " if runs > 1 else ""
             self._post(Phase(f"{tag}routing {len(conns)} connections"))
 
+            partial_results: list = [None] * len(conns)
+            last_route_prog = [0.0]
+            last_route_snap = [0.0]
+
+            def on_partial(idx, res):
+                partial_results[idx] = res
+
             def on_route(done, total, r, u):
-                self._post(Progress("routing", done, total, 0.0, 0.0,
-                                    0.0, 0.0, r, u))
+                now = time.monotonic()
+                if now - last_route_prog[0] >= _PROGRESS_INTERVAL:
+                    last_route_prog[0] = now
+                    self._post(Progress("routing", done, total, 0.0, 0.0,
+                                        0.0, 0.0, r, u))
+                if now - last_route_snap[0] >= _ROUTE_SNAP_INTERVAL:
+                    last_route_snap[0] = now
+                    self._post(BoardSnap(
+                        dataclasses.replace(board),
+                        results=list(partial_results),
+                        grid=grid,
+                    ))
 
             state = router.RoutingState(grid)
             result = router.route_all(state, conns, order, params,
-                                      on_progress=on_route)
+                                      on_progress=on_route,
+                                      on_partial=on_partial)
             # Board snap after greedy routing
             self._post(BoardSnap(
                 dataclasses.replace(board),
@@ -199,9 +219,14 @@ class Worker:
             if annealing:
                 self._post(Phase(f"{tag}annealing"))
 
+                last_anneal_prog = [0.0]
+
                 def on_anneal(it, total, r, u, energy, best, temp, accept):
-                    self._post(Progress("annealing", it, total, energy,
-                                        best, temp, accept, r, u))
+                    now = time.monotonic()
+                    if now - last_anneal_prog[0] >= _PROGRESS_INTERVAL:
+                        last_anneal_prog[0] = now
+                        self._post(Progress("annealing", it, total, energy,
+                                            best, temp, accept, r, u))
 
                 def on_snap(snap_k, snap_n, snap_results):
                     self._post(BoardSnap(
