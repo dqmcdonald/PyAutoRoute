@@ -96,6 +96,12 @@ overlapping and pulling the layout together. When it finishes, the `Edge.Cuts`
 board outline is **replaced** with a rectangle bounding the placed parts (plus
 `--place-margin`), and the board is routed normally in the same run.
 
+The placer keeps footprints at least `--place-buffer` mm apart (default derived
+from the design-rule clearance) so the placed board leaves room for routing and
+stays DRC-clean. Rotated footprints keep their pads correctly oriented in the
+output (KiCad stores pad angles absolutely, so the footprint rotation is
+propagated into each pad).
+
 Two footprint attributes steer it:
 
 - **Locked footprints stay put.** Lock a footprint in KiCad (it stores `(locked

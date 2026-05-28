@@ -89,7 +89,11 @@ edits. When placement has run, two helpers prepare the tree first:
 `apply_placement` pushes the moved poses into the pads and replaces `Board.outline`
 with a margin-grown bounding rectangle, and `sync_tree_from_placement` rewrites each
 moved footprint's `(at …)` node (clearing its span so only that line changes) and
-swaps the Edge.Cuts graphics for a single generated `gr_rect`.
+swaps the Edge.Cuts graphics for a single generated `gr_rect`. For a footprint that
+was **rotated**, `_rotate_pad_nodes` also adds the rotation delta to each pad's
+`(at …)` angle: KiCad stores pad angles *absolutely*, so without this a rotated
+footprint's pads would reload in their old orientation — mis-orienting rectangular
+pads and failing DRC.
 
 ### `geometry.py` — shapes & self-check
 shapely geometry for pads (rect / roundrect / circle / oval / trapezoid; custom
@@ -166,7 +170,11 @@ placement kept. Energy
 - **ratsnest** — total MST length over pad centroids, reusing `netlist`
   (`build_connections` + `Connection.est_length`), recomputed per evaluation.
 - **overlap_area** — pairwise intersection of footprint body boxes via a shapely
-  `STRtree` (as in `geometry.clearance_violations`). A pair where either footprint
+  `STRtree` (as in `geometry.clearance_violations`). Each box is grown by half of
+  `--place-buffer` per side, so a pair counts as overlapping until its gap exceeds
+  the buffer; the optimiser then keeps footprints at least `buffer` apart, leaving
+  room for routing clearance (the default is derived from the design-rule
+  clearance). A pair where either footprint
   is `overlap_ok` (the `Autoroute=overlap` property) contributes only its
   *pad-vs-pad* overlap, not body overlap — the shield-over-board case. **Locked**
   footprints are immovable obstacles included in the overlap term.
@@ -179,8 +187,8 @@ the board at the best placement; `autoroute` then calls `pcb.apply_placement` (p
 + new outline) before building the grid, and `pcb.sync_tree_from_placement` before
 the write. The whole stage is transparent to the router, which already consumes
 `Board.pads` and `Board.outline`. CLI knobs: `--place-iters`/`--place-time`
-(budget), `--place-margin`, `--place-overlap-weight`, `--place-compact-weight`;
-`--seed` is shared.
+(budget), `--place-margin`, `--place-buffer` (inter-footprint keep-out),
+`--place-overlap-weight`, `--place-compact-weight`; `--seed` is shared.
 
 ### `autoroute.py` — CLI & orchestration
 Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live

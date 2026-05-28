@@ -837,6 +837,35 @@ def _is_edge_graphic(node) -> bool:
     return bool(layer) and layer[0] == "Edge.Cuts"
 
 
+def _rotate_pad_nodes(fp_node: SList, delta: float) -> None:
+    """Add `delta` degrees to every pad's absolute ``(at)`` angle in a footprint.
+
+    KiCad pad ``(at px py angle)`` stores ``px``/``py`` as the footprint-local
+    (pre-rotation) offset and ``angle`` as the *absolute* pad orientation. When a
+    footprint is rotated by `delta`, only the angle changes (the local offset is
+    unchanged), so this rewrites each pad's ``(at)`` angle and clears the pad
+    node's span so the change is serialised rather than emitted verbatim.
+
+    Args:
+        fp_node: the ``(footprint ...)`` node whose pads to re-angle.
+        delta: the footprint's rotation change (degrees).
+    """
+    for pad in children(fp_node, "pad"):
+        at = child(pad, "at")
+        vals = floats(at)
+        if len(vals) < 2:
+            continue
+        px, py = vals[0], vals[1]
+        old_angle = vals[2] if len(vals) >= 3 else 0.0
+        new_at = _xy_node("at", px, py)
+        new_at.append(sexpr.number((old_angle + delta) % 360.0))
+        pad.span = None
+        for i, ch in enumerate(pad):
+            if ch is at:
+                pad[i] = new_at
+                break
+
+
 def sync_tree_from_placement(board: Board, edge_width: float = 0.05) -> None:
     """Rewrite the board tree to match the placement result, in place.
 
@@ -863,6 +892,15 @@ def sync_tree_from_placement(board: Board, edge_width: float = 0.05) -> None:
                 fp.fp_node[i] = new_at
                 break
         fp.at_node = new_at
+        # When the footprint was rotated, propagate the rotation into each pad's
+        # (at) angle. KiCad stores pad angles *absolutely* (already including the
+        # footprint rotation), and pad nodes are otherwise emitted verbatim from
+        # their source span, so without this a rotated footprint's pads keep their
+        # old orientation on reload — which mis-orients rectangular/oval pads and
+        # fails DRC.
+        delta = fp.angle - fp.angle0
+        if abs(delta) > 1e-9:
+            _rotate_pad_nodes(fp.fp_node, delta)
 
     rect = next((s for s in board.outline if s.kind == "rect"), None)
     if rect is None:

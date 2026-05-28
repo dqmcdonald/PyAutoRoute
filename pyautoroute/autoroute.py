@@ -195,6 +195,24 @@ def default_pitch(rules) -> float:
     return round(dc.track_width / 2.0 + dc.clearance, 4)
 
 
+def default_place_buffer(rules) -> float:
+    """Default placement keep-out gap (mm) derived from the design rules.
+
+    The placement pass keeps footprints at least this far apart; a value derived
+    from the clearance leaves room for routing between adjacent parts so the
+    placed board does not fail DRC.
+
+    Args:
+        rules: the `pyautoroute.rules.DesignRules`.
+
+    Returns:
+        ``max(2 x max-class-clearance, 0.5)`` mm, rounded to 4 places.
+    """
+    max_clear = max([c.clearance for c in rules.classes.values()]
+                    + [rules.min_clearance])
+    return round(max(2.0 * max_clear, 0.5), 4)
+
+
 # A grid coarser than this multiple of the rules-derived pitch often can't place
 # a node in the tight gap beside a pad, forcing vias where a finer grid would
 # route on one layer. Empirically a pad-flanking single-layer route survives at
@@ -287,6 +305,7 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
     rep.log(f"grid nodes     {grid.nx} x {grid.ny} x {grid.n_layers} layers")
     if args.place:
         rep.log(f"placement      on  (margin {args.place_margin} mm, "
+                f"buffer {args.place_buffer} mm, "
                 f"overlap wt {args.place_overlap_weight}, "
                 f"compact wt {args.place_compact_weight})")
         if args.place_iters:
@@ -339,10 +358,12 @@ def run(args: argparse.Namespace) -> int:
 
     if args.place:
         rep.phase(f"placing {len(board.footprints)} footprints (annealing)")
+        if args.place_buffer is None:
+            args.place_buffer = default_place_buffer(rules)
         pp = placement.PlaceParams(
             iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
             exclude=args.exclude_net, overlap_weight=args.place_overlap_weight,
-            compact_weight=args.place_compact_weight)
+            compact_weight=args.place_compact_weight, buffer=args.place_buffer)
         pout = placement.place(board, pp, on_progress=rep.placing)
         pcb.apply_placement(board, margin=args.place_margin)
         pcb.sync_tree_from_placement(board)
@@ -519,6 +540,10 @@ def build_parser() -> argparse.ArgumentParser:
                    default=2.0, metavar="MM",
                    help="margin (mm) around the parts for the regenerated outline "
                         "(default %(default)s)")
+    p.add_argument("--place-buffer", type=float, default=None, metavar="MM",
+                   help="keep-out gap (mm) enforced between footprints during "
+                        "placement, so the routed board stays DRC-clean "
+                        "(default: derived from the design-rule clearance)")
     p.add_argument("--place-overlap-weight", type=float,
                    default=placement.PlaceParams.overlap_weight, metavar="W",
                    help="placement cost per mm² of footprint overlap (default %(default)s)")
@@ -571,6 +596,8 @@ def main(argv=None) -> int:
         parser.error("--unrouted-weight must be >= 0")
     if args.place_margin < 0:
         parser.error("--place-margin must be >= 0")
+    if args.place_buffer is not None and args.place_buffer < 0:
+        parser.error("--place-buffer must be >= 0")
     if (args.place_iters or args.place_time) and not args.place:
         parser.error("--place-iters/--place-time require --place")
     return run(args)

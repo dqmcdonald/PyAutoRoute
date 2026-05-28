@@ -187,7 +187,11 @@ edits. When placement has run, two helpers prepare the tree first:
 <code>apply_placement</code> pushes the moved poses into the pads and replaces <code>Board.outline</code>
 with a margin-grown bounding rectangle, and <code>sync_tree_from_placement</code> rewrites each
 moved footprint's <code>(at …)</code> node (clearing its span so only that line changes) and
-swaps the Edge.Cuts graphics for a single generated <code>gr_rect</code>.</p>
+swaps the Edge.Cuts graphics for a single generated <code>gr_rect</code>. For a footprint that
+was <strong>rotated</strong>, <code>_rotate_pad_nodes</code> also adds the rotation delta to each pad's
+<code>(at …)</code> angle: KiCad stores pad angles <em>absolutely</em>, so without this a rotated
+footprint's pads would reload in their old orientation — mis-orienting rectangular
+pads and failing DRC.</p>
 
 <h3 id="geometrypy-shapes-self-check"><code>geometry.py</code> — shapes &amp; self-check</h3>
 
@@ -275,7 +279,11 @@ placement kept. Energy
 <li><strong>ratsnest</strong> — total MST length over pad centroids, reusing <code>netlist</code>
 (<code>build_connections</code> + <code>Connection.est_length</code>), recomputed per evaluation.</li>
 <li><strong>overlap_area</strong> — pairwise intersection of footprint body boxes via a shapely
-<code>STRtree</code> (as in <code>geometry.clearance_violations</code>). A pair where either footprint
+<code>STRtree</code> (as in <code>geometry.clearance_violations</code>). Each box is grown by half of
+<code>--place-buffer</code> per side, so a pair counts as overlapping until its gap exceeds
+the buffer; the optimiser then keeps footprints at least <code>buffer</code> apart, leaving
+room for routing clearance (the default is derived from the design-rule
+clearance). A pair where either footprint
 is <code>overlap_ok</code> (the <code>Autoroute=overlap</code> property) contributes only its
 <em>pad-vs-pad</em> overlap, not body overlap — the shield-over-board case. <strong>Locked</strong>
 footprints are immovable obstacles included in the overlap term.</li>
@@ -291,8 +299,8 @@ the board at the best placement; <code>autoroute</code> then calls <code>pcb.app
 <li>new outline) before building the grid, and <code>pcb.sync_tree_from_placement</code> before
 the write. The whole stage is transparent to the router, which already consumes
 <code>Board.pads</code> and <code>Board.outline</code>. CLI knobs: <code>--place-iters</code>/<code>--place-time</code>
-(budget), <code>--place-margin</code>, <code>--place-overlap-weight</code>, <code>--place-compact-weight</code>;
-<code>--seed</code> is shared.</li>
+(budget), <code>--place-margin</code>, <code>--place-buffer</code> (inter-footprint keep-out),
+<code>--place-overlap-weight</code>, <code>--place-compact-weight</code>; <code>--seed</code> is shared.</li>
 </ul>
 
 <h3 id="autoroutepy-cli-orchestration"><code>autoroute.py</code> — CLI &amp; orchestration</h3>
