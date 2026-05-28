@@ -50,6 +50,80 @@ from .pcb import Board, Footprint, Pad
 # cools) rather than being dominated by the hot start. Mirrors `anneal`.
 _ACCEPT_WINDOW = 100
 
+_SILK_LAYERS = {"F.SilkS", "B.SilkS", "F.Silkscreen", "B.Silkscreen"}
+
+
+def _fp_silk_text_extents(fp: Footprint) -> list[tuple[float, float, float]]:
+    """Return ``(local_x, local_y, half_diag)`` for each visible silkscreen text.
+
+    The ``(local_x, local_y)`` are in the footprint's local coordinate frame
+    (pre-rotation); ``half_diag`` is a rotation-invariant radius estimate based
+    on the text content length and declared font height, so the extent can be
+    applied without knowing the text's own angle.
+
+    Args:
+        fp: the footprint whose text nodes are scanned.
+
+    Returns:
+        One tuple per visible, non-hidden silkscreen text item (Reference or
+        Value property, or fp_text) in the footprint.
+    """
+    from .pcb import children, child, strings, floats, atoms_after_head
+    from .sexpr import SList
+
+    extents: list[tuple[float, float, float]] = []
+
+    def _hidden(node) -> bool:
+        h = child(node, "hide")
+        if h is None:
+            return False
+        vals = atoms_after_head(h)
+        return bool(vals) and vals[0].text == "yes"
+
+    def _layer(node) -> str:
+        ls = strings(child(node, "layer"))
+        return ls[0] if ls else ""
+
+    def _font_h(node) -> float:
+        eff = child(node, "effects")
+        if eff is None:
+            return 1.0
+        fnt = child(eff, "font")
+        if fnt is None:
+            return 1.0
+        sz = child(fnt, "size")
+        vals = floats(sz) if sz is not None else []
+        return vals[0] if vals else 1.0
+
+    def _add(content: str, at_vals, fh: float) -> None:
+        if len(at_vals) < 2 or not content:
+            return
+        w = len(content) * fh * 0.7
+        h = fh * 1.3
+        extents.append((at_vals[0], at_vals[1], 0.5 * math.hypot(w, h)))
+
+    fp_node = fp.fp_node
+
+    for prop in children(fp_node, "property"):
+        if _hidden(prop) or _layer(prop) not in _SILK_LAYERS:
+            continue
+        atoms = atoms_after_head(prop)
+        if len(atoms) < 2 or atoms[0].text not in ("Reference", "Value"):
+            continue
+        content = atoms[1].text
+        _add(content, floats(child(prop, "at")), _font_h(prop))
+
+    for txt in children(fp_node, "fp_text"):
+        if _hidden(txt) or _layer(txt) not in _SILK_LAYERS:
+            continue
+        atoms = atoms_after_head(txt)
+        if len(atoms) < 2:
+            continue
+        content = atoms[1].text.replace("${REFERENCE}", fp.ref)
+        _add(content, floats(child(txt, "at")), _font_h(txt))
+
+    return extents
+
 
 @dataclass
 class PlaceParams:
@@ -107,14 +181,34 @@ class _Placer:
         # room for the routing clearance and avoiding the too-tight placements
         # that previously failed DRC.
         self.half_buffer = max(0.0, params.buffer) / 2.0
+        # Precompute silkscreen text local extents once; looked up by id(fp).
+        self._text_extents: dict[int, list[tuple[float, float, float]]] = {
+            id(fp): _fp_silk_text_extents(fp) for fp in self.boxed
+        }
 
     def _fp_box(self, fp: Footprint):
-        """Buffer-inflated axis-aligned body box of a footprint, from its pads."""
+        """Buffer-inflated axis-aligned body box of a footprint.
+
+        Covers pads and any visible silkscreen text (Reference/Value) so the
+        overlap penalty also pushes text labels apart.
+        """
         hb = self.half_buffer
         xs0 = min(p.cx - _half_extent(p) for p in fp.pads) - hb
         ys0 = min(p.cy - _half_extent(p) for p in fp.pads) - hb
         xs1 = max(p.cx + _half_extent(p) for p in fp.pads) + hb
         ys1 = max(p.cy + _half_extent(p) for p in fp.pads) + hb
+        # Extend to cover silkscreen text (local coords → board coords).
+        txt_list = self._text_extents.get(id(fp))
+        if txt_list:
+            cos_a = math.cos(math.radians(fp.angle))
+            sin_a = math.sin(math.radians(fp.angle))
+            for lx, ly, hr in txt_list:
+                bx = fp.x + lx * cos_a + ly * sin_a
+                by = fp.y - lx * sin_a + ly * cos_a
+                xs0 = min(xs0, bx - hr)
+                ys0 = min(ys0, by - hr)
+                xs1 = max(xs1, bx + hr)
+                ys1 = max(ys1, by + hr)
         return box(xs0, ys0, xs1, ys1)
 
     def _pad_box(self, pad: Pad):

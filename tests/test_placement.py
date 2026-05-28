@@ -322,3 +322,52 @@ def test_sync_tree_rewrites_at_and_regenerates_edge_cuts(tmp_path):
     assert "gr_rect" in text_out
     rects = [s for s in reloaded.outline if s.kind == "rect"]
     assert len(rects) == 1
+
+
+# --- silkscreen text extent in body box --------------------------------------
+
+def test_fp_silk_text_extents_parsed_footprint():
+    """_fp_silk_text_extents returns one entry per visible silk label."""
+    text = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+        '  (5 "F.SilkS" user "F.Silkscreen"))'
+        ' (footprint "Lib:R" (layer "F.Cu") (at 0 0 0)'
+        '  (property "Reference" "R1" (at 0 -2 0) (layer "F.SilkS")'
+        '   (effects (font (size 1.5 1.5))))'
+        '  (property "Value" "10K" (at 0 2 0) (layer "F.SilkS")'
+        '   (effects (font (size 1.5 1.5))))'
+        '  (property "Datasheet" "~" (at 0 4 0) (layer "F.Fab")'
+        '   (effects (font (size 1 1))))'
+        '  (pad "1" smd rect (at -1 0) (size 1 1) (layers "F.Cu") (net "A"))))'
+    )
+    board = _board_from_text(text)
+    fp = board.footprints[0]
+    from pyautoroute.placement import _fp_silk_text_extents
+    extents = _fp_silk_text_extents(fp)
+    # Reference + Value are on F.SilkS; Datasheet is on F.Fab → ignored
+    assert len(extents) == 2
+    # Each extent is (local_x, local_y, half_diag) with half_diag > 0
+    for lx, ly, hr in extents:
+        assert hr > 0.0
+
+
+def test_fp_box_grows_to_include_silk_text():
+    """_fp_box must be larger when silkscreen text extends beyond the pad area."""
+    text = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+        '  (5 "F.SilkS" user "F.Silkscreen"))'
+        ' (footprint "Lib:R" (layer "F.Cu") (at 10 10 0)'
+        '  (property "Reference" "R1" (at 0 -6 0) (layer "F.SilkS")'
+        '   (effects (font (size 1 1))))'
+        '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "A"))))'
+    )
+    board = _board_from_text(text)
+    fp = board.footprints[0]
+
+    from pyautoroute.placement import _Placer, PlaceParams
+    placer = _Placer(board, PlaceParams(iters=1, seed=0))
+
+    b = placer._fp_box(fp)
+    # The Reference label is at local (0, -6) — which is board (10, 4) after
+    # translation; its half_diag > 0, so the box must reach below y=4.
+    assert b.bounds[1] < 4.0   # miny well below the text centre

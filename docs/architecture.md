@@ -89,11 +89,12 @@ edits. When placement has run, two helpers prepare the tree first:
 `apply_placement` pushes the moved poses into the pads and replaces `Board.outline`
 with a margin-grown bounding rectangle, and `sync_tree_from_placement` rewrites each
 moved footprint's `(at …)` node (clearing its span so only that line changes) and
-swaps the Edge.Cuts graphics for a single generated `gr_rect`. For a footprint that
-was **rotated**, `_rotate_pad_nodes` also adds the rotation delta to each pad's
-`(at …)` angle: KiCad stores pad angles *absolutely*, so without this a rotated
-footprint's pads would reload in their old orientation — mis-orienting rectangular
-pads and failing DRC.
+swaps the Edge.Cuts graphics for a single generated `gr_rect`. For a footprint that was **rotated**, `_rotate_pad_nodes` adds the rotation delta
+to each pad's `(at …)` angle — KiCad stores pad angles *absolutely*, so without
+this a rotated footprint's pads would reload in their old orientation, mis-orienting
+rectangular pads and failing DRC. The symmetric `_rotate_text_nodes` does the same
+for `fp_text` and `property` `(at …)` angles so silkscreen labels also rotate with
+the footprint in the written file.
 
 ### `geometry.py` — shapes & self-check
 shapely geometry for pads (rect / roundrect / circle / oval / trapezoid; custom
@@ -194,6 +195,15 @@ the write. The whole stage is transparent to the router, which already consumes
 (budget), `--place-temps` (schedule), `--place-step`, `--place-rotate`,
 `--place-margin`, `--place-buffer` (inter-footprint keep-out),
 `--place-overlap-weight`, `--place-compact-weight`; `--seed` is shared.
+
+**Silkscreen text in body boxes.** `_fp_silk_text_extents` pre-computes a list of
+`(local_x, local_y, half_diag)` for each visible, non-hidden silkscreen text item
+(`property "Reference"` / `"Value"` and `fp_text` on `F.SilkS` / `B.SilkS`)
+in a footprint. `_fp_box` transforms these local positions to board coordinates
+using the footprint's current pose and extends the AABB to cover them (using a
+rotation-invariant circular half-diagonal estimate). This means the overlap penalty
+also pushes *text labels* apart — footprints won't be placed so close that their
+Reference or Value silkscreen text overlaps a neighbour.
 
 ### `autoroute.py` — CLI & orchestration
 **Settings file.** `--config FILE` is resolved by a throwaway pre-parser that reads
@@ -383,7 +393,7 @@ moves are forbidden from cutting a blocked corner.
 - `test_pcb` — pad absolute position/rotation, both net formats, writer no-op byte-identity, free-via stripping, segment append.
 - `test_rules`, `test_geometry`, `test_grid`, `test_netlist`, `test_router` — per-module behaviour (occupancy semantics, via crossing, diagonal preference, exact rip-up).
 - `test_anneal` — best energy never worsens; routing stays clean after annealing.
-- `test_placement` — placement energy never worsens; locked footprints stay put; bodies separate while `Autoroute=overlap` parts may overlap (pads kept apart); lock/property parsing and the footprint-`(at)` + Edge.Cuts tree rewrite round-trip.
+- `test_placement` — placement energy never worsens; locked footprints stay put; bodies separate while `Autoroute=overlap` parts may overlap (pads kept apart); lock/property parsing and the footprint-`(at)` + Edge.Cuts tree rewrite round-trip; silkscreen text extents returned by `_fp_silk_text_extents` and included in `_fp_box`.
 - `test_endtoend` — routes a synthetic board with a **`gr_line` outline** (generality) and `--exclude-net`, asserting zero clearance violations via the self-check.
 - `test_boards` — parametrized over every board in `TestProjects/` (ids `Test1`..`Test5`; hidden stray files like `.kicad_pcb.kicad_pcb` are skipped): parse, round-trip, writer no-op, outline/pads-inside, and a routing self-check. Routing the large boards (>30 pads) is skipped by default and enabled with `pytest --slow` (defined in `conftest.py`).
 
