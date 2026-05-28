@@ -55,6 +55,7 @@ The original file is never modified — a routed copy is written alongside it.
 | `--iters N` | Run simulated-annealing optimisation for N iterations. |
 | `--time SECONDS` | Run optimisation for a wall-clock budget instead. |
 | `--runs N` | Route `N` times with different annealing seeds and keep the lowest-energy result (best-of-N). Default 1. Multiplies runtime ~N×; only varies the result when annealing (`--iters`/`--time`) is on. |
+| `--auto` | Probe a few grid/via settings on this board, pick the best, and (on a terminal) ask to confirm before routing with them. `--auto-yes` skips the prompt; `--auto-probe-time S` sets the budget per probed setting. |
 | `--unrouted-weight W` | Annealing energy penalty per unrouted connection (default 100). Higher ⇒ the optimiser tries harder to complete every connection, at the expense of wirelength/vias; lower ⇒ it tolerates leaving hard nets for manual routing. |
 | `--anneal-temps START END` | Start/end temperature of the geometric cooling schedule (default `4.0 0.05`); `START > END > 0`. Higher `START` explores more (better escape from local minima, slower convergence); lower `END` exploits harder at the finish. |
 | `--exclude-net PATTERN` | Leave matching nets un-routed (repeatable; glob, e.g. `GND` or `"/PWR*"`). Their pads still act as obstacles. |
@@ -230,6 +231,22 @@ as attached to the pad and keeps it connected when you move the footprint.
 - Custom-shaped pads are approximated by their bounding box.
 - Runtime is dominated by a few long/awkward nets; a finer `--grid` improves coverage but is slower.
 - The optimiser improves length and via count; it does not guarantee a global optimum.
+
+## Finding good settings
+
+Results depend on a few knobs (grid pitch, via weight, schedule, budget).
+`pyautoroute-tune` sweeps the critical parameters over one or more boards, scores
+each routing with a single objective (completion, then wirelength, then vias, with
+an optional runtime tiebreaker), and reports the best setting per board:
+
+```bash
+pyautoroute-tune MyBoard.kicad_pcb --time 5 --seeds 3
+```
+
+The opt-in `--auto` flag is the online version: it runs a quick probe on the board
+in front of it, picks the best grid/via setting, and (on a terminal) asks you to
+confirm before routing — pair it with `--write-config` to save the choice. See
+[`docs/tuning.md`](docs/tuning.md) for the objective, method, and roadmap.
 
 ## Helper script
 

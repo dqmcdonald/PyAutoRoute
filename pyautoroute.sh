@@ -68,6 +68,13 @@ write_settings() {
     run "$PYTHON" -m pyautoroute.autoroute "$board" --write-config
 }
 
+tune_settings() {
+    local board; board="$(pick_board)"
+    [[ -z "$board" ]] && { echo "no board selected"; return; }
+    read -rp "seconds per probed setting [5]: " t
+    run "$PYTHON" -m pyautoroute.tune "$board" --time "${t:-5}"
+}
+
 clean_outputs() {
     echo "Generated files to remove:"
     find . \( -name '*_routed.kicad_pcb' -o -name '*_placed.kicad_pcb' \
@@ -94,18 +101,20 @@ PyAutoRoute — tasks
   3) Run tests (short or long)
   4) Route a test board
   5) Write a settings file for a board
-  6) Clean generated outputs
-  7) Quit
+  6) Find good settings for a board (parameter sweep)
+  7) Clean generated outputs
+  8) Quit
 EOF
-    read -rp "choice: " c
+    read -rp "choice: " c || return 1      # EOF (piped/empty input) -> quit
     case "$c" in
         1) install_pkg ;;
         2) update_docs ;;
         3) run_tests ;;
         4) route_board ;;
         5) write_settings ;;
-        6) clean_outputs ;;
-        7|q|Q) return 1 ;;
+        6) tune_settings ;;
+        7) clean_outputs ;;
+        8|q|Q) return 1 ;;
         *) echo "unknown choice: $c" ;;
     esac
     return 0

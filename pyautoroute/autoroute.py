@@ -420,6 +420,32 @@ def run(args: argparse.Namespace) -> int:
         _report_placed(rep, out_path, board, violations)
         return _finish(rep, args, out_path, placed_board, violations)
 
+    if args.auto:
+        from . import tune
+        rep.phase("auto: probing grid/via settings")
+        scored = tune.sweep(board, rules,
+                            tune.default_grid(time_budget=args.auto_probe_time),
+                            seeds=(args.seed,), unrouted_weight=args.unrouted_weight,
+                            via_weight=args.via_weight)
+        best = tune.best_config(scored)
+        chosen_pitch = round(default_pitch(rules) * best.grid_mult, 4)
+        rep.done()
+        bm = scored[0].metrics[0]
+        total = bm.routed + bm.unrouted
+        chosen = (f"auto: best probe grid={chosen_pitch} mm (x{best.grid_mult}), "
+                  f"via-weight={best.via_weight} -> {bm.routed}/{total} routed, "
+                  f"{bm.length:.0f} mm, {bm.vias} vias")
+        print(f"\n  {chosen}")
+        rep.log(chosen)
+        apply_auto = True
+        if sys.stdin.isatty() and not args.auto_yes:
+            apply_auto = input("  apply these settings? [Y/n] ").strip().lower() \
+                in ("", "y", "yes")
+        if apply_auto:
+            args.grid, args.via_weight, pitch = chosen_pitch, best.via_weight, chosen_pitch
+        else:
+            print("  auto: keeping the given settings")
+
     rep.phase("building netlist (MST rats-nest)")
     conns = netlist.build_connections(board, exclude=args.exclude_net)
     excluded = sorted({p.net for p in board.pads if p.net
@@ -845,6 +871,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="route N times with different annealing seeds and keep the "
                         "lowest-energy result (default 1; only varies with "
                         "--iters/--time)")
+    p.add_argument("--auto", action="store_true",
+                   help="probe a few grid/via settings on this board, pick the best, "
+                        "and (on a terminal) ask to confirm before routing with them")
+    p.add_argument("--auto-yes", action="store_true",
+                   help="with --auto, apply the chosen settings without prompting")
+    p.add_argument("--auto-probe-time", type=float, default=3.0, metavar="S",
+                   help="annealing seconds per probed setting under --auto (default %(default)s)")
     p.add_argument("--exclude-net", action="append", default=[], metavar="PATTERN",
                    help="net name/glob to leave un-routed (repeatable)")
     p.add_argument("--seed", type=int, default=0, help="random seed")

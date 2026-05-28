@@ -244,6 +244,21 @@ Two diagnostic options hook into this flow:
 ### `visualize.py` — optional render
 matplotlib render of outline + pads + tracks + vias (`--debug-plot`).
 
+### `tune.py` — parameter sweep & scoring
+Scores a routing with a single objective
+(`unrouted_weight·unrouted + length + via_weight·vias + time_weight·runtime`,
+lower better — the annealer's energy plus a runtime tiebreaker) and sweeps the
+critical parameters to find the best setting. `evaluate` routes a board under one
+`Config` + seed and measures it; `sweep`/`sweep_board` run the search-space
+configs over several seeds and score each by the **median** (so a lucky seed
+doesn't win), reusing one parsed board and one grid per pitch; `best_config` picks
+the lowest. The `pyautoroute-tune` CLI prints a per-board markdown report. `--auto`
+(in `autoroute.py`) reuses `sweep`/`best_config` as a quick probe on the board (a
+small `--auto-probe-time` budget), then sets `--grid`/`--via-weight` — after asking
+to confirm on a TTY (`--auto-yes` skips). See [`tuning.md`](tuning.md) for the
+method and roadmap. `tune` imports `default_pitch` from `autoroute`, so `autoroute`
+imports `tune` lazily (inside `--auto`) to avoid a cycle.
+
 ### `pyautoroute.sh` — helper menu
 A repo-root Bash script offering a menu of common tasks (install, regenerate API
 docs via the `pdoc` recipe, run the short/long test suite, route a test board,

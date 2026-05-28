@@ -66,6 +66,7 @@
                     <li><a href="pyautoroute/router.html">router</a></li>
                     <li><a href="pyautoroute/rules.html">rules</a></li>
                     <li><a href="pyautoroute/sexpr.html">sexpr</a></li>
+                    <li><a href="pyautoroute/tune.html">tune</a></li>
                     <li><a href="pyautoroute/visualize.html">visualize</a></li>
             </ul>
 
@@ -361,6 +362,22 @@ writes regardless of <code>--quiet</code>. Bare <code>--log</code> uses <code>&l
 <h3 id="visualizepy-optional-render"><code>visualize.py</code> — optional render</h3>
 
 <p>matplotlib render of outline + pads + tracks + vias (<code>--debug-plot</code>).</p>
+
+<h3 id="tunepy-parameter-sweep-scoring"><code>tune.py</code> — parameter sweep &amp; scoring</h3>
+
+<p>Scores a routing with a single objective
+(<code>unrouted_weight·unrouted + length + via_weight·vias + time_weight·runtime</code>,
+lower better — the annealer's energy plus a runtime tiebreaker) and sweeps the
+critical parameters to find the best setting. <code>evaluate</code> routes a board under one
+<code>Config</code> + seed and measures it; <code>sweep</code>/<code>sweep_board</code> run the search-space
+configs over several seeds and score each by the <strong>median</strong> (so a lucky seed
+doesn't win), reusing one parsed board and one grid per pitch; <code>best_config</code> picks
+the lowest. The <code>pyautoroute-tune</code> CLI prints a per-board markdown report. <code>--auto</code>
+(in <code>autoroute.py</code>) reuses <code>sweep</code>/<code>best_config</code> as a quick probe on the board (a
+small <code>--auto-probe-time</code> budget), then sets <code>--grid</code>/<code>--via-weight</code> — after asking
+to confirm on a TTY (<code>--auto-yes</code> skips). See <a href="tuning.md"><code>tuning.md</code></a> for the
+method and roadmap. <code>tune</code> imports <code>default_pitch</code> from <code>autoroute</code>, so <code>autoroute</code>
+imports <code>tune</code> lazily (inside <code>--auto</code>) to avoid a cycle.</p>
 
 <h3 id="pyautoroutesh-helper-menu"><code>pyautoroute.sh</code> — helper menu</h3>
 

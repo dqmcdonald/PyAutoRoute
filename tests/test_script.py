@@ -25,7 +25,7 @@ def test_script_syntax_valid():
 
 @pytest.mark.skipif(_BASH is None, reason="bash not available")
 def test_script_menu_lists_options_and_quits():
-    r = subprocess.run([_BASH, str(_SCRIPT)], input="7\n",
+    r = subprocess.run([_BASH, str(_SCRIPT)], input="8\n",
                        capture_output=True, text=True, timeout=30)
     assert r.returncode == 0
     assert "PyAutoRoute" in r.stdout
