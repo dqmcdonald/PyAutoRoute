@@ -29,6 +29,10 @@ from .sexpr import SList
 
 SQRT2 = math.sqrt(2.0)
 
+# A pad-centre stub shorter than this (mm) is dropped as a zero-length segment:
+# the path's terminal node already coincides with the pad anchor.
+_STUB_EPS = 1e-3
+
 # 8 compass directions, indexed 0..7 (used for bend-penalty bookkeeping)
 _DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
 
@@ -78,6 +82,11 @@ class RouteResult:
     path: list[tuple[int, int, int]]   # (layer_idx, col, row)
     length: float                      # routed wirelength (mm)
     vias: int
+    # pad anchor (centre) coordinates of the two endpoints, if known. The writer
+    # stubs the path's terminal nodes to these so each track ends on the pad
+    # anchor — KiCad then keeps the track attached when the footprint is moved.
+    src_xy: tuple[float, float] | None = None
+    dst_xy: tuple[float, float] | None = None
 
 
 @dataclass
@@ -354,7 +363,9 @@ def _reconstruct(came, st) -> list[tuple[int, int, int]]:
 def route_connection(state: RoutingState, net: str,
                      sources: list[tuple[int, int, int]],
                      targets: list[tuple[int, int, int]],
-                     params: RouteParams | None = None) -> RouteResult | None:
+                     params: RouteParams | None = None,
+                     src_xy: tuple[float, float] | None = None,
+                     dst_xy: tuple[float, float] | None = None) -> RouteResult | None:
     """Route one connection and package the path with its metrics.
 
     Args:
@@ -363,6 +374,9 @@ def route_connection(state: RoutingState, net: str,
         sources: candidate start nodes (one pad's access nodes).
         targets: candidate goal nodes (the other pad's access nodes).
         params: cost-model parameters; defaults are used when `None`.
+        src_xy: the source pad's anchor (centre) coordinates, if known; recorded
+            on the result so the writer stubs the track to the pad anchor.
+        dst_xy: the target pad's anchor (centre) coordinates, if known.
 
     Returns:
         The `RouteResult` (path + length + vias), or `None` if unroutable.
@@ -372,7 +386,32 @@ def route_connection(state: RoutingState, net: str,
     if path is None:
         return None
     length, vias = _path_metrics(state.grid, path)
-    return RouteResult(net=net, path=path, length=length, vias=vias)
+    length += _stub_length(state.grid, path, src_xy, dst_xy)
+    return RouteResult(net=net, path=path, length=length, vias=vias,
+                       src_xy=src_xy, dst_xy=dst_xy)
+
+
+def _stub_length(grid: Grid, path, src_xy, dst_xy) -> float:
+    """Extra wirelength of the pad-anchor stubs at the path's two ends.
+
+    Args:
+        grid: the grid (node -> coordinate conversion).
+        path: the routed ``(layer, col, row)`` node path.
+        src_xy: the source pad anchor, or `None`.
+        dst_xy: the target pad anchor, or `None`.
+
+    Returns:
+        The summed length (mm) of the (non-degenerate) endpoint stubs.
+    """
+    extra = 0.0
+    for xy, node in ((src_xy, path[0]), (dst_xy, path[-1])):
+        if xy is None:
+            continue
+        nx, ny = grid.node_xy(node[1], node[2])
+        d = math.hypot(nx - xy[0], ny - xy[1])
+        if d >= _STUB_EPS:
+            extra += d
+    return extra
 
 
 def _path_metrics(grid: Grid, path) -> tuple[float, int]:
@@ -422,7 +461,9 @@ def route_all(state: RoutingState, connections, order: list[int],
         conn = connections[idx]
         srcs = state.grid.pad_access_nodes(conn.a)
         tgts = state.grid.pad_access_nodes(conn.b)
-        res = route_connection(state, conn.net, srcs, tgts, params)
+        res = route_connection(state, conn.net, srcs, tgts, params,
+                               src_xy=(conn.a.cx, conn.a.cy),
+                               dst_xy=(conn.b.cx, conn.b.cy))
         results[idx] = res
         if res is not None:
             state.commit(idx, res)
@@ -487,7 +528,40 @@ def path_to_nodes(board, grid: Grid, result: RouteResult) -> list[SList]:
 
     if run_start[1:] != prev[1:] and run_start[0] == prev[0]:
         nodes.append(_seg(board, grid, result.net, run_start, prev, width))
+
+    # Stub each end to the pad anchor so the track terminates on the pad centre.
+    # Each stub runs from a terminal grid node (inside the pad) to the pad's
+    # centre (also inside the pad), so it stays within the pad's own copper and
+    # adds no clearance violation.
+    for xy, node in ((result.src_xy, path[0]), (result.dst_xy, path[-1])):
+        stub = _centre_stub(board, grid, result.net, xy, node, width)
+        if stub is not None:
+            nodes.append(stub)
     return nodes
+
+
+def _centre_stub(board, grid: Grid, net: str, xy, node, width: float) -> SList | None:
+    """Build a stub segment from a pad anchor to a terminal grid node.
+
+    Args:
+        board: the board (net-reference style).
+        grid: the grid (node -> coordinate conversion).
+        net: the segment's net name.
+        xy: the pad anchor ``(x, y)`` in mm, or `None` (no stub).
+        node: the path's terminal ``(layer, col, row)`` node, on the pad.
+        width: the track width (mm).
+
+    Returns:
+        A ``(segment ...)`` node on the node's layer, or `None` when no anchor is
+        known or the node already sits on the anchor (a zero-length stub).
+    """
+    from .pcb import make_segment
+    if xy is None:
+        return None
+    nx, ny = grid.node_xy(node[1], node[2])
+    if math.hypot(nx - xy[0], ny - xy[1]) < _STUB_EPS:
+        return None
+    return make_segment(board, xy[0], xy[1], nx, ny, width, grid.layers[node[0]], net)
 
 
 def _sign(v: int) -> int:
