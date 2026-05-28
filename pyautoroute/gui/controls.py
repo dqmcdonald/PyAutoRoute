@@ -347,10 +347,12 @@ class ControlsPanel(ttk.Frame):
             pro = p.with_name(p.stem + ".kicad_pro")
         self._pro_path.set(pro.name if pro.exists() else "(not found)")
         self._full_input = str(p)
-        # Auto-load .pyautoroute.cfg if present
-        cfg = p.with_name(p.stem + ".pyautoroute.cfg")
-        if cfg.exists():
-            self._load_cfg(str(cfg))
+        # Auto-load project config: prefer <stem>.ini, fall back to .pyautoroute.cfg
+        for cfg in (p.with_suffix(".ini"),
+                    p.with_name(p.stem + ".pyautoroute.cfg")):
+            if cfg.exists():
+                self._load_cfg(str(cfg))
+                break
 
     def _full_input_path(self) -> str | None:
         return getattr(self, "_full_input", None)

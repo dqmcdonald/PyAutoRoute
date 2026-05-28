@@ -729,6 +729,32 @@ def _coerce_config_value(action, raw: str):
     return conv(raw)
 
 
+def load_project_config(path: str | Path,
+                        parser: argparse.ArgumentParser) -> dict:
+    """Load a project INI file if it has a ``[pyautoroute]`` section.
+
+    Like `load_config` but silently returns ``{}`` when the file does not
+    exist or lacks the ``[pyautoroute]`` section — so a generic ``*.ini``
+    used by other tools in the project directory is skipped harmlessly.
+    Bad values still raise via ``parser.error``.
+
+    Args:
+        path: path to the project INI file (e.g. ``myboard.ini``).
+        parser: the CLI parser.
+
+    Returns:
+        Settings dict (possibly empty) suitable for ``parser.set_defaults``.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+    cp = configparser.ConfigParser()
+    cp.read(path)
+    if not cp.has_section(_CONFIG_SECTION):
+        return {}
+    return load_config(path, parser)
+
+
 def load_config(path: str | Path, parser: argparse.ArgumentParser) -> dict:
     """Read an INI settings file into a ``{dest: typed_value}`` mapping.
 
@@ -977,12 +1003,20 @@ def main(argv=None) -> int:
     Returns:
         The process exit code from `run` (0 clean, 2 on a self-check violation).
     """
-    # Resolve --config first so its values become the parser defaults; anything
-    # then given on the command line overrides them (defaults < config < CLI).
+    # Layer config sources so the final priority is:
+    #   defaults  <  project ini  <  --config  <  CLI options
+    # The project ini is <input_stem>.ini beside the board file and is loaded
+    # automatically when present (no flag needed).  --config overrides it.
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--config")
+    pre.add_argument("input", nargs="?")
     known, _ = pre.parse_known_args(argv)
     parser = build_parser()
+    if known.input:
+        proj_ini = Path(known.input).with_suffix(".ini")
+        d = load_project_config(proj_ini, parser)
+        if d:
+            parser.set_defaults(**d)
     if known.config:
         parser.set_defaults(**load_config(known.config, parser))
     args = parser.parse_args(argv)
