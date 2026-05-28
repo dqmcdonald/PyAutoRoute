@@ -89,7 +89,11 @@ edits. When placement has run, two helpers prepare the tree first:
 `apply_placement` pushes the moved poses into the pads and replaces `Board.outline`
 with a margin-grown bounding rectangle, and `sync_tree_from_placement` rewrites each
 moved footprint's `(at …)` node (clearing its span so only that line changes) and
-swaps the Edge.Cuts graphics for a single generated `gr_rect`.
+swaps the Edge.Cuts graphics for a single generated `gr_rect`. For a footprint that
+was **rotated**, `_rotate_pad_nodes` also adds the rotation delta to each pad's
+`(at …)` angle: KiCad stores pad angles *absolutely*, so without this a rotated
+footprint's pads would reload in their old orientation — mis-orienting rectangular
+pads and failing DRC.
 
 ### `geometry.py` — shapes & self-check
 shapely geometry for pads (rect / roundrect / circle / oval / trapezoid; custom
@@ -157,16 +161,24 @@ A* bend/via cost weights remain `AnnealParams`/`RouteParams` defaults.
 
 ### `placement.py` — optional footprint placement
 The placement analogue of `anneal.py`, enabled by `--place`. Simulated annealing
-over **footprint poses** (not tracks): moves are translate (a temperature-scaled
-random step), rotate ±90°/180°, or swap two footprints' origins, with Metropolis
-acceptance under the same geometric `t_start → t_end` schedule and the best-seen
-placement kept. Energy
+over **footprint poses** (not tracks): moves are translate (a `--place-step`,
+temperature-scaled random step), rotate (`--place-rotate`: `ortho` ±90°/180°,
+`free` any angle, or `none`), or swap two footprints' origins, with Metropolis
+acceptance under a geometric `--place-temps` (`t_start → t_end`) schedule and the
+best-seen placement kept. A recent-window **acceptance ratio** is tracked (as in
+`anneal`) and reported via the progress callback; `PlaceResult` also carries the
+energy breakdown (`final_ratsnest`/`final_overlap`/`final_bbox`) at the best
+placement. Energy
 `E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area`:
 
 - **ratsnest** — total MST length over pad centroids, reusing `netlist`
   (`build_connections` + `Connection.est_length`), recomputed per evaluation.
 - **overlap_area** — pairwise intersection of footprint body boxes via a shapely
-  `STRtree` (as in `geometry.clearance_violations`). A pair where either footprint
+  `STRtree` (as in `geometry.clearance_violations`). Each box is grown by half of
+  `--place-buffer` per side, so a pair counts as overlapping until its gap exceeds
+  the buffer; the optimiser then keeps footprints at least `buffer` apart, leaving
+  room for routing clearance (the default is derived from the design-rule
+  clearance). A pair where either footprint
   is `overlap_ok` (the `Autoroute=overlap` property) contributes only its
   *pad-vs-pad* overlap, not body overlap — the shield-over-board case. **Locked**
   footprints are immovable obstacles included in the overlap term.
@@ -179,14 +191,35 @@ the board at the best placement; `autoroute` then calls `pcb.apply_placement` (p
 + new outline) before building the grid, and `pcb.sync_tree_from_placement` before
 the write. The whole stage is transparent to the router, which already consumes
 `Board.pads` and `Board.outline`. CLI knobs: `--place-iters`/`--place-time`
-(budget), `--place-margin`, `--place-overlap-weight`, `--place-compact-weight`;
-`--seed` is shared.
+(budget), `--place-temps` (schedule), `--place-step`, `--place-rotate`,
+`--place-margin`, `--place-buffer` (inter-footprint keep-out),
+`--place-overlap-weight`, `--place-compact-weight`; `--seed` is shared.
 
 ### `autoroute.py` — CLI & orchestration
+**Settings file.** `--config FILE` is resolved by a throwaway pre-parser that reads
+only `--config`; its `[pyautoroute]` values are coerced to each option's type
+(`load_config`, keyed by argparse `dest`) and pushed in via `parser.set_defaults`,
+so a value given on the command line still wins — precedence is defaults < config <
+CLI, for free. `--write-config` dumps the effective namespace back to INI
+(`write_config`) and exits. List/2-tuple options are comma-separated; flags are
+`true`/`false`.
+
+**Best-of-N.** `--runs N` repeats the route + anneal loop N times (seed stepped per
+run, fresh `RoutingState` over the one deterministic `Grid`) and keeps the
+lowest-energy routing (scored by `anneal._energy`); without annealing the greedy
+route is deterministic so N collapses to 1. `--place-runs N` is the placement
+analogue, implemented in `placement.place(runs=N)` (each run restarts from the
+original poses, the best placement is kept).
+
 Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
 text progress `Reporter` (single-line `\r` updates on a TTY, line-by-line
 otherwise, silent under `--quiet`), the metrics report, and the post-write
-self-check. Exit code 2 if the self-check finds a violation. The version
+self-check. `default_output` names the file for the run — `_routed`,
+`_placed_routed` (`--place`), or `_placed` (`--place-only`). `--place-only` runs
+the placement pass then writes the placed board and returns *before* the
+netlist/grid/route phases; `_finish` (debug plot + timing + log close) and the
+self-check are shared with the routing path. Exit code 2 if the self-check finds a
+violation. The version
 (`pyautoroute.__version__`, read from the installed package metadata) is printed
 on startup and written to the `--log` header; `--version` prints it and exits.
 
@@ -210,6 +243,27 @@ Two diagnostic options hook into this flow:
 
 ### `visualize.py` — optional render
 matplotlib render of outline + pads + tracks + vias (`--debug-plot`).
+
+### `tune.py` — parameter sweep & scoring
+Scores a routing with a single objective
+(`unrouted_weight·unrouted + length + via_weight·vias + time_weight·runtime`,
+lower better — the annealer's energy plus a runtime tiebreaker) and sweeps the
+critical parameters to find the best setting. `evaluate` routes a board under one
+`Config` + seed and measures it; `sweep`/`sweep_board` run the search-space
+configs over several seeds and score each by the **median** (so a lucky seed
+doesn't win), reusing one parsed board and one grid per pitch; `best_config` picks
+the lowest. The `pyautoroute-tune` CLI prints a per-board markdown report. `--auto`
+(in `autoroute.py`) reuses `sweep`/`best_config` as a quick probe on the board (a
+small `--auto-probe-time` budget), then sets `--grid`/`--via-weight` — after asking
+to confirm on a TTY (`--auto-yes` skips). See [`tuning.md`](tuning.md) for the
+method and roadmap. `tune` imports `default_pitch` from `autoroute`, so `autoroute`
+imports `tune` lazily (inside `--auto`) to avoid a cycle.
+
+### `pyautoroute.sh` — helper menu
+A repo-root Bash script offering a menu of common tasks (install, regenerate API
+docs via the `pdoc` recipe, run the short/long test suite, route a test board,
+write a settings file, clean generated outputs). Each action echoes the command it
+runs; the interpreter is overridable with `PYTHON=`.
 
 ## Coordinate system & the pad-angle gotcha
 

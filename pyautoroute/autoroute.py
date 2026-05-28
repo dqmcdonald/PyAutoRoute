@@ -10,6 +10,7 @@ self-check on the result.
 from __future__ import annotations
 
 import argparse
+import configparser
 import datetime
 import sys
 import time
@@ -98,7 +99,7 @@ class Reporter:
         elif it % 25 == 0:
             self.stream.write(line + "\n")
 
-    def placing(self, it, total, energy, best, temp) -> None:
+    def placing(self, it, total, energy, best, temp, accept) -> None:
         """Report a placement-annealing iteration.
 
         Args:
@@ -107,8 +108,10 @@ class Reporter:
             energy: current placement energy.
             best: best energy seen so far.
             temp: current annealing temperature.
+            accept: fraction of recent moves accepted (0..1); falls as T cools.
         """
-        msg = (f"place {it}/{total}  T={temp:5.2f}  E={energy:8.1f}  best={best:8.1f}")
+        msg = (f"place {it}/{total}  T={temp:5.2f}  E={energy:8.1f}  "
+               f"best={best:8.1f}  acc={accept*100:3.0f}%")
         if it % 25 == 0:
             self.log(msg)
         if self.quiet:
@@ -164,13 +167,26 @@ class Reporter:
             self.stream.write(msg + "\n")
 
 
-def default_output(input_path: Path) -> Path:
-    """Default routed-output path: ``<input>_routed<suffix>`` beside the input.
+def default_output(input_path: Path, place: bool = False,
+                   place_only: bool = False) -> Path:
+    """Default output path beside the input, named for what the run produced.
 
     Args:
         input_path: the input ``.kicad_pcb`` path.
+        place: whether the run placed the footprints before routing.
+        place_only: whether the run only placed (no routing).
+
+    Returns:
+        ``<input>_placed`` (place only), ``<input>_placed_routed`` (place then
+        route), or ``<input>_routed`` (route only), with the input's suffix.
     """
-    return input_path.with_name(input_path.stem + "_routed" + input_path.suffix)
+    if place_only:
+        tag = "_placed"
+    elif place:
+        tag = "_placed_routed"
+    else:
+        tag = "_routed"
+    return input_path.with_name(input_path.stem + tag + input_path.suffix)
 
 
 def default_pro(input_path: Path) -> Path:
@@ -193,6 +209,24 @@ def default_pitch(rules) -> float:
     """
     dc = rules.default_class
     return round(dc.track_width / 2.0 + dc.clearance, 4)
+
+
+def default_place_buffer(rules) -> float:
+    """Default placement keep-out gap (mm) derived from the design rules.
+
+    The placement pass keeps footprints at least this far apart; a value derived
+    from the clearance leaves room for routing between adjacent parts so the
+    placed board does not fail DRC.
+
+    Args:
+        rules: the `pyautoroute.rules.DesignRules`.
+
+    Returns:
+        ``max(2 x max-class-clearance, 0.5)`` mm, rounded to 4 places.
+    """
+    max_clear = max([c.clearance for c in rules.classes.values()]
+                    + [rules.min_clearance])
+    return round(max(2.0 * max_clear, 0.5), 4)
 
 
 # A grid coarser than this multiple of the rules-derived pitch often can't place
@@ -287,8 +321,13 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
     rep.log(f"grid nodes     {grid.nx} x {grid.ny} x {grid.n_layers} layers")
     if args.place:
         rep.log(f"placement      on  (margin {args.place_margin} mm, "
+                f"buffer {args.place_buffer} mm, "
                 f"overlap wt {args.place_overlap_weight}, "
                 f"compact wt {args.place_compact_weight})")
+        rep.log(f"place temps    {args.place_temps[0]} -> {args.place_temps[1]}")
+        rep.log(f"place step     {args.place_step} mm, rotate {args.place_rotate}")
+        if args.place_runs > 1:
+            rep.log(f"place runs     {args.place_runs}")
         if args.place_iters:
             rep.log(f"place iters    {args.place_iters}")
         if args.place_time:
@@ -304,6 +343,8 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
     if args.iters or args.time_budget:
         rep.log(f"unrouted wt    {args.unrouted_weight}")
         rep.log(f"anneal temps   {args.anneal_temps[0]} -> {args.anneal_temps[1]}")
+        if args.runs > 1:
+            rep.log(f"runs           {args.runs}")
     if snap_n:
         rep.log(f"snapshots      {snap_n}")
     rep.log(f"copper layers  {', '.join(board.copper_layers)}")
@@ -327,7 +368,9 @@ def run(args: argparse.Namespace) -> int:
         clearance violation.
     """
     input_path = Path(args.input)
-    out_path = Path(args.output) if args.output else default_output(input_path)
+    out_path = (Path(args.output) if args.output
+                else default_output(input_path, place=args.place,
+                                    place_only=args.place_only))
     pro_path = Path(args.pro) if args.pro else default_pro(input_path)
     rep = Reporter(quiet=args.quiet, log_path=_resolve_log_path(args, out_path))
     print(f"PyAutoRoute {__version__}")
@@ -337,22 +380,71 @@ def run(args: argparse.Namespace) -> int:
     rules = load_rules(pro_path)
     pitch = args.grid if args.grid else default_pitch(rules)
 
-    if args.place:
+    if args.place or args.place_only:
         rep.phase(f"placing {len(board.footprints)} footprints (annealing)")
+        if args.place_buffer is None:
+            args.place_buffer = default_place_buffer(rules)
+        place_runs = max(1, args.place_runs)
         pp = placement.PlaceParams(
             iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
             exclude=args.exclude_net, overlap_weight=args.place_overlap_weight,
-            compact_weight=args.place_compact_weight)
-        pout = placement.place(board, pp, on_progress=rep.placing)
+            compact_weight=args.place_compact_weight, buffer=args.place_buffer,
+            t_start=args.place_temps[0], t_end=args.place_temps[1],
+            step=args.place_step, rotate_mode=args.place_rotate)
+        pout = placement.place(board, pp, on_progress=rep.placing, runs=place_runs)
         pcb.apply_placement(board, margin=args.place_margin)
         pcb.sync_tree_from_placement(board)
         rep.done()
-        summary = (f"place: {pout.iterations} iters, {pout.accepted} accepted, "
+        if place_runs > 1:
+            rep.log(f"best of {place_runs} placement runs: energy {pout.best_energy:.1f}")
+        summary = (f"place: {pout.iterations} iters, "
+                   f"{pout.accepted} accepted ({pout.accept_ratio*100:.0f}%), "
                    f"{pout.moved} moved, energy "
-                   f"{pout.start_energy:.1f} -> {pout.best_energy:.1f}")
+                   f"{pout.start_energy:.1f} -> {pout.best_energy:.1f}"
+                   + (f"  (best of {place_runs})" if place_runs > 1 else ""))
+        breakdown = (f"placement: ratsnest {pout.final_ratsnest:.1f} mm, "
+                     f"overlap {pout.final_overlap:.1f} mm2, "
+                     f"bbox {pout.final_bbox:.0f} mm2")
         rep.log(summary)
+        rep.log(breakdown)
         if not args.quiet:
             print(f"\n  {summary}")
+            print(f"  {breakdown}")
+
+    if args.place_only:
+        rep.phase("writing placed board")
+        pcb.write_board(board, out_path, new_nodes=None, strip_free_vias=True)
+        placed_board = pcb.load_board(out_path)
+        violations = geometry.clearance_violations(placed_board, rules)
+        rep.done()
+        _report_placed(rep, out_path, board, violations)
+        return _finish(rep, args, out_path, placed_board, violations)
+
+    if args.auto:
+        from . import tune
+        rep.phase("auto: probing grid/via settings")
+        scored = tune.sweep(board, rules,
+                            tune.default_grid(time_budget=args.auto_probe_time),
+                            seeds=(args.seed,), unrouted_weight=args.unrouted_weight,
+                            via_weight=args.via_weight)
+        best = tune.best_config(scored)
+        chosen_pitch = round(default_pitch(rules) * best.grid_mult, 4)
+        rep.done()
+        bm = scored[0].metrics[0]
+        total = bm.routed + bm.unrouted
+        chosen = (f"auto: best probe grid={chosen_pitch} mm (x{best.grid_mult}), "
+                  f"via-weight={best.via_weight} -> {bm.routed}/{total} routed, "
+                  f"{bm.length:.0f} mm, {bm.vias} vias")
+        print(f"\n  {chosen}")
+        rep.log(chosen)
+        apply_auto = True
+        if sys.stdin.isatty() and not args.auto_yes:
+            apply_auto = input("  apply these settings? [Y/n] ").strip().lower() \
+                in ("", "y", "yes")
+        if apply_auto:
+            args.grid, args.via_weight, pitch = chosen_pitch, best.via_weight, chosen_pitch
+        else:
+            print("  auto: keeping the given settings")
 
     rep.phase("building netlist (MST rats-nest)")
     conns = netlist.build_connections(board, exclude=args.exclude_net)
@@ -362,10 +454,18 @@ def run(args: argparse.Namespace) -> int:
     rep.phase(f"building {pitch}mm routing grid")
     grid = Grid(board, rules, pitch)
 
-    # snapshots only make sense during annealing
+    runs = max(1, args.runs)
+    if runs > 1 and not (args.iters or args.time_budget):
+        print("  note: --runs > 1 has no effect without --iters/--time "
+              "(greedy routing is deterministic); using 1 run")
+        runs = 1
+    # snapshots only make sense during a single annealing run
     snap_n = args.snapshots
     if snap_n and not (args.iters or args.time_budget):
         print("  note: --snapshots needs --iters or --time (annealing); ignoring")
+        snap_n = 0
+    if snap_n and runs > 1:
+        print("  note: --snapshots needs a single run; ignoring with --runs > 1")
         snap_n = 0
     snap_dir = out_path.parent / "snapshots" if snap_n else None
     if snap_dir is not None:
@@ -388,39 +488,61 @@ def run(args: argparse.Namespace) -> int:
 
     params = router.RouteParams(via_cost=args.via_weight)
     order = netlist.greedy_order(conns)
+    annealing = bool(args.iters or args.time_budget)
 
-    rep.phase(f"routing {len(conns)} connections")
-    state = router.RoutingState(grid)
-    result = router.route_all(state, conns, order, params, on_progress=rep.routing)
-    rep.done()
-
-    final_results = result.results
-    routed, unrouted, length, vias = (result.routed, result.unrouted,
-                                      result.total_length, result.total_vias)
-
-    if args.iters or args.time_budget:
-        rep.phase("annealing (rip-up & reroute)")
-        ap = anneal.AnnealParams(iters=args.iters, time_budget=args.time_budget,
-                                 seed=args.seed, snapshots=snap_n,
-                                 unrouted_weight=args.unrouted_weight,
-                                 t_start=args.anneal_temps[0], t_end=args.anneal_temps[1],
-                                 route_params=params)
-        aout = anneal.anneal(state, conns, list(result.results), ap,
-                             on_progress=rep.annealing,
-                             on_snapshot=on_snapshot if snap_n else None)
+    best_energy = float("inf")
+    final_results = None
+    routed = unrouted = length = vias = 0
+    for k in range(runs):
+        tag = f"run {k + 1}/{runs}: " if runs > 1 else ""
+        rep.phase(f"{tag}routing {len(conns)} connections")
+        state = router.RoutingState(grid)
+        result = router.route_all(state, conns, order, params, on_progress=rep.routing)
         rep.done()
-        final_results = aout.results
-        routed, unrouted, length, vias = (aout.routed, aout.unrouted,
-                                          aout.total_length, aout.total_vias)
-        acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
-        summary = (f"anneal: {aout.iterations} iters, "
-                   f"{aout.accepted} accepted ({acc_pct:.0f}%), "
-                   f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
-        rep.log(summary)
+        run_results = result.results
+        run_metrics = (result.routed, result.unrouted,
+                       result.total_length, result.total_vias)
+
+        if annealing:
+            rep.phase(f"{tag}annealing (rip-up & reroute)")
+            ap = anneal.AnnealParams(iters=args.iters, time_budget=args.time_budget,
+                                     seed=args.seed + k, snapshots=snap_n,
+                                     unrouted_weight=args.unrouted_weight,
+                                     t_start=args.anneal_temps[0], t_end=args.anneal_temps[1],
+                                     route_params=params)
+            aout = anneal.anneal(state, conns, list(result.results), ap,
+                                 on_progress=rep.annealing,
+                                 on_snapshot=on_snapshot if snap_n else None)
+            rep.done()
+            run_results = aout.results
+            run_metrics = (aout.routed, aout.unrouted,
+                           aout.total_length, aout.total_vias)
+            run_energy = aout.best_energy
+            acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
+            summary = (f"{tag}anneal: {aout.iterations} iters, "
+                       f"{aout.accepted} accepted ({acc_pct:.0f}%), "
+                       f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
+            rep.log(summary)
+            if not args.quiet:
+                print(f"\n  {summary}")
+        else:
+            run_energy = anneal._energy(run_results, args.via_weight,
+                                        args.unrouted_weight)
+            if runs > 1:
+                rep.log(f"{tag}energy {run_energy:.1f}")
+
+        if run_energy < best_energy:
+            best_energy = run_energy
+            final_results = run_results
+            routed, unrouted, length, vias = run_metrics
+
+    if runs > 1:
+        best_line = f"best of {runs} runs: energy {best_energy:.1f}"
+        rep.log(best_line)
         if not args.quiet:
-            print(f"\n  {summary}")
-        if snap_n:
-            print(f"  snapshots:     {snap_n} written to {snap_dir}/")
+            print(f"\n  {best_line}")
+    if snap_n:
+        print(f"  snapshots:     {snap_n} written to {snap_dir}/")
 
     rep.phase("writing routed board")
     pcb.write_board(board, out_path,
@@ -434,11 +556,28 @@ def run(args: argparse.Namespace) -> int:
 
     _report(rep, out_path, len(conns), routed, unrouted, length, vias,
             violations, excluded)
+    return _finish(rep, args, out_path, routed_board, violations)
 
+
+def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
+    """Render the optional debug plot, report timing, and close the log.
+
+    Shared tail of both the routing and place-only paths.
+
+    Args:
+        rep: the reporter.
+        args: the parsed CLI namespace.
+        out_path: the output board path (basis for the plot/log names).
+        board: the reloaded output board (rendered when ``--debug-plot``).
+        violations: the self-check violations (empty == clean) for the exit code.
+
+    Returns:
+        Process exit code: 0 if `violations` is empty, else 2.
+    """
     if args.debug_plot:
         from . import visualize
         plot_path = str(out_path.with_suffix(".png"))
-        visualize.render(routed_board, plot_path, title=out_path.name)
+        visualize.render(board, plot_path, title=out_path.name)
         if not args.quiet:
             print(f"  debug plot:    {plot_path}")
         rep.log(f"debug plot -> {plot_path}")
@@ -492,6 +631,176 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
         rep.log(ln)
 
 
+def _report_placed(rep: Reporter, out_path, board, violations) -> None:
+    """Print the place-only metrics summary and mirror it to the log.
+
+    Args:
+        rep: the reporter (for logging the same lines).
+        out_path: the placed-output path.
+        board: the placed board (for the moved-footprint count and outline size).
+        violations: clearance-violation tuples from the self-check (empty ==
+            clean).
+    """
+    moved = sum(1 for fp in board.footprints if fp.moved)
+    rect = next((s for s in board.outline if s.kind == "rect"), None)
+    lines = [
+        f"output:        {out_path}",
+        f"footprints:    {moved}/{len(board.footprints)} moved",
+    ]
+    if rect is not None:
+        (x0, y0), (x1, y1) = rect.data["start"], rect.data["end"]
+        lines.append(f"board outline: {abs(x1 - x0):.1f} x {abs(y1 - y0):.1f} mm")
+    if violations:
+        lines.append(f"SELF-CHECK:    {len(violations)} clearance violation(s)! "
+                     f"e.g. {violations[0]}")
+    else:
+        lines.append("self-check:    clean (0 clearance violations)")
+    print()
+    for ln in lines:
+        print(f"  {ln}")
+        rep.log(ln)
+
+
+# --- settings file (INI) -----------------------------------------------------
+
+_CONFIG_SECTION = "pyautoroute"
+# options that are not part of the persisted settings (meta / positional)
+_CONFIG_SKIP = {"help", "version", "config", "write_config", "input"}
+
+
+def _configurable_actions(parser: argparse.ArgumentParser) -> dict:
+    """Map each persisted option's ``dest`` to its argparse action.
+
+    Args:
+        parser: the CLI parser.
+
+    Returns:
+        ``{dest: action}`` for every optional argument that round-trips through
+        the settings file (the meta/positional ones in `_CONFIG_SKIP` excluded).
+    """
+    return {a.dest: a for a in parser._actions
+            if a.option_strings and a.dest not in _CONFIG_SKIP}
+
+
+def _parse_bool(text: str) -> bool:
+    """Parse a boolean from a settings-file value.
+
+    Args:
+        text: the raw value (e.g. ``"true"``, ``"0"``, ``"yes"``).
+
+    Returns:
+        The boolean.
+
+    Raises:
+        ValueError: if `text` is not a recognised boolean.
+    """
+    low = text.strip().lower()
+    if low in ("true", "1", "yes", "on"):
+        return True
+    if low in ("false", "0", "no", "off"):
+        return False
+    raise ValueError(f"not a boolean: {text!r}")
+
+
+def _coerce_config_value(action, raw: str):
+    """Coerce a raw settings-file string to the option's Python type.
+
+    Args:
+        action: the argparse action for the option.
+        raw: the raw string from the settings file.
+
+    Returns:
+        The typed value (bool for flags, list for append/2-tuple options,
+        otherwise the action's ``type`` applied to `raw`).
+    """
+    if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+        return _parse_bool(raw)
+    conv = action.type or str
+    if isinstance(action, argparse._AppendAction):
+        return [conv(s.strip()) for s in raw.split(",") if s.strip()]
+    if action.nargs == 2:
+        parts = [s for s in raw.replace(",", " ").split() if s]
+        if len(parts) != 2:
+            raise ValueError(f"expected 2 values, got {raw!r}")
+        return [conv(p) for p in parts]
+    return conv(raw)
+
+
+def load_config(path: str | Path, parser: argparse.ArgumentParser) -> dict:
+    """Read an INI settings file into a ``{dest: typed_value}`` mapping.
+
+    Args:
+        path: the settings file path.
+        parser: the CLI parser (for option names and types).
+
+    Returns:
+        The settings as a dict suitable for ``parser.set_defaults``.
+
+    Raises:
+        SystemExit: via ``parser.error`` if the file is missing, lacks the
+            ``[pyautoroute]`` section, names an unknown key, or has a bad value.
+    """
+    path = Path(path)
+    if not path.exists():
+        parser.error(f"--config file not found: {path}")
+    cp = configparser.ConfigParser()
+    cp.read(path)
+    if not cp.has_section(_CONFIG_SECTION):
+        parser.error(f"--config file has no [{_CONFIG_SECTION}] section: {path}")
+    actions = _configurable_actions(parser)
+    out = {}
+    for key, raw in cp.items(_CONFIG_SECTION):
+        dest = key.replace("-", "_")
+        if dest not in actions:
+            parser.error(f"--config: unknown option {key!r} in {path}")
+        try:
+            out[dest] = _coerce_config_value(actions[dest], raw)
+        except (ValueError, TypeError) as exc:
+            parser.error(f"--config: bad value for {key!r}: {exc}")
+    return out
+
+
+def _format_config_value(action, value) -> str:
+    """Render an effective option value as a settings-file string.
+
+    Args:
+        action: the argparse action for the option.
+        value: the value from the parsed namespace.
+
+    Returns:
+        The INI-ready string (``true``/``false`` for flags, comma-joined for
+        list/2-tuple options).
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value)
+    return str(value)
+
+
+def write_config(parser: argparse.ArgumentParser, args, path: str | Path) -> None:
+    """Write the effective settings to an INI file.
+
+    Args:
+        parser: the CLI parser (for the option set).
+        args: the parsed namespace whose effective values are written.
+        path: destination settings-file path.
+    """
+    cp = configparser.ConfigParser()
+    cp[_CONFIG_SECTION] = {}
+    for dest, action in _configurable_actions(parser).items():
+        value = getattr(args, dest, None)
+        if value is None:
+            continue
+        # key by dest (underscores) so options whose flag differs from their dest
+        # — e.g. --time -> time_budget — round-trip unambiguously
+        cp[_CONFIG_SECTION][dest] = _format_config_value(action, value)
+    with open(path, "w") as f:
+        f.write("# PyAutoRoute settings — pass with --config FILE.\n"
+                "# CLI options override these. Lists are comma-separated.\n")
+        cp.write(f)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser.
 
@@ -503,13 +812,23 @@ def build_parser() -> argparse.ArgumentParser:
         description="Autoroute a 2-layer KiCad PCB (writes a routed copy).")
     p.add_argument("--version", action="version", version=f"PyAutoRoute {__version__}")
     p.add_argument("input", help="input .kicad_pcb")
+    p.add_argument("--config", metavar="FILE",
+                   help="read options from an INI settings file (a [pyautoroute] "
+                        "section); options given on the command line override it")
+    p.add_argument("--write-config", nargs="?", const="", default=None, metavar="FILE",
+                   help="write the effective settings to an INI file and exit "
+                        "(bare: <input>.pyautoroute.cfg beside the board)")
     p.add_argument("--pro", help="project .kicad_pro (default: sibling)")
-    p.add_argument("-o", "--output", help="output .kicad_pcb (default: INPUT_routed.kicad_pcb)")
+    p.add_argument("-o", "--output", help="output .kicad_pcb (default: INPUT_routed, "
+                                          "or _placed_routed / _placed when placing)")
     p.add_argument("--grid", type=float, help="grid pitch in mm (default derived from rules)")
     p.add_argument("--place", action="store_true",
                    help="experimental: place footprints (simulated annealing) before "
                         "routing — honours locked footprints and the Autoroute=overlap "
                         "property, and regenerates the Edge.Cuts outline")
+    p.add_argument("--place-only", action="store_true",
+                   help="place the footprints and write the placed board "
+                        "(<input>_placed.kicad_pcb) without routing")
     pg = p.add_mutually_exclusive_group()
     pg.add_argument("--place-iters", type=int, metavar="N",
                     help="placement iteration budget (with --place)")
@@ -519,6 +838,10 @@ def build_parser() -> argparse.ArgumentParser:
                    default=2.0, metavar="MM",
                    help="margin (mm) around the parts for the regenerated outline "
                         "(default %(default)s)")
+    p.add_argument("--place-buffer", type=float, default=None, metavar="MM",
+                   help="keep-out gap (mm) enforced between footprints during "
+                        "placement, so the routed board stays DRC-clean "
+                        "(default: derived from the design-rule clearance)")
     p.add_argument("--place-overlap-weight", type=float,
                    default=placement.PlaceParams.overlap_weight, metavar="W",
                    help="placement cost per mm² of footprint overlap (default %(default)s)")
@@ -526,9 +849,35 @@ def build_parser() -> argparse.ArgumentParser:
                    default=placement.PlaceParams.compact_weight, metavar="W",
                    help="placement cost per mm² of layout bounding box, pulling the "
                         "parts together (default %(default)s)")
+    p.add_argument("--place-temps", nargs=2, type=float, metavar=("START", "END"),
+                   default=(placement.PlaceParams.t_start, placement.PlaceParams.t_end),
+                   help="placement annealing start/end temperature for the geometric "
+                        "cooling schedule; START>END>0 (default %(default)s)")
+    p.add_argument("--place-step", type=float,
+                   default=placement.PlaceParams.step, metavar="MM",
+                   help="max placement translate step (mm) at the start temperature "
+                        "(default %(default)s)")
+    p.add_argument("--place-rotate", choices=("ortho", "free", "none"),
+                   default=placement.PlaceParams.rotate_mode,
+                   help="placement rotation moves: ortho (+/-90/180), free (any "
+                        "angle), or none (default %(default)s)")
+    p.add_argument("--place-runs", type=int, default=1, metavar="N",
+                   help="run placement N times (different seeds) and keep the "
+                        "lowest-energy placement (default 1)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--iters", type=int, help="optimisation iteration budget")
     g.add_argument("--time", type=float, dest="time_budget", help="optimisation time budget (s)")
+    p.add_argument("--runs", type=int, default=1, metavar="N",
+                   help="route N times with different annealing seeds and keep the "
+                        "lowest-energy result (default 1; only varies with "
+                        "--iters/--time)")
+    p.add_argument("--auto", action="store_true",
+                   help="probe a few grid/via settings on this board, pick the best, "
+                        "and (on a terminal) ask to confirm before routing with them")
+    p.add_argument("--auto-yes", action="store_true",
+                   help="with --auto, apply the chosen settings without prompting")
+    p.add_argument("--auto-probe-time", type=float, default=3.0, metavar="S",
+                   help="annealing seconds per probed setting under --auto (default %(default)s)")
     p.add_argument("--exclude-net", action="append", default=[], metavar="PATTERN",
                    help="net name/glob to leave un-routed (repeatable)")
     p.add_argument("--seed", type=int, default=0, help="random seed")
@@ -562,8 +911,24 @@ def main(argv=None) -> int:
     Returns:
         The process exit code from `run` (0 clean, 2 on a self-check violation).
     """
+    # Resolve --config first so its values become the parser defaults; anything
+    # then given on the command line overrides them (defaults < config < CLI).
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config")
+    known, _ = pre.parse_known_args(argv)
     parser = build_parser()
+    if known.config:
+        parser.set_defaults(**load_config(known.config, parser))
     args = parser.parse_args(argv)
+
+    if args.write_config is not None:
+        cfg_path = (Path(args.write_config) if args.write_config
+                    else Path(args.input).with_name(
+                        Path(args.input).stem + ".pyautoroute.cfg"))
+        write_config(parser, args, cfg_path)
+        print(f"wrote settings to {cfg_path}")
+        return 0
+
     t_start, t_end = args.anneal_temps
     if not (t_start > t_end > 0):
         parser.error("--anneal-temps requires START > END > 0")
@@ -571,8 +936,21 @@ def main(argv=None) -> int:
         parser.error("--unrouted-weight must be >= 0")
     if args.place_margin < 0:
         parser.error("--place-margin must be >= 0")
-    if (args.place_iters or args.place_time) and not args.place:
-        parser.error("--place-iters/--place-time require --place")
+    if args.place_buffer is not None and args.place_buffer < 0:
+        parser.error("--place-buffer must be >= 0")
+    pt_start, pt_end = args.place_temps
+    if not (pt_start > pt_end > 0):
+        parser.error("--place-temps requires START > END > 0")
+    if args.place_step <= 0:
+        parser.error("--place-step must be > 0")
+    if args.runs < 1:
+        parser.error("--runs must be >= 1")
+    if args.place_runs < 1:
+        parser.error("--place-runs must be >= 1")
+    if (args.place_iters or args.place_time) and not (args.place or args.place_only):
+        parser.error("--place-iters/--place-time require --place or --place-only")
+    if args.place_only and (args.iters or args.time_budget):
+        parser.error("--place-only does not route; drop --iters/--time")
     return run(args)
 
 

@@ -12,7 +12,7 @@ import pathlib
 
 import pytest
 
-from pyautoroute import autoroute, geometry, netlist, router, rules, sexpr
+from pyautoroute import autoroute, geometry, netlist, pcb, router, rules, sexpr
 from pyautoroute.grid import Grid
 from pyautoroute.pcb import Board, OutlineShape, Pad
 
@@ -142,6 +142,86 @@ def test_cli_rejects_invalid_anneal_params():
         autoroute.main(["b.kicad_pcb", "--anneal-temps", "0.1", "6"])
     with pytest.raises(SystemExit):
         autoroute.main(["b.kicad_pcb", "--unrouted-weight", "-1"])
+
+
+def test_default_output_names():
+    p = pathlib.Path("/x/Board.kicad_pcb")
+    assert autoroute.default_output(p).name == "Board_routed.kicad_pcb"
+    assert autoroute.default_output(p, place=True).name == "Board_placed_routed.kicad_pcb"
+    assert autoroute.default_output(p, place_only=True).name == "Board_placed.kicad_pcb"
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_place_only_writes_placed_board(tmp_path):
+    import shutil
+    src = tmp_path / "Test5.kicad_pcb"
+    shutil.copy(_TEST_BOARD, src)
+    pro = _TEST_BOARD.with_suffix(".kicad_pro")
+    if pro.exists():
+        shutil.copy(pro, tmp_path / "Test5.kicad_pro")
+    orig = pcb.load_board(src)
+    orig_pos = {fp.ref: (round(fp.x, 3), round(fp.y, 3)) for fp in orig.footprints}
+
+    args = autoroute.build_parser().parse_args(
+        [str(src), "--place-only", "--place-iters", "1500", "--quiet"])
+    assert autoroute.run(args) == 0                      # clean self-check
+
+    out = tmp_path / "Test5_placed.kicad_pcb"            # _placed naming
+    assert out.exists()
+    placed = pcb.load_board(out)
+    placed_pos = {fp.ref: (round(fp.x, 3), round(fp.y, 3)) for fp in placed.footprints}
+    assert placed_pos != orig_pos                        # placement moved parts
+    assert len(placed.segments) == len(orig.segments)    # nothing was routed
+
+
+def test_cli_place_only_rejects_routing_flags():
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--place-only", "--iters", "10"])
+
+
+def test_cli_placement_control_flags_parse():
+    from pyautoroute import placement
+    p = autoroute.build_parser()
+    a = p.parse_args(["b.kicad_pcb"])
+    assert tuple(a.place_temps) == (placement.PlaceParams.t_start,
+                                    placement.PlaceParams.t_end)
+    assert a.place_step == placement.PlaceParams.step
+    assert a.place_rotate == placement.PlaceParams.rotate_mode
+    a2 = p.parse_args(["b.kicad_pcb", "--place-temps", "6", "0.1",
+                       "--place-step", "8", "--place-rotate", "none"])
+    assert tuple(a2.place_temps) == (6.0, 0.1)
+    assert a2.place_step == 8.0 and a2.place_rotate == "none"
+
+
+def test_cli_rejects_invalid_placement_controls():
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--place-temps", "0.1", "6"])
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--place-step", "0"])
+
+
+def test_cli_runs_flags_parse_and_validate():
+    p = autoroute.build_parser()
+    a = p.parse_args(["b.kicad_pcb"])
+    assert a.runs == 1 and a.place_runs == 1
+    a2 = p.parse_args(["b.kicad_pcb", "--runs", "4", "--place-runs", "3"])
+    assert a2.runs == 4 and a2.place_runs == 3
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--runs", "0"])
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--place-runs", "0"])
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_multi_run_routes_clean(tmp_path):
+    out = tmp_path / "out.kicad_pcb"
+    args = autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out), "--iters", "40", "--runs", "3",
+         "--log", "--quiet"])
+    assert autoroute.run(args) == 0                 # best-of-3, clean self-check
+    text = out.with_suffix(".log").read_text()
+    assert "runs           3" in text
+    assert "best of 3 runs" in text
 
 
 def test_coarse_grid_note():

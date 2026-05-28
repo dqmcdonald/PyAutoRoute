@@ -49,16 +49,21 @@ The original file is never modified — a routed copy is written alongside it.
 | Option | Meaning |
 |---|---|
 | `--pro PROJECT.kicad_pro` | Project file with the design rules (default: the sibling `.kicad_pro`). |
-| `-o, --output FILE` | Output path (default: `INPUT_routed.kicad_pcb`). |
+| `-o, --output FILE` | Output path. Default is named for the run: `INPUT_routed` (route), `INPUT_placed_routed` (`--place`), or `INPUT_placed` (`--place-only`). |
+| `--place-only` | Place the footprints (see `--place`) and write `INPUT_placed.kicad_pcb` **without routing**. |
 | `--grid MM` | Routing grid pitch in mm (default: derived from the rules, ≈ `track/2 + clearance`). Finer = better coverage but slower. A pitch more than ~2× the derived one prints a warning: a coarse grid can't fit a node in the gap beside a pad and so forces vias where a finer grid would route on one layer. |
 | `--iters N` | Run simulated-annealing optimisation for N iterations. |
 | `--time SECONDS` | Run optimisation for a wall-clock budget instead. |
+| `--runs N` | Route `N` times with different annealing seeds and keep the lowest-energy result (best-of-N). Default 1. Multiplies runtime ~N×; only varies the result when annealing (`--iters`/`--time`) is on. |
+| `--auto` | Probe a few grid/via settings on this board, pick the best, and (on a terminal) ask to confirm before routing with them. `--auto-yes` skips the prompt; `--auto-probe-time S` sets the budget per probed setting. |
 | `--unrouted-weight W` | Annealing energy penalty per unrouted connection (default 100). Higher ⇒ the optimiser tries harder to complete every connection, at the expense of wirelength/vias; lower ⇒ it tolerates leaving hard nets for manual routing. |
 | `--anneal-temps START END` | Start/end temperature of the geometric cooling schedule (default `4.0 0.05`); `START > END > 0`. Higher `START` explores more (better escape from local minima, slower convergence); lower `END` exploits harder at the finish. |
 | `--exclude-net PATTERN` | Leave matching nets un-routed (repeatable; glob, e.g. `GND` or `"/PWR*"`). Their pads still act as obstacles. |
 | `--via-weight W` | Via cost in mm-equivalent (higher ⇒ fewer vias). Default 2.0. |
 | `--seed S` | Random seed for the optimiser. |
 | `--snapshots N` | During annealing, save `N` intermediate board snapshots to a `snapshots/` subdir (beside the output), so you can watch the optimisation progress. Requires `--iters` or `--time`. |
+| `--config FILE` | Read options from an INI settings file (see below). Options given on the command line override it. |
+| `--write-config [FILE]` | Write the effective settings to an INI file and exit. Bare `--write-config` writes `<input>.pyautoroute.cfg` beside the board. |
 | `--log [FILE]` | Write a verbose log of the input parameters and routing/annealing progress. Bare `--log` writes `<output>.log`; `--log FILE` uses the given path. |
 | `--debug-plot` | Also write a `.png` render of the routed board. |
 | `--quiet` | Suppress the live progress display (final summary only). |
@@ -66,6 +71,11 @@ The original file is never modified — a routed copy is written alongside it.
 
 `--iters` and `--time` are mutually exclusive; if neither is given, the board is
 routed once (greedy order) without annealing.
+
+`--runs N` repeats the whole route + anneal with seeds `seed, seed+1, …` and keeps
+the result with the lowest annealing energy (`wirelength + via_weight·vias +
+unrouted_weight·unrouted`) — simulated annealing is stochastic, so the best of a
+few short runs often beats one long run. (`--snapshots` needs a single run.)
 
 ### Examples
 
@@ -84,7 +94,43 @@ pyautoroute MyBoard.kicad_pcb --iters 5000 --snapshots 10 --log
 # -> snapshots/MyBoard_anneal_01of10.kicad_pcb ... 10of10, and MyBoard_routed.log
 
 # Experimental: place the footprints first (30 s budget), then route:
+# -> MyBoard_placed_routed.kicad_pcb
 pyautoroute MyBoard.kicad_pcb --place --place-time 30 --time 60 --debug-plot
+
+# Place only, no routing: -> MyBoard_placed.kicad_pcb
+pyautoroute MyBoard.kicad_pcb --place-only --place-time 30 --debug-plot
+```
+
+### Settings file
+
+To re-run a board with the same options without re-typing them, keep the settings
+in a small INI file and pass it with `--config`:
+
+```ini
+[pyautoroute]
+grid = 0.2
+time_budget = 120
+via_weight = 2.0
+anneal_temps = 4.0, 0.05
+exclude_net = GND, /PWR*
+place = true
+place_buffer = 0.5
+runs = 4
+```
+
+Precedence is **defaults < config file < command line** — any option given on the
+command line overrides the file. Keys are the long option names (the `--time`
+budget is stored as `time_budget`); list options like `exclude_net` are
+comma-separated, and flags take `true`/`false`. An unknown key or bad value is
+reported as an error.
+
+Generate a starting file with `--write-config` (it dumps every effective setting,
+so it doubles as a template):
+
+```bash
+pyautoroute MyBoard.kicad_pcb --grid 0.2 --time 120 --write-config
+# -> MyBoard.pyautoroute.cfg, then later:
+pyautoroute MyBoard.kicad_pcb --config MyBoard.pyautoroute.cfg
 ```
 
 ### Auto-placement (experimental)
@@ -96,6 +142,12 @@ overlapping and pulling the layout together. When it finishes, the `Edge.Cuts`
 board outline is **replaced** with a rectangle bounding the placed parts (plus
 `--place-margin`), and the board is routed normally in the same run.
 
+The placer keeps footprints at least `--place-buffer` mm apart (default derived
+from the design-rule clearance) so the placed board leaves room for routing and
+stays DRC-clean. Rotated footprints keep their pads correctly oriented in the
+output (KiCad stores pad angles absolutely, so the footprint rotation is
+propagated into each pad).
+
 Two footprint attributes steer it:
 
 - **Locked footprints stay put.** Lock a footprint in KiCad (it stores `(locked
@@ -105,6 +157,28 @@ Two footprint attributes steer it:
   value of `overlap` (Footprint Properties → Fields → `+`) and that footprint's
   *body* may overlap others (e.g. an Arduino shield sitting over the board it plugs
   into). Its **pads** are still kept clear of other copper.
+
+When `--place` runs and routing follows, the output is named `INPUT_placed_routed`.
+Use `--place-only` to stop after placement and write `INPUT_placed` (no routing) —
+handy for reviewing or hand-tweaking the layout before routing it.
+
+Placement options (all also work with `--place-only`):
+
+| Option | Meaning |
+|---|---|
+| `--place-iters N` / `--place-time S` | Placement budget (iterations or wall-clock seconds). |
+| `--place-runs N` | Run placement `N` times (different seeds) and keep the lowest-energy placement (best-of-N). Default 1. |
+| `--place-temps START END` | Start/end temperature of the placement cooling schedule (default `8.0 0.05`); `START > END > 0`. |
+| `--place-step MM` | Max translate step (mm) at the start temperature (default 20). Shrinks as the schedule cools. |
+| `--place-rotate {ortho,free,none}` | Rotation moves: `ortho` (±90/180, default), `free` (any angle), or `none`. |
+| `--place-buffer MM` | Keep-out gap enforced between footprints (default: derived from the design-rule clearance). |
+| `--place-margin MM` | Margin around the parts for the regenerated outline (default 2). |
+| `--place-overlap-weight W` / `--place-compact-weight W` | Energy weights for overlap area and layout compactness. |
+
+The live placement progress shows the temperature, current/best energy, and the
+recent **acceptance ratio** (`acc=…%`, which falls as the schedule cools); the
+end-of-placement summary reports the acceptance ratio and an energy breakdown
+(ratsnest length, overlap area, bounding-box area).
 
 It is experimental: it optimises placement heuristically and does not understand
 mechanical/thermal intent, so review the result. Because it rewrites footprint
@@ -157,6 +231,30 @@ as attached to the pad and keeps it connected when you move the footprint.
 - Custom-shaped pads are approximated by their bounding box.
 - Runtime is dominated by a few long/awkward nets; a finer `--grid` improves coverage but is slower.
 - The optimiser improves length and via count; it does not guarantee a global optimum.
+
+## Finding good settings
+
+Results depend on a few knobs (grid pitch, via weight, schedule, budget).
+`pyautoroute-tune` sweeps the critical parameters over one or more boards, scores
+each routing with a single objective (completion, then wirelength, then vias, with
+an optional runtime tiebreaker), and reports the best setting per board:
+
+```bash
+pyautoroute-tune MyBoard.kicad_pcb --time 5 --seeds 3
+```
+
+The opt-in `--auto` flag is the online version: it runs a quick probe on the board
+in front of it, picks the best grid/via setting, and (on a terminal) asks you to
+confirm before routing — pair it with `--write-config` to save the choice. See
+[`docs/tuning.md`](docs/tuning.md) for the objective, method, and roadmap.
+
+## Helper script
+
+`./pyautoroute.sh` is an interactive menu of common tasks — install the package,
+regenerate the API docs from the code, run the short/long test suite, route a test
+board, write a settings file, or clean generated outputs. Each action echoes the
+command it runs, so the script doubles as a cheat-sheet. Override the interpreter
+with `PYTHON=/path/to/python ./pyautoroute.sh`.
 
 ## Tests
 

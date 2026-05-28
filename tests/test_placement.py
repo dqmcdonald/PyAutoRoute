@@ -94,6 +94,34 @@ def test_place_separates_overlapping_bodies():
     assert _max_body_overlap([a, b]) < 1e-6
 
 
+def _min_body_gap(footprints):
+    """Smallest gap (mm) between any two non-overlap_ok footprint body boxes;
+    negative if they overlap."""
+    worst = math.inf
+    boxes = [(_body_box(fp), fp) for fp in footprints]
+    for i, (bi, fi) in enumerate(boxes):
+        for bj, fj in boxes[i + 1:]:
+            if fi.overlap_ok or fj.overlap_ok:
+                continue
+            worst = min(worst, bi.distance(bj) if not bi.intersects(bj)
+                        else -bi.intersection(bj).area)
+    return worst
+
+
+def test_place_buffer_keeps_footprints_apart():
+    # two parts that start overlapping; with a buffer they must end up separated
+    # by at least (close to) the buffer, not merely touching.
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    b = _fp("U2", 21.0, 20.5, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    board = _board([a, b])
+    buffer = 1.5
+    placement.place(board, placement.PlaceParams(
+        iters=6000, seed=4, overlap_weight=200.0, buffer=buffer))
+    # body boxes (un-inflated) are kept apart by ~buffer (allow a little slack
+    # from the discrete annealing steps)
+    assert _min_body_gap([a, b]) >= buffer - 0.3
+
+
 def test_overlap_ok_allows_body_overlap_but_not_pad_overlap():
     # A shield (overlap_ok) over a board footprint, sharing no nets so the only
     # forces are overlap + compactness.
@@ -130,6 +158,67 @@ def test_apply_placement_outline_encloses_pads_with_margin():
         assert x0 <= p.cx <= x1 and y0 <= p.cy <= y1
     # margin keeps the edge clear of the nearest pad by at least `margin`
     assert min(p.cx for p in board.pads) - x0 >= 3.0 - 1e-6
+
+
+def test_place_rotate_none_keeps_angles():
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    board = _board([a, b])
+    placement.place(board, placement.PlaceParams(iters=2000, seed=5,
+                                                 rotate_mode="none"))
+    assert a.angle == 0.0 and b.angle == 0.0
+
+
+def test_place_reports_acceptance_and_breakdown():
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    board = _board([a, b])
+    seen = []
+    res = placement.place(board, placement.PlaceParams(iters=500, seed=6),
+                          on_progress=lambda *a: seen.append(a))
+    assert 0.0 <= res.accept_ratio <= 1.0
+    assert res.iterations == 500
+    # progress callback now carries the live acceptance fraction as a 6th arg
+    assert seen and len(seen[-1]) == 6 and 0.0 <= seen[-1][5] <= 1.0
+    # energy breakdown is populated and roughly reconstitutes the best energy
+    p = placement.PlaceParams()
+    recon = (res.final_ratsnest + p.overlap_weight * res.final_overlap
+             + p.compact_weight * res.final_bbox)
+    assert math.isclose(recon, res.best_energy, rel_tol=1e-6)
+
+
+def test_place_best_of_n_never_worse_than_first_run():
+    def board():
+        a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        b = _fp("U2", 21.0, 20.5, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        c = _fp("U3", 50.0, 50.0, [(-2.0, 0.0, "N1"), (2.0, 0.0, "N0")])
+        return _board([a, b, c]), [a, b, c]
+
+    b1, _ = board()
+    first = placement.place(b1, placement.PlaceParams(iters=800, seed=0), runs=1)
+    b3, _ = board()
+    best = placement.place(b3, placement.PlaceParams(iters=800, seed=0), runs=3)
+    # best-of-3 (seeds 0,1,2) includes run 0, so it can never be worse
+    assert best.best_energy <= first.best_energy + 1e-6
+
+
+def test_place_runs_deterministic():
+    def run():
+        a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0")])
+        b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0")])
+        board = _board([a, b])
+        res = placement.place(board, placement.PlaceParams(iters=400, seed=0), runs=3)
+        return res.best_energy, round(sum(p.cx + p.cy for p in board.pads), 6)
+    assert run() == run()
+
+
+def test_place_custom_temps_and_step_run():
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0")])
+    b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0")])
+    board = _board([a, b])
+    res = placement.place(board, placement.PlaceParams(
+        iters=300, seed=7, t_start=2.0, t_end=0.1, step=5.0))
+    assert res.best_energy <= res.start_energy + 1e-6
 
 
 def test_place_no_movable_footprints_is_noop():
@@ -173,6 +262,35 @@ def test_parse_lock_and_overlap_property():
 
 
 # --- pcb tree rewrite (round-trip) -------------------------------------------
+
+def test_sync_tree_propagates_rotation_into_pad_angles(tmp_path):
+    # A footprint with a rectangular (3x1) pad, rotated 90 deg. KiCad stores pad
+    # angles absolutely, so the written board must give the pad an absolute angle
+    # of 90 — otherwise the rectangle reloads in its old orientation and fails DRC.
+    text = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
+        ' (footprint "x" (at 20 20 0)'
+        '  (property "Reference" "U1")'
+        '  (pad "1" smd rect (at 2 0 0) (size 3 1) (layers "F.Cu") (net "A"))))'
+    )
+    board = _board_from_text(text)
+    u1 = next(fp for fp in board.footprints if fp.ref == "U1")
+    u1.angle = 90.0
+    u1.sync_pads()
+    pcb.apply_placement(board, margin=1.0)
+    pcb.sync_tree_from_placement(board)
+    out = tmp_path / "rot.kicad_pcb"
+    pcb.write_board(board, out, new_nodes=None, strip_free_vias=False)
+
+    reloaded = pcb.load_board(out)
+    pad = next(fp for fp in reloaded.footprints if fp.ref == "U1").pads[0]
+    assert math.isclose(pad.angle % 360.0, 90.0)
+    # the reloaded pad polygon is the 3x1 rect turned on its side: ~1 wide, ~3 tall
+    from pyautoroute.geometry import pad_polygon
+    x0, y0, x1, y1 = pad_polygon(pad).bounds
+    assert math.isclose(x1 - x0, 1.0, abs_tol=1e-6)
+    assert math.isclose(y1 - y0, 3.0, abs_tol=1e-6)
+
 
 def test_sync_tree_rewrites_at_and_regenerates_edge_cuts(tmp_path):
     text = (

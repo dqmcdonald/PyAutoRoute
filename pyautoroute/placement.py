@@ -10,15 +10,20 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
 - **ratsnest** — total MST length over the pad centroids (reuses
   `pyautoroute.netlist`); shrinks as connected pads are drawn together.
 - **overlap_area** — pairwise intersection of footprint body boxes, found via a
-  shapely `STRtree`. A pair where either footprint opted in via the
-  ``Autoroute=overlap`` property (`pcb.Footprint.overlap_ok`) contributes only its
-  *pad-vs-pad* overlap, not body overlap — the shield-over-board case.
+  shapely `STRtree`. Each box is inflated by half of ``buffer`` per side, so a pair
+  registers as overlapping until its *gap* exceeds ``buffer``; the optimiser then
+  keeps footprints at least ``buffer`` apart, leaving room for routing clearance
+  (this is the fix for placements packing so tightly that the routed board failed
+  DRC). A pair where either footprint opted in via the ``Autoroute=overlap``
+  property (`pcb.Footprint.overlap_ok`) contributes only its *pad-vs-pad* overlap
+  (also buffer-inflated), not body overlap — the shield-over-board case.
 - **bbox_area** — area of the bounding box of all footprints; compaction emerges
   from this term under cooling, with no separate phase.
 
 Moves (over the *movable* footprints — locked ones are fixed obstacles): translate
-by a temperature-scaled random step, rotate by ±90°/180°, or swap two footprints'
-origins. Worse moves are accepted with Metropolis probability under a geometric
+by a temperature-scaled random step, rotate (``rotate_mode``: ``ortho`` = ±90°/180°,
+``free`` = any angle, ``none`` = no rotation), or swap two footprints' origins.
+Worse moves are accepted with Metropolis probability under a geometric
 ``t_start → t_end`` schedule; the best-seen placement is kept and left on the
 board. Pad absolute coordinates are kept in sync on every move
 (`pcb.Footprint.sync_pads`) so the energy geometry stays consistent; after the run
@@ -31,13 +36,19 @@ from __future__ import annotations
 import math
 import random
 import time
-from dataclasses import dataclass, field
+from collections import deque
+from dataclasses import dataclass, field, replace
 
 from shapely.geometry import box
 from shapely.strtree import STRtree
 
 from . import netlist
 from .pcb import Board, Footprint, Pad
+
+# Window (in iterations) over which the live acceptance ratio is measured, so the
+# reported rate tracks how the cooling schedule bites (it falls towards zero as T
+# cools) rather than being dominated by the hot start. Mirrors `anneal`.
+_ACCEPT_WINDOW = 100
 
 
 @dataclass
@@ -49,6 +60,8 @@ class PlaceParams:
     overlap_weight: float = 20.0      # mm-equivalent cost per mm² of body/pad overlap
     compact_weight: float = 0.02      # mm-equivalent cost per mm² of layout bbox
     step: float = 20.0                # max translate step (mm) at t_start
+    buffer: float = 0.5               # keep-out gap (mm) enforced between footprints
+    rotate_mode: str = "ortho"        # "ortho" (+/-90/180), "free" (any angle), "none"
     seed: int = 0
     exclude: list[str] = field(default_factory=list)
 
@@ -60,6 +73,14 @@ class PlaceResult:
     iterations: int
     accepted: int
     moved: int                        # footprints whose pose changed from the input
+    final_ratsnest: float = 0.0       # energy breakdown at the best placement
+    final_overlap: float = 0.0        # penalised footprint overlap area (mm²)
+    final_bbox: float = 0.0           # layout bounding-box area (mm²)
+
+    @property
+    def accept_ratio(self) -> float:
+        """Fraction of proposed moves accepted over the run (0 if none made)."""
+        return self.accepted / self.iterations if self.iterations else 0.0
 
 
 def _half_extent(pad: Pad) -> float:
@@ -80,18 +101,25 @@ class _Placer:
         self.rng = random.Random(params.seed)
         self.boxed = [fp for fp in board.footprints if fp.pads]
         self.movable = [fp for fp in self.boxed if not fp.locked]
+        # Each body/pad box is grown by half the buffer per side, so two boxes
+        # register as overlapping whenever their *gap* is below the full buffer —
+        # the optimiser then pushes footprints at least `buffer` apart, leaving
+        # room for the routing clearance and avoiding the too-tight placements
+        # that previously failed DRC.
+        self.half_buffer = max(0.0, params.buffer) / 2.0
 
     def _fp_box(self, fp: Footprint):
-        """Axis-aligned body box of a footprint, from its pads' current centres."""
-        xs0 = min(p.cx - _half_extent(p) for p in fp.pads)
-        ys0 = min(p.cy - _half_extent(p) for p in fp.pads)
-        xs1 = max(p.cx + _half_extent(p) for p in fp.pads)
-        ys1 = max(p.cy + _half_extent(p) for p in fp.pads)
+        """Buffer-inflated axis-aligned body box of a footprint, from its pads."""
+        hb = self.half_buffer
+        xs0 = min(p.cx - _half_extent(p) for p in fp.pads) - hb
+        ys0 = min(p.cy - _half_extent(p) for p in fp.pads) - hb
+        xs1 = max(p.cx + _half_extent(p) for p in fp.pads) + hb
+        ys1 = max(p.cy + _half_extent(p) for p in fp.pads) + hb
         return box(xs0, ys0, xs1, ys1)
 
     def _pad_box(self, pad: Pad):
-        """Axis-aligned box around a single pad at its current centre."""
-        he = _half_extent(pad)
+        """Buffer-inflated axis-aligned box around a single pad at its centre."""
+        he = _half_extent(pad) + self.half_buffer
         return box(pad.cx - he, pad.cy - he, pad.cx + he, pad.cy + he)
 
     def _pad_overlap(self, fa: Footprint, fb: Footprint) -> float:
@@ -129,8 +157,8 @@ class _Placer:
                     total += bi.intersection(boxes[j]).area
         return total
 
-    def _energy(self) -> float:
-        """Current placement energy (see the module docstring)."""
+    def _energy_components(self) -> tuple[float, float, float]:
+        """Return the ``(ratsnest, overlap_area, bbox_area)`` energy terms."""
         rats = sum(c.est_length
                    for c in netlist.build_connections(self.board, self.p.exclude))
         boxes = [self._fp_box(fp) for fp in self.boxed]
@@ -143,6 +171,11 @@ class _Placer:
             bbox_area = max(0.0, maxx - minx) * max(0.0, maxy - miny)
         else:
             bbox_area = 0.0
+        return rats, overlap, bbox_area
+
+    def _energy(self) -> float:
+        """Current placement energy (see the module docstring)."""
+        rats, overlap, bbox_area = self._energy_components()
         return rats + self.p.overlap_weight * overlap + self.p.compact_weight * bbox_area
 
     @staticmethod
@@ -178,8 +211,11 @@ class _Placer:
             return snap
         fp = self.rng.choice(self.movable)
         snap = self._snapshot([fp])
-        if r < 0.5:                                          # rotate
-            fp.angle = (fp.angle + self.rng.choice((90.0, -90.0, 180.0))) % 360.0
+        if self.p.rotate_mode != "none" and r < 0.5:         # rotate
+            if self.p.rotate_mode == "free":
+                fp.angle = self.rng.uniform(0.0, 360.0)
+            else:                                            # "ortho"
+                fp.angle = (fp.angle + self.rng.choice((90.0, -90.0, 180.0))) % 360.0
         else:                                                # translate
             s = self.p.step * temp_frac
             fp.x += self.rng.uniform(-s, s)
@@ -191,22 +227,26 @@ class _Placer:
         """Run the annealing loop; leave the board at the best placement seen.
 
         Args:
-            on_progress: optional callback ``(it, total, energy, best, temp)``
-                invoked each iteration.
+            on_progress: optional callback ``(it, total, energy, best, temp,
+                accept)`` invoked each iteration, where ``accept`` is the fraction
+                of moves accepted over the last ``_ACCEPT_WINDOW`` iterations.
 
         Returns:
-            The `PlaceResult` with start/best energy and run statistics.
+            The `PlaceResult` with start/best energy, run statistics, and the
+            energy breakdown at the best placement.
         """
         for fp in self.boxed:
             fp.sync_pads()
         if not self.movable:
             E = self._energy()
-            return PlaceResult(E, E, 0, 0, 0)
+            rats, overlap, bbox = self._energy_components()
+            return PlaceResult(E, E, 0, 0, 0, rats, overlap, bbox)
 
         E = self._energy()
         start_E = best_E = E
         best = self._snapshot(self.movable)
         accepted = 0
+        recent = deque(maxlen=_ACCEPT_WINDOW)   # 1/0 per recent move, for the live ratio
 
         total = self.p.iters if self.p.iters else 1_000_000
         t0 = time.time()
@@ -227,7 +267,8 @@ class _Placer:
             snap = self._move(T / self.p.t_start)
             E_new = self._energy()
             dE = E_new - E
-            if dE <= 0 or self.rng.random() < math.exp(-dE / max(T, 1e-9)):
+            accept = dE <= 0 or self.rng.random() < math.exp(-dE / max(T, 1e-9))
+            if accept:
                 E = E_new
                 accepted += 1
                 if E < best_E:
@@ -235,18 +276,20 @@ class _Placer:
                     best = self._snapshot(self.movable)
             else:
                 self._restore(snap)
+            recent.append(1 if accept else 0)
 
             it += 1
             if on_progress is not None:
-                on_progress(it, total, E, best_E, T)
+                on_progress(it, total, E, best_E, T, sum(recent) / len(recent))
 
         self._restore(best)
         moved = sum(1 for fp in self.board.footprints if fp.moved)
-        return PlaceResult(start_E, best_E, it, accepted, moved)
+        rats, overlap, bbox = self._energy_components()
+        return PlaceResult(start_E, best_E, it, accepted, moved, rats, overlap, bbox)
 
 
 def place(board: Board, params: PlaceParams | None = None,
-          on_progress=None) -> PlaceResult:
+          on_progress=None, runs: int = 1) -> PlaceResult:
     """Place a board's footprints by simulated annealing; return the best seen.
 
     Mutates `board`'s footprint poses (and their pads) in place, leaving them at
@@ -255,12 +298,36 @@ def place(board: Board, params: PlaceParams | None = None,
     `pyautoroute.pcb.apply_placement` afterwards to finalise pad coordinates and
     regenerate the board outline before routing.
 
+    With ``runs > 1`` the placement is repeated that many times — each restarted
+    from the board's original poses with the seed stepped by the run index — and
+    the lowest-energy placement is kept (best-of-N; SA is stochastic, so several
+    short runs often beat one long run).
+
     Args:
         board: the board to place, mutated in place.
         params: the placement parameters; ``None`` uses defaults.
         on_progress: optional per-iteration progress callback (see `_Placer.run`).
+        runs: number of independent placement runs; the best is kept.
 
     Returns:
         The `PlaceResult` with the best placement's energy and run statistics.
     """
-    return _Placer(board, params or PlaceParams()).run(on_progress)
+    params = params or PlaceParams()
+    if runs <= 1:
+        return _Placer(board, params).run(on_progress)
+
+    orig = [(fp, fp.x, fp.y, fp.angle) for fp in board.footprints]
+    best: PlaceResult | None = None
+    best_poses = None
+    for k in range(runs):
+        for fp, x, y, a in orig:                 # restart from the original layout
+            fp.x, fp.y, fp.angle = x, y, a
+            fp.sync_pads()
+        result = _Placer(board, replace(params, seed=params.seed + k)).run(on_progress)
+        if best is None or result.best_energy < best.best_energy:
+            best = result
+            best_poses = [(fp, fp.x, fp.y, fp.angle) for fp in board.footprints]
+    for fp, x, y, a in best_poses:               # leave the board at the best
+        fp.x, fp.y, fp.angle = x, y, a
+        fp.sync_pads()
+    return best
