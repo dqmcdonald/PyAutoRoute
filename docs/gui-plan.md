@@ -145,6 +145,15 @@ The **Mode** selector (Route only / Place + Route / Place only) maps to the same
 flags as the CLI and drives which control groups are enabled and the output name
 (`_routed` / `_placed_routed` / `_placed`).
 
+GUI controls should be set initially by the command line options or the
+project's Project.ini file. There should be an option to save the current configso it will be the default next time.
+
+GUI controls should all have explantory tooltips.
+
+Text entry boxes are preferred over sliders.
+
+Some advanced controls could be placed in an "Advanced" settings dialog.
+
 ### Replace-original workflow
 
 - A run writes its result to the standard output path (`<input>_placed_routed`,
