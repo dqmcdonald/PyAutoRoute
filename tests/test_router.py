@@ -4,10 +4,21 @@ from __future__ import annotations
 
 import math
 
-from pyautoroute import rules, sexpr
+from pyautoroute import pcb, rules, sexpr
 from pyautoroute.grid import Grid
 from pyautoroute.pcb import Board, OutlineShape, Pad
 from pyautoroute.router import RoutingState, path_to_nodes, route_connection
+
+
+def _segment_points(nodes):
+    """Return [(start_xy, end_xy), ...] for the segment nodes in `nodes`."""
+    out = []
+    for n in nodes:
+        if sexpr.head_symbol(n) == "segment":
+            s = tuple(pcb.floats(pcb.child(n, "start")))
+            e = tuple(pcb.floats(pcb.child(n, "end")))
+            out.append((s, e))
+    return out
 
 
 def _pad(net, cx, cy, w=1.0, h=1.0, layers=("F.Cu",)):
@@ -80,6 +91,34 @@ def test_path_to_nodes_emits_segments_and_via():
     heads = [sexpr.head_symbol(n) for n in nodes]
     assert heads.count("via") == 2
     assert "segment" in heads
+
+
+def test_route_terminates_on_pad_centre():
+    # centres deliberately off the 0.25 mm grid, so each end needs a stub to
+    # the pad anchor for the track to terminate exactly on the pad centre.
+    a, b = _pad("A", 4.1, 10.1), _pad("A", 15.9, 9.9)
+    board = _board([a, b])
+    s = _state(board)
+    res = route_connection(s, "A", _access(s, a), _access(s, b),
+                           src_xy=(a.cx, a.cy), dst_xy=(b.cx, b.cy))
+    assert res is not None
+    endpoints = {p for seg in _segment_points(path_to_nodes(board, s.grid, res))
+                 for p in seg}
+    assert (a.cx, a.cy) in endpoints
+    assert (b.cx, b.cy) in endpoints
+
+
+def test_no_zero_length_stub_when_centre_on_node():
+    # centres land exactly on grid nodes (multiples of 0.25), so no stub is
+    # emitted and no segment is degenerate.
+    a, b = _pad("A", 4, 10), _pad("A", 16, 10)
+    board = _board([a, b])
+    s = _state(board)
+    res = route_connection(s, "A", _access(s, a), _access(s, b),
+                           src_xy=(a.cx, a.cy), dst_xy=(b.cx, b.cy))
+    segs = _segment_points(path_to_nodes(board, s.grid, res))
+    assert segs                                  # the route still emits track
+    assert all(start != end for start, end in segs)
 
 
 def test_commit_blocks_other_nets_and_ripup_restores():

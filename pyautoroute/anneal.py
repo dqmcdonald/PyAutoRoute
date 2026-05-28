@@ -138,7 +138,8 @@ class _Annealer:
         return router.route_connection(
             self.state, conn.net,
             grid.pad_access_nodes(conn.a), grid.pad_access_nodes(conn.b),
-            self.p.route_params)
+            self.p.route_params,
+            src_xy=(conn.a.cx, conn.a.cy), dst_xy=(conn.b.cx, conn.b.cy))
 
     def _apply(self, ripped: list[int], suborder: list[int]) -> dict:
         """Rip up `ripped`, then re-route `suborder`, committing successes.

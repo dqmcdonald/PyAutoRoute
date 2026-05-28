@@ -145,6 +145,11 @@ optimisation (rip-up & reroute over connection order and layer choice). Clearanc
 is enforced on a clearance-inflated routing grid, so routes are DRC-clean by
 construction. See [`docs/architecture.md`](docs/architecture.md) for the details.
 
+Each track **terminates on the pad anchor (centre)**: the maze search enters a pad
+at the most convenient grid node, then a short stub (inside the pad, so it adds no
+clearance) carries the endpoint to the pad centre. KiCad therefore treats the track
+as attached to the pad and keeps it connected when you move the footprint.
+
 ## Limitations (v1)
 
 - Two copper layers only (F.Cu / B.Cu).

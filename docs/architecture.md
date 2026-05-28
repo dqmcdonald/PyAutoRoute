@@ -125,7 +125,14 @@ and `pad_access_nodes` (grid nodes inside a pad polygon, the A* start/goal set).
 - **`route_all`** routes a list of connections in a given order, committing each
   success.
 - **`path_to_nodes`** converts a node path into KiCad segments (collinear runs
-  merged) + vias (at layer changes).
+  merged) + vias (at layer changes), then **stubs each end to the pad anchor**
+  (`_centre_stub`): the A* path terminates on whichever pad-access grid node the
+  search preferred, so a short segment carries that endpoint to the pad centre
+  (`Pad.cx/cy`, threaded through on `RouteResult.src_xy/dst_xy`). Both the node and
+  the centre lie inside the pad, so the stub stays within the pad's own copper and
+  introduces no clearance violation — but the track now ends exactly on the pad
+  anchor, so KiCad keeps it attached when the footprint is moved. A stub shorter
+  than `_STUB_EPS` (the centre already lands on a node) is dropped.
 
 ### `netlist.py` — rats-nest
 Groups pads by net, drops `--exclude-net` matches, and reduces each multi-pad net
