@@ -53,6 +53,11 @@ class RouteParams:
     via_cost: float = 2.0         # mm-equivalent penalty for a layer change
     back_layer_penalty: float = 0.02   # mm per step on a non-front layer
     max_expansions: int = 2_000_000
+    # When set, bound each search to a box around the source/target nodes grown
+    # by this many mm on every side, widening the box and retrying on failure
+    # (falling back to the full grid). Trades a little path optimality for a much
+    # smaller search on large boards; `None` searches the whole grid (optimal).
+    search_margin: float | None = None
 
     def bend(self, turn_units: int) -> float:
         """Penalty for a direction change of `turn_units` 45-degree steps.
@@ -265,6 +270,13 @@ def astar(state: RoutingState, net_id: int,
     the via-target layer list is cached on the grid. These are transparent — the
     returned path is identical to the unoptimised search.
 
+    When ``params.search_margin`` is set, the search is bounded to a box around
+    the source/target nodes (grown by that margin in mm), masking everything
+    outside it not-free. The box widens and the search retries on failure,
+    falling back to the full grid, so a route is still found whenever one exists;
+    the trade-off is that a bounded route may be slightly longer than the global
+    optimum. With ``search_margin=None`` (the default) the whole grid is searched.
+
     Args:
         state: the live routing state (occupancy the search must respect).
         net_id: the routing net's id (nodes owned by other nets are blocked).
@@ -299,13 +311,10 @@ def astar(state: RoutingState, net_id: int,
     # node is free for this net iff the static grid permits it AND no *other*
     # net's committed copper covers it.
     owner = grid.owner
-    free = (owner == FREE) | (owner == net_id)        # (n_layers, ny, nx)
+    base_free = (owner == FREE) | (owner == net_id)   # (n_layers, ny, nx)
     for (li, c, r), occ in state.cover.items():
-        if free[li, r, c] and any(state.conn_net[i] != net_id for i in occ):
-            free[li, r, c] = False
-
-    def is_free(li: int, c: int, r: int) -> bool:
-        return 0 <= c < nx and 0 <= r < ny and bool(free[li, r, c])
+        if base_free[li, r, c] and any(state.conn_net[i] != net_id for i in occ):
+            base_free[li, r, c] = False
 
     # --- precomputed heuristic field ----------------------------------------
     # The heuristic is octile distance to the nearest target, independent of
@@ -338,93 +347,137 @@ def astar(state: RoutingState, net_id: int,
                       for i in range(n_layers)]
         grid._via_layer_neighbours = via_layers
 
-    def can_via(c: int, r: int) -> bool:
-        for dc, dr in grid._via_stencil:
-            cc, rr = c + dc, r + dr
-            if not (0 <= cc < nx and 0 <= rr < ny):
-                return False
-            if not free[:, rr, cc].all():
-                return False
-        return True
+    def _search(free) -> list[tuple[int, int, int]] | None:
+        """Run one A* search over the given per-net `free` mask.
 
-    # --- optional Cython fast path ------------------------------------------
-    # The native core consumes the exact same precomputed structures (free mask,
-    # heuristic field, via stencil/layer lists) and integer state packing, so it
-    # returns a bit-for-bit identical path. It is skipped transparently when the
-    # extension is not built (`_USE_C_ASTAR` is False).
-    if _USE_C_ASTAR:
-        free_c = np.ascontiguousarray(free, dtype=np.uint8)
-        hfield_c = np.ascontiguousarray(hfield, dtype=np.float64)
-        return _astar_fast(
-            free_c, hfield_c,
-            list(sources), list(targets),
-            [(int(dc), int(dr)) for dc, dr in grid._via_stencil],
-            [tuple(v) for v in via_layers],
-            float(pitch), float(params.via_cost),
-            float(params.bend45), float(params.bend90),
-            float(params.bend135), float(params.bend180),
-            float(params.back_layer_penalty),
-            int(params.max_expansions),
-        )
+        The mask is the only thing that varies between a bounded attempt and the
+        full-grid fallback, so the whole search (both the Cython fast path and the
+        pure-Python heap loop) closes over it. Out-of-box nodes are simply marked
+        not-free in `free`, which bounds the frontier without any other change.
+        """
+        def is_free(li: int, c: int, r: int) -> bool:
+            return 0 <= c < nx and 0 <= r < ny and bool(free[li, r, c])
 
-    counter = itertools.count()
-    gscore: dict[int, float] = {}
-    # key -> (predecessor_key, (layer, col, row)); the node tuple is stored so
-    # path reconstruction needs no decode of the packed integer key.
-    came: dict[int, tuple | None] = {}
-    heap = []
-    for (li, c, r) in sources:
-        if not is_free(li, c, r):
-            continue
-        s = encode(li, c, r, -1)
-        gscore[s] = 0.0
-        came[s] = (None, (li, c, r))
-        heapq.heappush(heap, (h(c, r), next(counter), s, li, c, r, -1))
+        def can_via(c: int, r: int) -> bool:
+            for dc, dr in grid._via_stencil:
+                cc, rr = c + dc, r + dr
+                if not (0 <= cc < nx and 0 <= rr < ny):
+                    return False
+                if not free[:, rr, cc].all():
+                    return False
+            return True
 
-    expansions = 0
-    while heap:
-        f, _, st, li, c, r, pdir = heapq.heappop(heap)
-        g = gscore[st]
-        if f > g + h(c, r) + 1e-9:
-            continue
-        if (li, c, r) in target_set:
-            return _reconstruct(came, st)
+        # --- optional Cython fast path --------------------------------------
+        # The native core consumes the exact same precomputed structures (free
+        # mask, heuristic field, via stencil/layer lists) and integer state
+        # packing, so it returns a bit-for-bit identical path. It is skipped
+        # transparently when the extension is not built (`_USE_C_ASTAR` is False).
+        if _USE_C_ASTAR:
+            free_c = np.ascontiguousarray(free, dtype=np.uint8)
+            hfield_c = np.ascontiguousarray(hfield, dtype=np.float64)
+            return _astar_fast(
+                free_c, hfield_c,
+                list(sources), list(targets),
+                [(int(dc), int(dr)) for dc, dr in grid._via_stencil],
+                [tuple(v) for v in via_layers],
+                float(pitch), float(params.via_cost),
+                float(params.bend45), float(params.bend90),
+                float(params.bend135), float(params.bend180),
+                float(params.back_layer_penalty),
+                int(params.max_expansions),
+            )
 
-        expansions += 1
-        if expansions > params.max_expansions:
-            return None
-
-        for di, (dx, dy) in enumerate(_DIRS):
-            nc, nr = c + dx, r + dy
-            if not is_free(li, nc, nr):
+        counter = itertools.count()
+        gscore: dict[int, float] = {}
+        # key -> (predecessor_key, (layer, col, row)); the node tuple is stored so
+        # path reconstruction needs no decode of the packed integer key.
+        came: dict[int, tuple | None] = {}
+        heap = []
+        for (li, c, r) in sources:
+            if not is_free(li, c, r):
                 continue
-            diagonal = dx != 0 and dy != 0
-            if diagonal and not (is_free(li, c + dx, r)
-                                 and is_free(li, c, r + dy)):
-                continue
-            step = pitch * (SQRT2 if diagonal else 1.0)
-            cost = step + params.bend(_turn_units(pdir, di))
-            if li != 0:
-                cost += params.back_layer_penalty
-            ng = g + cost
-            ns = encode(li, nc, nr, di)
-            if ng < gscore.get(ns, math.inf):
-                gscore[ns] = ng
-                came[ns] = (st, (li, nc, nr))
-                heapq.heappush(heap, (ng + h(nc, nr), next(counter),
-                                      ns, li, nc, nr, di))
+            s = encode(li, c, r, -1)
+            gscore[s] = 0.0
+            came[s] = (None, (li, c, r))
+            heapq.heappush(heap, (h(c, r), next(counter), s, li, c, r, -1))
 
-        if n_layers > 1 and can_via(c, r):
-            ng = g + params.via_cost
-            for nli in via_layers[li]:
-                ns = encode(nli, c, r, -1)
+        expansions = 0
+        while heap:
+            f, _, st, li, c, r, pdir = heapq.heappop(heap)
+            g = gscore[st]
+            if f > g + h(c, r) + 1e-9:
+                continue
+            if (li, c, r) in target_set:
+                return _reconstruct(came, st)
+
+            expansions += 1
+            if expansions > params.max_expansions:
+                return None
+
+            for di, (dx, dy) in enumerate(_DIRS):
+                nc, nr = c + dx, r + dy
+                if not is_free(li, nc, nr):
+                    continue
+                diagonal = dx != 0 and dy != 0
+                if diagonal and not (is_free(li, c + dx, r)
+                                     and is_free(li, c, r + dy)):
+                    continue
+                step = pitch * (SQRT2 if diagonal else 1.0)
+                cost = step + params.bend(_turn_units(pdir, di))
+                if li != 0:
+                    cost += params.back_layer_penalty
+                ng = g + cost
+                ns = encode(li, nc, nr, di)
                 if ng < gscore.get(ns, math.inf):
                     gscore[ns] = ng
-                    came[ns] = (st, (nli, c, r))
-                    heapq.heappush(heap, (ng + h(c, r), next(counter),
-                                          ns, nli, c, r, -1))
+                    came[ns] = (st, (li, nc, nr))
+                    heapq.heappush(heap, (ng + h(nc, nr), next(counter),
+                                          ns, li, nc, nr, di))
 
-    return None
+            if n_layers > 1 and can_via(c, r):
+                ng = g + params.via_cost
+                for nli in via_layers[li]:
+                    ns = encode(nli, c, r, -1)
+                    if ng < gscore.get(ns, math.inf):
+                        gscore[ns] = ng
+                        came[ns] = (st, (nli, c, r))
+                        heapq.heappush(heap, (ng + h(c, r), next(counter),
+                                              ns, nli, c, r, -1))
+
+        return None
+
+    # --- bounded search with widen-on-failure -------------------------------
+    # Unbounded: search the whole grid (optimal, the historical behaviour).
+    if params.search_margin is None:
+        return _search(base_free)
+
+    # Bound the search to a box around the source/target nodes grown by the
+    # margin, masking everything outside it not-free. On failure widen the box
+    # and retry; once the box covers the whole grid this is the unbounded search,
+    # so a route is still found whenever one exists.
+    cs = [c for (_, c, _) in sources] + [c for (_, c, _) in targets]
+    rs = [r for (_, _, r) in sources] + [r for (_, _, r) in targets]
+    cmin0, cmax0 = min(cs), max(cs)
+    rmin0, rmax0 = min(rs), max(rs)
+    pad = max(1, int(math.ceil(params.search_margin / pitch)))
+    while True:
+        cmin, cmax = max(0, cmin0 - pad), min(nx - 1, cmax0 + pad)
+        rmin, rmax = max(0, rmin0 - pad), min(ny - 1, rmax0 + pad)
+        if cmin == 0 and cmax == nx - 1 and rmin == 0 and rmax == ny - 1:
+            return _search(base_free)        # box covers the grid: unbounded
+        free = base_free.copy()
+        if rmin > 0:
+            free[:, :rmin, :] = False
+        if rmax < ny - 1:
+            free[:, rmax + 1:, :] = False
+        if cmin > 0:
+            free[:, :, :cmin] = False
+        if cmax < nx - 1:
+            free[:, :, cmax + 1:] = False
+        path = _search(free)
+        if path is not None:
+            return path
+        pad *= 2
 
 
 def _reconstruct(came, st) -> list[tuple[int, int, int]]:

@@ -418,6 +418,18 @@ Per step (all in mm so length dominates):
 State includes the incoming direction so bend penalties can be applied; diagonal
 moves are forbidden from cutting a blocked corner.
 
+**Bounded search (`RouteParams.search_margin`, the `--search-margin` flag).** By
+default A\* searches the whole grid. When a margin (mm) is given, the per-net
+`free` mask is additionally masked to a box around the source/target nodes grown
+by that margin, so the frontier cannot leave the box. If the bounded search
+fails, the box widens and the search retries, ultimately falling back to the full
+grid — so a route is still found whenever one exists. The trade-off is a small
+loss of optimality (a bounded route may be slightly longer than the global
+minimum). Because the bound is applied purely through the `free` mask, both the
+pure-Python loop and the Cython core honour it without any signature change. The
+biggest win is the annealing rip-up/reroute loop, where each reroute is local but
+an unbounded search would re-scan the whole board every iteration.
+
 ## Simulated annealing details
 
 - **State** = the set of committed connection routes (in `RoutingState`).
@@ -456,4 +468,4 @@ integration tests and validated end-to-end with `kicad-cli pcb drc`.
 - **Custom pads** are approximated by their bounding box.
 - **Conservative clearance for mixed net-class boards.** The single global inflation margin uses the maximum track/clearance across classes; exact per-net masks would route denser mixed-rule boards.
 - **Hole-to-hole** is approximated by copper clearance rather than checked explicitly.
-- **Performance.** A* is unbounded in search area, so a few long nets dominate runtime. Bounding the search region (a slack box around the connection) is the highest-value next optimisation.
+- **Performance.** A\* searches the whole grid by default, so a few long nets dominate runtime. The optional `--search-margin` bounds each search to a slack box around the connection (see *A\* cost model* above); enabling it by default once tuned remains future work.
