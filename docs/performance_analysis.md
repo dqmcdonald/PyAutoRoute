@@ -531,6 +531,23 @@ Tracking which optimisations from §4 have landed.
   when `runs > 1` and `jobs > 1`. Speedup ≈ `min(runs, cores)`. GUI is untouched
   (CLI-only).
 
+- **Bounded A\* search** (`router.py`, `--search-margin MM`). Opt-in: each
+  connection's search is confined to a box around its source/target nodes grown
+  by the margin, widening and retrying on failure (ultimately the full grid, so
+  completeness is preserved). The key finding was that bounding the *frontier*
+  alone gave nothing — profiling a reroute on Test4 (208×116×2 = 48k nodes)
+  showed the per-`astar` call was ~6.8 ms, of which the **full-grid numpy
+  precompute** (per-net free mask + octile heuristic field) was ~6.4 ms (94%) and
+  the search itself only ~0.4 ms. So `_precompute(cmin,cmax,rmin,rmax)` now builds
+  both arrays *only inside the box*; outside it nodes are not-free with a +inf
+  heuristic, which the search never reaches. The unbounded (default) path computes
+  over the full grid exactly as before, so results and C-parity are unchanged.
+  Measured (pure-Python core, identical routes/length/vias at these margins):
+  greedy routing **1.21×** on Test4 at `--search-margin 5`; the annealing
+  rip-up/reroute loop **1.13–1.18×** (Test3/Test4). The win scales with grid size
+  relative to net span, so larger boards than the test set benefit more; enabling
+  it by default once tuned is future work.
+
 ### Not yet done
 
 - P2 — Vectorise `_covered_nodes`; parallel placement runs / SA chains; adaptive
