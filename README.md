@@ -80,6 +80,7 @@ The original file is never modified — a routed copy is written alongside it.
 | `--iters N` | Run simulated-annealing optimisation for N iterations. |
 | `--time SECONDS` | Run optimisation for a wall-clock budget instead. |
 | `--runs N` | Route `N` times with different annealing seeds and keep the lowest-energy result (best-of-N). Default 1. Multiplies runtime ~N×; only varies the result when annealing (`--iters`/`--time`) is on. |
+| `--jobs N`, `-j N` | Run the `--runs` trials across `N` worker processes (parallel best-of-N). `0` uses every CPU (capped at `--runs`). `1` (default) keeps the sequential path with live per-run progress. Speedup ≈ `min(runs, cores)`. In parallel mode per-run live progress is suppressed (it can't interleave cleanly across processes); each run logs a one-line completion. |
 | `--auto` | Probe a few grid/via settings on this board, pick the best, and (on a terminal) ask to confirm before routing with them. `--auto-yes` skips the prompt; `--auto-probe-time S` sets the budget per probed setting. |
 | `--unrouted-weight W` | Annealing energy penalty per unrouted connection (default 100). Higher ⇒ the optimiser tries harder to complete every connection, at the expense of wirelength/vias; lower ⇒ it tolerates leaving hard nets for manual routing. |
 | `--anneal-temps START END` | Start/end temperature of the geometric cooling schedule (default `4.0 0.05`); `START > END > 0`. Higher `START` explores more (better escape from local minima, slower convergence); lower `END` exploits harder at the finish. |
@@ -101,7 +102,10 @@ routed once (greedy order) without annealing.
 `--runs N` repeats the whole route + anneal with seeds `seed, seed+1, …` and keeps
 the result with the lowest annealing energy (`wirelength + via_weight·vias +
 unrouted_weight·unrouted`) — simulated annealing is stochastic, so the best of a
-few short runs often beats one long run. (`--snapshots` needs a single run.)
+few short runs often beats one long run. (`--snapshots` needs a single run.) Add
+`--jobs N` / `-j N` to run those runs in parallel across worker processes
+(`-j 0` uses every core); the lowest-energy result is kept exactly as in the
+sequential path.
 
 ### Examples
 

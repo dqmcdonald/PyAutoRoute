@@ -10,8 +10,10 @@ self-check on the result.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import configparser
 import datetime
+import os
 import textwrap
 import sys
 import time
@@ -282,6 +284,91 @@ def _stamp(board, mode: str) -> None:
     pcb.stamp_comment(board, f"PyAutoRoute v{__version__} — {mode} {today}")
 
 
+def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
+                   iters, time_budget, seed, unrouted_weight, anneal_temps,
+                   via_weight, on_route_progress=None, on_anneal_progress=None,
+                   on_snapshot=None, snapshots=0, cancel=None):
+    """Run one independent route (+ optional anneal) and return its outcome.
+
+    This is the shared body of both the sequential and the parallel best-of-N
+    routing paths. It builds a fresh `RoutingState` over `grid` (which it never
+    mutates), greedily routes, then optionally anneals with seed ``seed +
+    run_idx`` — matching the sequential loop's seeding exactly.
+
+    Args:
+        grid: the (read-only) routing grid; each run gets its own `RoutingState`.
+        conns: the connection list.
+        order: the greedy routing order.
+        params: the `RouteParams`.
+        run_idx: zero-based run index; offsets the anneal seed.
+        annealing: whether to run the rip-up/reroute annealer.
+        iters: anneal iteration budget.
+        time_budget: anneal time budget (s).
+        seed: base seed (the anneal seed is ``seed + run_idx``).
+        unrouted_weight: anneal unrouted-connection penalty.
+        anneal_temps: (start, end) anneal temperatures.
+        via_weight: via cost used for the non-annealing energy.
+        on_route_progress: optional greedy-route progress callback.
+        on_anneal_progress: optional anneal progress callback.
+        on_snapshot: optional snapshot callback (single-run only).
+        snapshots: number of snapshots to emit during annealing.
+        cancel: optional cancellation `Event`.
+
+    Returns:
+        A dict ``{energy, results, metrics, summary}`` where ``metrics`` is
+        ``(routed, unrouted, length, vias)`` and ``summary`` is a log line (or
+        ``None``). All values are picklable so the dict can cross a process
+        boundary.
+    """
+    state = router.RoutingState(grid)
+    result = router.route_all(state, conns, order, params,
+                              on_progress=on_route_progress)
+    run_results = result.results
+    run_metrics = (result.routed, result.unrouted,
+                   result.total_length, result.total_vias)
+    summary = None
+
+    if annealing:
+        ap = anneal.AnnealParams(iters=iters, time_budget=time_budget,
+                                 seed=seed + run_idx, snapshots=snapshots,
+                                 unrouted_weight=unrouted_weight,
+                                 t_start=anneal_temps[0], t_end=anneal_temps[1],
+                                 route_params=params)
+        aout = anneal.anneal(state, conns, list(result.results), ap,
+                             on_progress=on_anneal_progress,
+                             on_snapshot=on_snapshot, cancel=cancel)
+        run_results = aout.results
+        run_metrics = (aout.routed, aout.unrouted,
+                       aout.total_length, aout.total_vias)
+        run_energy = aout.best_energy
+        acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
+        summary = (f"anneal: {aout.iterations} iters, "
+                   f"{aout.accepted} accepted ({acc_pct:.0f}%), "
+                   f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
+    else:
+        run_energy = anneal._energy(run_results, via_weight, unrouted_weight)
+
+    return {"energy": run_energy, "results": run_results,
+            "metrics": run_metrics, "summary": summary}
+
+
+def _route_run_worker(payload):
+    """Picklable `ProcessPoolExecutor` entry point for one routing run.
+
+    Unpacks a ``(grid, conns, order, params, run_idx, kwargs)`` tuple and calls
+    `_route_one_run` with all progress callbacks suppressed (per-run live
+    progress does not interleave cleanly across processes).
+
+    Args:
+        payload: the packed argument tuple.
+
+    Returns:
+        The result dict from `_route_one_run`.
+    """
+    grid, conns, order, params, run_idx, kw = payload
+    return _route_one_run(grid, conns, order, params, run_idx, **kw)
+
+
 def _results_to_nodes(board, grid: Grid, results) -> list:
     """Flatten routed results into the KiCad nodes to append to the board.
 
@@ -537,6 +624,12 @@ def run(args: argparse.Namespace) -> int:
         print("  note: --runs > 1 has no effect without --iters/--time "
               "(greedy routing is deterministic); using 1 run")
         runs = 1
+    # Worker count for parallel best-of-N: --jobs 0 means "use as many workers
+    # as runs, capped at the CPU count". --jobs 1 (the default) keeps the
+    # byte-identical sequential path. Never spawn more workers than runs.
+    jobs = args.jobs if args.jobs and args.jobs > 0 else (os.cpu_count() or 1)
+    jobs = max(1, min(jobs, runs))
+    parallel = runs > 1 and jobs > 1
     # snapshots only make sense during a single annealing run
     snap_n = args.snapshots
     if snap_n and not (args.iters or args.time_budget):
@@ -580,50 +673,82 @@ def run(args: argparse.Namespace) -> int:
                       elapsed=elapsed, budget=args.time_budget or 0.0,
                       overall_best=ob)
 
-    for k in range(runs):
-        tag = f"run {k + 1}/{runs}: " if runs > 1 else ""
-        rep.tag = tag
-        rep.phase(f"{tag}routing {len(conns)} connections")
-        state = router.RoutingState(grid)
-        result = router.route_all(state, conns, order, params, on_progress=rep.routing)
+    if parallel:
+        # Best-of-N across worker processes. Each worker runs the shared
+        # `_route_one_run` body (greedy route + optional anneal) with all live
+        # progress suppressed; the main process keeps the lowest-energy result,
+        # matching the sequential selection rule exactly. The grid and
+        # connections are picklable, so workers reuse them rather than re-parse.
+        rep.phase(f"routing {len(conns)} connections — "
+                  f"{runs} runs across {jobs} workers")
+        kw = dict(annealing=annealing, iters=args.iters,
+                  time_budget=args.time_budget, seed=args.seed,
+                  unrouted_weight=args.unrouted_weight,
+                  anneal_temps=args.anneal_temps, via_weight=args.via_weight)
+        payloads = [(grid, conns, order, params, k, kw) for k in range(runs)]
+        done_n = 0
+        try:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
+                futs = [ex.submit(_route_run_worker, p) for p in payloads]
+                for fut in concurrent.futures.as_completed(futs):
+                    out = fut.result()
+                    done_n += 1
+                    rep.log(f"run {done_n}/{runs} done: energy {out['energy']:.1f}"
+                            + (f"  ({out['summary']})" if out["summary"] else ""))
+                    if out["energy"] < best_energy:
+                        best_energy = out["energy"]
+                        final_results = out["results"]
+                        routed, unrouted, length, vias = out["metrics"]
+        except KeyboardInterrupt:
+            rep.log("interrupted — keeping best result so far")
+            if final_results is None:
+                raise
         rep.done()
-        run_results = result.results
-        run_metrics = (result.routed, result.unrouted,
-                       result.total_length, result.total_vias)
-
-        if annealing:
-            rep.phase(f"{tag}annealing (rip-up & reroute)")
-            _anneal_t0[0] = time.monotonic()
-            ap = anneal.AnnealParams(iters=args.iters, time_budget=args.time_budget,
-                                     seed=args.seed + k, snapshots=snap_n,
-                                     unrouted_weight=args.unrouted_weight,
-                                     t_start=args.anneal_temps[0], t_end=args.anneal_temps[1],
-                                     route_params=params)
-            aout = anneal.anneal(state, conns, list(result.results), ap,
-                                 on_progress=_on_anneal,
-                                 on_snapshot=on_snapshot if snap_n else None)
+    else:
+        for k in range(runs):
+            tag = f"run {k + 1}/{runs}: " if runs > 1 else ""
+            rep.tag = tag
+            rep.phase(f"{tag}routing {len(conns)} connections")
+            state = router.RoutingState(grid)
+            result = router.route_all(state, conns, order, params, on_progress=rep.routing)
             rep.done()
-            run_results = aout.results
-            run_metrics = (aout.routed, aout.unrouted,
-                           aout.total_length, aout.total_vias)
-            run_energy = aout.best_energy
-            acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
-            summary = (f"{tag}anneal: {aout.iterations} iters, "
-                       f"{aout.accepted} accepted ({acc_pct:.0f}%), "
-                       f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
-            rep.log(summary)
-            if not args.quiet:
-                print(f"\n  {summary}")
-        else:
-            run_energy = anneal._energy(run_results, args.via_weight,
-                                        args.unrouted_weight)
-            if runs > 1:
-                rep.log(f"{tag}energy {run_energy:.1f}")
+            run_results = result.results
+            run_metrics = (result.routed, result.unrouted,
+                           result.total_length, result.total_vias)
 
-        if run_energy < best_energy:
-            best_energy = run_energy
-            final_results = run_results
-            routed, unrouted, length, vias = run_metrics
+            if annealing:
+                rep.phase(f"{tag}annealing (rip-up & reroute)")
+                _anneal_t0[0] = time.monotonic()
+                ap = anneal.AnnealParams(iters=args.iters, time_budget=args.time_budget,
+                                         seed=args.seed + k, snapshots=snap_n,
+                                         unrouted_weight=args.unrouted_weight,
+                                         t_start=args.anneal_temps[0], t_end=args.anneal_temps[1],
+                                         route_params=params)
+                aout = anneal.anneal(state, conns, list(result.results), ap,
+                                     on_progress=_on_anneal,
+                                     on_snapshot=on_snapshot if snap_n else None)
+                rep.done()
+                run_results = aout.results
+                run_metrics = (aout.routed, aout.unrouted,
+                               aout.total_length, aout.total_vias)
+                run_energy = aout.best_energy
+                acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
+                summary = (f"{tag}anneal: {aout.iterations} iters, "
+                           f"{aout.accepted} accepted ({acc_pct:.0f}%), "
+                           f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
+                rep.log(summary)
+                if not args.quiet:
+                    print(f"\n  {summary}")
+            else:
+                run_energy = anneal._energy(run_results, args.via_weight,
+                                            args.unrouted_weight)
+                if runs > 1:
+                    rep.log(f"{tag}energy {run_energy:.1f}")
+
+            if run_energy < best_energy:
+                best_energy = run_energy
+                final_results = run_results
+                routed, unrouted, length, vias = run_metrics
 
     if runs > 1:
         best_line = f"best of {runs} runs: energy {best_energy:.1f}"
@@ -1060,6 +1185,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="route N times with different annealing seeds and keep the "
                         "lowest-energy result (default 1; only varies with "
                         "--iters/--time)")
+    p.add_argument("-j", "--jobs", type=int, default=1, metavar="N",
+                   help="run --runs trials across N worker processes (best-of-N "
+                        "in parallel); 0 uses every CPU (capped at --runs). "
+                        "1 (default) keeps the sequential path with live per-run "
+                        "progress (default 1)")
     p.add_argument("--auto", action="store_true",
                    help="probe a few grid/via settings on this board, pick the best, "
                         "and (on a terminal) ask to confirm before routing with them")
@@ -1144,6 +1274,8 @@ def main(argv=None) -> int:
         parser.error("--place-step must be > 0")
     if args.runs < 1:
         parser.error("--runs must be >= 1")
+    if args.jobs < 0:
+        parser.error("--jobs must be >= 0 (0 means use every CPU)")
     if args.place_runs < 1:
         parser.error("--place-runs must be >= 1")
     if (args.place_iters or args.place_time) and not (args.place or args.place_only):

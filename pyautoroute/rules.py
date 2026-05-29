@@ -48,7 +48,10 @@ class DesignRules:
         """Resolve a net to its class.
 
         Resolution order: explicit assignment, then the first matching wildcard
-        pattern, then the Default class.
+        pattern, then the Default class. Results are memoised per net name: a
+        `DesignRules` instance is immutable for the life of a run, so the same
+        net always resolves to the same class, and the `fnmatch` pattern scan
+        need only run once per distinct net.
 
         Args:
             net_name: the net name to resolve.
@@ -56,6 +59,12 @@ class DesignRules:
         Returns:
             The `NetClass` governing `net_name`.
         """
+        cache = self.__dict__.get("_class_cache")
+        if cache is None:
+            cache = self.__dict__["_class_cache"] = {}
+        cached = cache.get(net_name)
+        if cached is not None:
+            return cached
         cls_name = self.assignments.get(net_name)
         if cls_name is None:
             for pattern, name in self.patterns:
@@ -63,8 +72,11 @@ class DesignRules:
                     cls_name = name
                     break
         if cls_name is not None and cls_name in self.classes:
-            return self.classes[cls_name]
-        return self.default_class
+            result = self.classes[cls_name]
+        else:
+            result = self.default_class
+        cache[net_name] = result
+        return result
 
     def clearance_for(self, net_name: str) -> float:
         """Effective clearance for a net (its class value floored by the board min).

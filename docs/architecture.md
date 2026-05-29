@@ -247,7 +247,14 @@ run, fresh `RoutingState` over the one deterministic `Grid`) and keeps the
 lowest-energy routing (scored by `anneal._energy`); without annealing the greedy
 route is deterministic so N collapses to 1. `--place-runs N` is the placement
 analogue, implemented in `placement.place(runs=N)` (each run restarts from the
-original poses, the best placement is kept).
+original poses, the best placement is kept). The shared per-run body lives in
+`_route_one_run` (greedy route + optional anneal). With `--jobs`/`-j N` (and
+`runs > 1`) the runs are dispatched across a `ProcessPoolExecutor`: the picklable
+`_route_run_worker` re-invokes `_route_one_run` in each worker (the `Grid` and
+connections pickle directly, so no re-parse), the main process collects futures
+as they resolve and keeps the lowest-energy one — the same selection rule as the
+sequential path. Per-run live progress is suppressed in parallel mode. `--jobs 1`
+(default) keeps the byte-identical sequential loop with full progress.
 
 Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
 text progress `Reporter` (single-line `\r` updates on a TTY, line-by-line

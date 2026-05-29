@@ -507,8 +507,31 @@ Tracking which optimisations from §4 have landed.
   `scripts/profile_anneal.py` runs cProfile over the placement annealer, writes
   `/tmp/profile_anneal.prof`, and prints the top-20 cumulative lines.
 
+- **P1 — Memoise `rules.class_for`** (`rules.py`). `class_for` now caches its
+  resolution per net name in a `_class_cache` dict stored on the `DesignRules`
+  instance (lazily created in `class_for` itself, so it survives pickling and
+  needs no `__init__` change). A `DesignRules` is immutable for the life of a
+  run — a net always resolves to the same class — so no invalidation is needed,
+  and the linear `fnmatch` pattern scan runs only once per distinct net instead
+  of on every router commit / DRC pair. Removes a per-pair/per-commit constant
+  factor for free.
+
+- **P2 — Parallel best-of-N routing runs** (`autoroute.py`). The `--runs N`
+  best-of-N loop can now run across worker processes with `--jobs`/`-j N`
+  (`concurrent.futures.ProcessPoolExecutor`); `-j 0` uses every CPU, capped at
+  `--runs`. The shared run body (`_route_one_run`: greedy route + optional
+  anneal, seeded `seed + run_idx` exactly as the sequential loop) is dispatched
+  via the picklable `_route_run_worker`; the grid / connections pickle directly,
+  so workers reuse them rather than re-parse. The main process collects futures
+  as they resolve and keeps the lowest-energy result — the same selection rule as
+  the sequential path. Per-run live progress is suppressed in parallel mode (it
+  cannot interleave cleanly across processes); each run logs a one-line
+  completion. `--jobs 1` (the default) keeps the byte-identical sequential path
+  with full live progress, so there is no regression; parallel mode engages only
+  when `runs > 1` and `jobs > 1`. Speedup ≈ `min(runs, cores)`. GUI is untouched
+  (CLI-only).
+
 ### Not yet done
 
-- P1 — Memoise `rules.class_for`.
 - P2 — Vectorise `_covered_nodes`; parallel placement runs / SA chains; adaptive
   cooling.

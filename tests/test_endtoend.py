@@ -224,6 +224,29 @@ def test_cli_multi_run_routes_clean(tmp_path):
     assert "best of 3 runs" in text
 
 
+def test_cli_jobs_flag_parses_and_validates():
+    p = autoroute.build_parser()
+    assert p.parse_args(["b.kicad_pcb"]).jobs == 1                 # default
+    assert p.parse_args(["b.kicad_pcb", "-j", "2"]).jobs == 2
+    assert p.parse_args(["b.kicad_pcb", "--jobs", "0"]).jobs == 0  # 0 == all CPUs
+    with pytest.raises(SystemExit):
+        autoroute.main(["b.kicad_pcb", "--jobs", "-1"])
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_parallel_runs_routes_clean(tmp_path):
+    # best-of-N across worker processes: valid, DRC-clean result, best line logged
+    out = tmp_path / "out.kicad_pcb"
+    args = autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out), "--iters", "40", "--runs", "2",
+         "--jobs", "2", "--log", "--quiet"])
+    assert autoroute.run(args) == 0
+    assert out.exists()
+    text = out.with_suffix(".log").read_text()
+    assert "best of 2 runs" in text
+    assert "across 2 workers" in text
+
+
 def test_coarse_grid_note():
     # no warning at the derived pitch or up to 2x it; warn beyond that, and the
     # message suggests the derived pitch as the remedy
