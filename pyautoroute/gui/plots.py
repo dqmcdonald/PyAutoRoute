@@ -33,18 +33,27 @@ class EnergyPlot(ttk.Frame):
         self._iters: list[int] = []
         self._cur: list[float] = []
         self._best: list[float] = []
-        self._line_cur = None
-        self._line_best = None
+        self._overall_best: float = float("inf")
         self._draw_empty()
 
     def reset(self) -> None:
         self._iters.clear()
         self._cur.clear()
         self._best.clear()
+        self._overall_best = float("inf")
         self._draw_empty()
         self._mpl.draw_idle()
 
     def add_point(self, it: int, cur: float, best: float) -> None:
+        # Detect a new run: iteration counter reset (new SA run started).
+        # Save the run's best to the overall best, then clear.
+        if self._iters and it <= self._iters[-1]:
+            run_best = min(self._best) if self._best else float("inf")
+            if run_best < self._overall_best:
+                self._overall_best = run_best
+            self._iters.clear()
+            self._cur.clear()
+            self._best.clear()
         self._iters.append(it)
         self._cur.append(cur)
         self._best.append(best)
@@ -58,6 +67,9 @@ class EnergyPlot(ttk.Frame):
         ax.clear()
         ax.plot(xs, cur, lw=1, color="#cc3333", alpha=0.7, label="current")
         ax.plot(xs, best, lw=1.5, color="#3366cc", label="best")
+        if self._overall_best < float("inf"):
+            ax.axhline(self._overall_best, color="#228833", lw=1,
+                       linestyle="--", alpha=0.7, label="prev best")
         ax.set_xlabel("iter", fontsize=7)
         ax.set_ylabel("energy", fontsize=7)
         ax.tick_params(labelsize=6)

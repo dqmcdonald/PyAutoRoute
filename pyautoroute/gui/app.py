@@ -224,37 +224,47 @@ class App:
         #   - keep only the last BoardSnap (rendering is expensive)
         #   - keep only the last Progress per kind (metrics just need latest)
         #   - keep all Phase / Done / Error events (rare, always process)
-        events: list = []
+        # Wrapped in try/finally so a bug here never silently kills the loop.
         try:
-            while True:
-                events.append(self._queue.get_nowait())
-        except queue.Empty:
-            pass
-
-        # Identify last BoardSnap and last Progress per kind.
-        last_snap_idx: int | None = None
-        last_prog_idx: dict[str, int] = {}
-        for i, ev in enumerate(events):
-            if isinstance(ev, BoardSnap):
-                last_snap_idx = i
-            elif isinstance(ev, Progress):
-                last_prog_idx[ev.kind] = i
-
-        for i, ev in enumerate(events):
-            if isinstance(ev, BoardSnap) and i != last_snap_idx:
-                continue
-            if isinstance(ev, Progress) and last_prog_idx.get(ev.kind) != i:
-                continue
+            events: list = []
             try:
-                self._handle_event(ev)
-            except Exception:
-                pass  # don't let one bad event kill the drain loop
+                while True:
+                    events.append(self._queue.get_nowait())
+            except queue.Empty:
+                pass
 
-        # Update elapsed time label while running
-        if self._worker is not None and not self._worker.join(0):
-            elapsed = time.monotonic() - self._t_run_start
-            self._metrics._vars["elapsed"].set(f"{elapsed:.1f}s")
-        self._root.after(_DRAIN_MS, self._drain)
+            # Identify last BoardSnap and last Progress per kind.
+            last_snap_idx: int | None = None
+            last_prog_idx: dict[str, int] = {}
+            for i, ev in enumerate(events):
+                if isinstance(ev, BoardSnap):
+                    last_snap_idx = i
+                elif isinstance(ev, Progress):
+                    last_prog_idx[ev.kind] = i
+
+            for i, ev in enumerate(events):
+                if isinstance(ev, BoardSnap) and i != last_snap_idx:
+                    continue
+                if isinstance(ev, Progress) and last_prog_idx.get(ev.kind) != i:
+                    continue
+                try:
+                    self._handle_event(ev)
+                except Exception:
+                    pass  # don't let one bad event kill the drain loop
+
+            # Update elapsed time label while running
+            if self._worker is not None and not self._worker.join(0):
+                elapsed = time.monotonic() - self._t_run_start
+                self._metrics._vars["elapsed"].set(f"{elapsed:.1f}s")
+
+            # Flush pending widget redraws (StringVar updates, geometry).
+            # Without this, Tkinter timer events starve idle-queue repaints
+            # and labels appear frozen even though their StringVars are set.
+            self._root.update_idletasks()
+        except Exception:
+            pass  # keep the drain loop alive no matter what
+        finally:
+            self._root.after(_DRAIN_MS, self._drain)
 
     def _handle_event(self, event) -> None:
         if isinstance(event, Phase):
@@ -262,11 +272,12 @@ class App:
             self._metrics.set_phase(event.name)
         elif isinstance(event, Progress):
             self._metrics.update(event)
-            self._energy_plot.add_point(event.it, event.energy, event.best)
-            now = time.monotonic()
-            if now - self._last_plot_refresh > _PLOT_REFRESH_S:
-                self._energy_plot.refresh()
-                self._last_plot_refresh = now
+            if event.kind in ("placing", "annealing"):
+                self._energy_plot.add_point(event.it, event.energy, event.best)
+                now = time.monotonic()
+                if now - self._last_plot_refresh > _PLOT_REFRESH_S:
+                    self._energy_plot.refresh()
+                    self._last_plot_refresh = now
         elif isinstance(event, BoardSnap):
             self._board_canvas.show_board(
                 event.board, event.results, event.grid)

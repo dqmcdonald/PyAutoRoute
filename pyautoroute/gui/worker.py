@@ -107,6 +107,7 @@ class Worker:
                 buf = cfg.place_buffer
 
             last_place_prog = [0.0]
+            last_place_snap = [float("inf"), 0.0]  # [best_energy, timestamp]
 
             def on_place(it, total, energy, best, temp, accept):
                 if self._cancel.is_set():
@@ -116,6 +117,10 @@ class Worker:
                     last_place_prog[0] = now
                     self._post(Progress("placing", it, total, energy, best,
                                         temp, accept, 0, 0))
+                if best < last_place_snap[0] and now - last_place_snap[1] >= 0.5:
+                    last_place_snap[0] = best
+                    last_place_snap[1] = now
+                    self._post(BoardSnap(_snap_pads(board)))
 
             pp = place_mod.PlaceParams(
                 iters=cfg.place_iters,

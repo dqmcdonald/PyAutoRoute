@@ -9,7 +9,7 @@ class ToolTip:
     """Show a small popup tooltip when the mouse hovers over *widget*."""
 
     _DELAY_MS = 600
-    _PAD = 4
+    _WRAP = 260
 
     def __init__(self, widget: tk.Widget, text: str) -> None:
         self._widget = widget
@@ -36,20 +36,17 @@ class ToolTip:
     def _show(self) -> None:
         if self._tip is not None:
             return
-        x = self._widget.winfo_rootx() + self._widget.winfo_width() // 2
+        x = self._widget.winfo_rootx() + 16
         y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
         self._tip = tw = tk.Toplevel(self._widget)
-        tw.withdraw()                     # hide before configuring (macOS fix)
         tw.wm_overrideredirect(True)
-        tw.attributes("-topmost", True)
         tw.wm_geometry(f"+{x}+{y}")
-        lbl = tk.Label(tw, text=self._text, justify=tk.LEFT,
-                       background="#ffffe0", relief=tk.SOLID, borderwidth=1,
-                       font=("TkDefaultFont", 9), wraplength=300,
-                       padx=self._PAD, pady=self._PAD)
-        lbl.pack()
-        tw.update_idletasks()             # measure label before showing
-        tw.deiconify()                    # show after geometry is settled
+        tk.Label(
+            tw, text=self._text, justify=tk.LEFT,
+            background="#ffffe0", relief=tk.SOLID, borderwidth=1,
+            font=("TkSmallCaptionFont",), wraplength=self._WRAP,
+            padx=4, pady=2,
+        ).pack()
 
     def _hide(self) -> None:
         if self._tip is not None:
