@@ -61,11 +61,9 @@ class EnergyPlot(ttk.Frame):
     def refresh(self) -> None:
         if not self._iters:
             return
-        xs, cur = _downsample(self._iters, self._cur, _MAX_POINTS)
-        _, best = _downsample(self._iters, self._best, _MAX_POINTS)
+        xs, best = _downsample(self._iters, self._best, _MAX_POINTS)
         ax = self._ax
         ax.clear()
-        ax.plot(xs, cur, lw=1, color="#cc3333", alpha=0.7, label="current")
         ax.plot(xs, best, lw=1.5, color="#3366cc", label="best")
         if self._overall_best < float("inf"):
             ax.axhline(self._overall_best, color="#228833", lw=1,

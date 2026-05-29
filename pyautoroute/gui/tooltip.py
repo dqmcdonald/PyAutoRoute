@@ -43,7 +43,8 @@ class ToolTip:
         tw.wm_geometry(f"+{x}+{y}")
         tk.Label(
             tw, text=self._text, justify=tk.LEFT,
-            background="#ffffe0", relief=tk.SOLID, borderwidth=1,
+            background="#ffffe0", foreground="black",
+            relief=tk.SOLID, borderwidth=1,
             font=("TkSmallCaptionFont",), wraplength=self._WRAP,
             padx=4, pady=2,
         ).pack()

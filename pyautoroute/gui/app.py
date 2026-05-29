@@ -48,8 +48,7 @@ class _MetricsPanel(ttk.Frame):
             self._vars[key] = var
             ttk.Label(self, text=lbl, anchor=tk.E).grid(
                 row=i, column=0, sticky=tk.E, padx=(6, 2), pady=2)
-            ttk.Label(self, textvariable=var, anchor=tk.W,
-                      foreground="#222").grid(
+            ttk.Label(self, textvariable=var, anchor=tk.W).grid(
                 row=i, column=1, sticky=tk.W, padx=(2, 6), pady=2)
         self.columnconfigure(1, weight=1)
 

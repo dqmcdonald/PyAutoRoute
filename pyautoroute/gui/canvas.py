@@ -36,7 +36,7 @@ class BoardCanvas(ttk.Frame):
         self._has_board = True
         draw_board(self._ax, board, results=results, grid=grid, title=title)
         self._ax.axis("on")
-        self._mpl.draw_idle()
+        self._mpl.draw()
 
     def clear(self) -> None:
         self._ax.clear()
