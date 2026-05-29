@@ -28,13 +28,28 @@ pick_board() {
     fi
 }
 
+build_fast_ext() {
+    # Build the optional native A* core (pyautoroute._astar_c). Best-effort: the
+    # build is skipped silently by setup.py if Cython/numpy are unavailable.
+    run "$PYTHON" -m pip install -e ".[fast]"
+    run "$PYTHON" setup.py build_ext --inplace
+    if "$PYTHON" -c "import pyautoroute._astar_c" 2>/dev/null; then
+        echo "Cython A* extension built and importable."
+    else
+        echo "Cython A* extension NOT available — using pure-Python fallback."
+    fi
+}
+
 install_pkg() {
-    echo "Extras: 1) dev+viz+docs (all)  2) dev only  3) runtime only"
+    echo "Extras: 1) dev+viz+docs (all)  2) dev only  3) runtime only  4) fast (native A* core)"
     read -rp "choice [1]: " e
     case "${e:-1}" in
         2) run "$PYTHON" -m pip install -e ".[dev]" ;;
         3) run "$PYTHON" -m pip install -e "." ;;
-        *) run "$PYTHON" -m pip install -e ".[dev,viz,docs]" ;;
+        4) build_fast_ext ;;
+        *) run "$PYTHON" -m pip install -e ".[dev,viz,docs]"
+           read -rp "also build the native A* (Cython) core? [y/N]: " f
+           [[ "$f" =~ ^[Yy] ]] && build_fast_ext ;;
     esac
 }
 
