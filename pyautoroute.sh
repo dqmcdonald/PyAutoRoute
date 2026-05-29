@@ -68,6 +68,21 @@ run_tests() {
     esac
 }
 
+run_perf() {
+    # Run the perf-harness benchmarks (tests/perf/bench_*.py) standalone so their
+    # scaling tables print. They double as pytest budget tests, but run directly
+    # here for the numbers. The router bench also shows the native-vs-pure-Python
+    # A* speedup side by side when the Cython core is built.
+    echo "Benchmark: 1) router  2) placement  3) both"
+    read -rp "choice [3]: " p
+    case "${p:-3}" in
+        1) run "$PYTHON" tests/perf/bench_router.py ;;
+        2) run "$PYTHON" tests/perf/bench_placement.py ;;
+        *) run "$PYTHON" tests/perf/bench_router.py
+           run "$PYTHON" tests/perf/bench_placement.py ;;
+    esac
+}
+
 route_board() {
     local board; board="$(pick_board)"
     [[ -z "$board" ]] && { echo "no board selected"; return; }
@@ -114,22 +129,24 @@ PyAutoRoute — tasks
   1) Install the package (pip install -e)
   2) Update API docs from the code (pdoc)
   3) Run tests (short or long)
-  4) Route a test board
-  5) Write a settings file for a board
-  6) Find good settings for a board (parameter sweep)
-  7) Clean generated outputs
-  8) Quit
+  4) Run performance benchmarks (router / placement)
+  5) Route a test board
+  6) Write a settings file for a board
+  7) Find good settings for a board (parameter sweep)
+  8) Clean generated outputs
+  9) Quit
 EOF
     read -rp "choice: " c || return 1      # EOF (piped/empty input) -> quit
     case "$c" in
         1) install_pkg ;;
         2) update_docs ;;
         3) run_tests ;;
-        4) route_board ;;
-        5) write_settings ;;
-        6) tune_settings ;;
-        7) clean_outputs ;;
-        8|q|Q) return 1 ;;
+        4) run_perf ;;
+        5) route_board ;;
+        6) write_settings ;;
+        7) tune_settings ;;
+        8) clean_outputs ;;
+        9|q|Q) return 1 ;;
         *) echo "unknown choice: $c" ;;
     esac
     return 0

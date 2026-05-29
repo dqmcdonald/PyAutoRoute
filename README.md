@@ -306,10 +306,11 @@ pyautoroute-fix --values BOARD.kicad_pcb --dry-run  # report only, no write
 ## Helper script
 
 `./pyautoroute.sh` is an interactive menu of common tasks — install the package,
-regenerate the API docs from the code, run the short/long test suite, route a test
-board, write a settings file, or clean generated outputs. Each action echoes the
-command it runs, so the script doubles as a cheat-sheet. Override the interpreter
-with `PYTHON=/path/to/python ./pyautoroute.sh`.
+regenerate the API docs from the code, run the short/long test suite, run the
+performance benchmarks (router / placement scaling tables), route a test board,
+write a settings file, or clean generated outputs. Each action echoes the command
+it runs, so the script doubles as a cheat-sheet. Override the interpreter with
+`PYTHON=/path/to/python ./pyautoroute.sh`.
 
 The **Install** action offers a `fast (native A* core)` option that installs the
 `fast` extras and builds the [Cython A* extension](#optional-fast-a-native-extension)

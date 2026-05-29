@@ -332,9 +332,10 @@ separate output path instead of overwriting the input.
 
 ### `pyautoroute.sh` — helper menu
 A repo-root Bash script offering a menu of common tasks (install, regenerate API
-docs via the `pdoc` recipe, run the short/long test suite, route a test board,
-write a settings file, clean generated outputs). Each action echoes the command it
-runs; the interpreter is overridable with `PYTHON=`.
+docs via the `pdoc` recipe, run the short/long test suite, run the performance
+benchmarks in `tests/perf/` standalone, route a test board, write a settings file,
+clean generated outputs). Each action echoes the command it runs; the interpreter
+is overridable with `PYTHON=`.
 
 ## Coordinate system & the pad-angle gotcha
 
