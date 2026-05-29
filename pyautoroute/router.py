@@ -305,37 +305,41 @@ def astar(state: RoutingState, net_id: int,
     def encode(li: int, c: int, r: int, d: int) -> int:
         return (li * ny + r) * _LROW + c * _D + (d + 1)
 
-    # --- per-net free mask ---------------------------------------------------
-    # Occupancy is static during a single search, so collapse `state.is_free`
-    # into a boolean array indexed directly (no per-expansion method call). A
-    # node is free for this net iff the static grid permits it AND no *other*
-    # net's committed copper covers it.
+    # --- per-net free mask + heuristic field --------------------------------
+    # These two numpy precomputes dominate the per-call cost, so they are built
+    # by `_precompute` for a given box and (when the search is bounded) only
+    # within that box. Outside the box every node is not-free and the heuristic
+    # is +inf, which the search never reaches — so a bounded search pays for the
+    # box area rather than the whole grid.
+    #   * free mask: a node is free for this net iff the static grid permits it
+    #     (FREE or owned by this net) AND no *other* net's committed copper covers
+    #     it; indexing the boolean array directly avoids a per-expansion call.
+    #   * heuristic field: octile distance to the nearest target × pitch (layer-
+    #     and direction-independent, so a single numpy broadcast per target).
     owner = grid.owner
-    base_free = (owner == FREE) | (owner == net_id)   # (n_layers, ny, nx)
-    for (li, c, r), occ in state.cover.items():
-        if base_free[li, r, c] and any(state.conn_net[i] != net_id for i in occ):
-            base_free[li, r, c] = False
-
-    # --- precomputed heuristic field ----------------------------------------
-    # The heuristic is octile distance to the nearest target, independent of
-    # layer and direction, so precompute it once over the whole grid via numpy
-    # broadcast instead of looping all targets on every push/pop.
-    tgt_cr = [(c, r) for (_, c, r) in targets]
-    cols = np.arange(nx)[None, :]                     # (1, nx)
-    rows = np.arange(ny)[:, None]                     # (ny, 1)
-    hfield = np.full((ny, nx), np.inf)
-    for tc, tr in tgt_cr:
-        dx = np.abs(cols - tc)
-        dy = np.abs(rows - tr)
-        lo = np.minimum(dx, dy)
-        hi = np.maximum(dx, dy)
-        hfield = np.minimum(hfield, (hi - lo) + lo * SQRT2)
-    hfield = hfield * pitch                           # (ny, nx)
-
-    def h(c: int, r: int) -> float:
-        return float(hfield[r, c])
-
     target_set = set((li, c, r) for (li, c, r) in targets)
+    tgt_cr = [(c, r) for (_, c, r) in targets]
+
+    def _precompute(cmin: int, cmax: int, rmin: int, rmax: int):
+        cs_, rs_ = slice(cmin, cmax + 1), slice(rmin, rmax + 1)
+        free = np.zeros((n_layers, ny, nx), dtype=bool)
+        ow = owner[:, rs_, cs_]
+        free[:, rs_, cs_] = (ow == FREE) | (ow == net_id)
+        for (li, c, r), occ in state.cover.items():
+            if free[li, r, c] and any(state.conn_net[i] != net_id for i in occ):
+                free[li, r, c] = False
+        hfield = np.full((ny, nx), np.inf)
+        bcols = np.arange(cmin, cmax + 1)[None, :]
+        brows = np.arange(rmin, rmax + 1)[:, None]
+        box_h = np.full((rmax - rmin + 1, cmax - cmin + 1), np.inf)
+        for tc, tr in tgt_cr:
+            dx = np.abs(bcols - tc)
+            dy = np.abs(brows - tr)
+            lo = np.minimum(dx, dy)
+            hi = np.maximum(dx, dy)
+            box_h = np.minimum(box_h, (hi - lo) + lo * SQRT2)
+        hfield[rs_, cs_] = box_h * pitch
+        return free, hfield
 
     # --- via neighbourhood (constant per grid) ------------------------------
     # The set of layers a via can jump to from any node is just "all other
@@ -347,16 +351,20 @@ def astar(state: RoutingState, net_id: int,
                       for i in range(n_layers)]
         grid._via_layer_neighbours = via_layers
 
-    def _search(free) -> list[tuple[int, int, int]] | None:
-        """Run one A* search over the given per-net `free` mask.
+    def _search(free, hfield) -> list[tuple[int, int, int]] | None:
+        """Run one A* search over the given per-net `free` mask + heuristic field.
 
-        The mask is the only thing that varies between a bounded attempt and the
+        These two arrays are all that vary between a bounded attempt and the
         full-grid fallback, so the whole search (both the Cython fast path and the
-        pure-Python heap loop) closes over it. Out-of-box nodes are simply marked
-        not-free in `free`, which bounds the frontier without any other change.
+        pure-Python heap loop) takes them as parameters. Out-of-box nodes are
+        not-free with a +inf heuristic, which bounds the frontier without any
+        other change.
         """
         def is_free(li: int, c: int, r: int) -> bool:
             return 0 <= c < nx and 0 <= r < ny and bool(free[li, r, c])
+
+        def h(c: int, r: int) -> float:
+            return float(hfield[r, c])
 
         def can_via(c: int, r: int) -> bool:
             for dc, dr in grid._via_stencil:
@@ -447,14 +455,15 @@ def astar(state: RoutingState, net_id: int,
         return None
 
     # --- bounded search with widen-on-failure -------------------------------
-    # Unbounded: search the whole grid (optimal, the historical behaviour).
+    # Unbounded: precompute and search the whole grid (the historical behaviour).
     if params.search_margin is None:
-        return _search(base_free)
+        return _search(*_precompute(0, nx - 1, 0, ny - 1))
 
     # Bound the search to a box around the source/target nodes grown by the
-    # margin, masking everything outside it not-free. On failure widen the box
-    # and retry; once the box covers the whole grid this is the unbounded search,
-    # so a route is still found whenever one exists.
+    # margin. `_precompute` fills the free mask and heuristic field only inside
+    # the box, so each bounded attempt pays for the box area, not the whole grid.
+    # On failure widen the box and retry; once it covers the grid this is the
+    # unbounded search, so a route is still found whenever one exists.
     cs = [c for (_, c, _) in sources] + [c for (_, c, _) in targets]
     rs = [r for (_, _, r) in sources] + [r for (_, _, r) in targets]
     cmin0, cmax0 = min(cs), max(cs)
@@ -463,19 +472,9 @@ def astar(state: RoutingState, net_id: int,
     while True:
         cmin, cmax = max(0, cmin0 - pad), min(nx - 1, cmax0 + pad)
         rmin, rmax = max(0, rmin0 - pad), min(ny - 1, rmax0 + pad)
-        if cmin == 0 and cmax == nx - 1 and rmin == 0 and rmax == ny - 1:
-            return _search(base_free)        # box covers the grid: unbounded
-        free = base_free.copy()
-        if rmin > 0:
-            free[:, :rmin, :] = False
-        if rmax < ny - 1:
-            free[:, rmax + 1:, :] = False
-        if cmin > 0:
-            free[:, :, :cmin] = False
-        if cmax < nx - 1:
-            free[:, :, cmax + 1:] = False
-        path = _search(free)
-        if path is not None:
+        full = cmin == 0 and cmax == nx - 1 and rmin == 0 and rmax == ny - 1
+        path = _search(*_precompute(cmin, cmax, rmin, rmax))
+        if path is not None or full:
             return path
         pad *= 2
 
