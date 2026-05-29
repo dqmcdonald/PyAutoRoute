@@ -100,6 +100,6 @@ def test_cli_write_config_default_name(tmp_path):
     shutil.copy(_TEST_BOARD, src)
     rc = autoroute.main([str(src), "--write-config", "--grid", "0.2"])
     assert rc == 0
-    cfg = tmp_path / "Test5.pyautoroute.cfg"
+    cfg = tmp_path / "Test5.ini"
     assert cfg.exists()
     assert "grid = 0.2" in cfg.read_text()

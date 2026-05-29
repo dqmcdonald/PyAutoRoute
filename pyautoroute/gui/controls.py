@@ -307,9 +307,9 @@ class ControlsPanel(ttk.Frame):
         ttk.Button(sf2, text="Suggest…",
                    command=self._on_suggest).pack(side=tk.LEFT, padx=2)
         add_tooltip(sf2.winfo_children()[0],
-                    "Save current settings to a .pyautoroute.cfg file.")
+                    "Save current settings to an .ini file.")
         add_tooltip(sf2.winfo_children()[1],
-                    "Load settings from a .pyautoroute.cfg file.")
+                    "Load settings from an .ini file.")
         add_tooltip(sf2.winfo_children()[2],
                     "Run --auto to probe grid/via settings and suggest the best.")
 
@@ -353,12 +353,10 @@ class ControlsPanel(ttk.Frame):
             pro = p.with_name(p.stem + ".kicad_pro")
         self._pro_path.set(pro.name if pro.exists() else "(not found)")
         self._full_input = str(p)
-        # Auto-load project config: prefer <stem>.ini, fall back to .pyautoroute.cfg
-        for cfg in (p.with_suffix(".ini"),
-                    p.with_name(p.stem + ".pyautoroute.cfg")):
-            if cfg.exists():
-                self._load_cfg(str(cfg))
-                break
+        # Auto-load the project config <stem>.ini, if present.
+        proj_ini = p.with_suffix(".ini")
+        if proj_ini.exists():
+            self._load_cfg(str(proj_ini))
 
     def _full_input_path(self) -> str | None:
         return getattr(self, "_full_input", None)
@@ -367,14 +365,13 @@ class ControlsPanel(ttk.Frame):
 
     def _save_settings(self):
         inp = self._full_input_path()
-        init = str(Path(inp).with_name(
-            Path(inp).stem + ".pyautoroute.cfg")) if inp else ""
+        init = str(Path(inp).with_suffix(".ini")) if inp else ""
         path = filedialog.asksaveasfilename(
             title="Save settings",
             initialfile=Path(init).name if init else "",
             initialdir=str(Path(init).parent) if init else ".",
-            defaultextension=".cfg",
-            filetypes=[("Config", "*.cfg *.pyautoroute.cfg"),
+            defaultextension=".ini",
+            filetypes=[("INI config", "*.ini"),
                        ("All files", "*.*")])
         if not path:
             return
@@ -389,7 +386,7 @@ class ControlsPanel(ttk.Frame):
     def _load_settings(self):
         path = filedialog.askopenfilename(
             title="Load settings",
-            filetypes=[("Config", "*.cfg *.pyautoroute.cfg"),
+            filetypes=[("INI config", "*.ini"),
                        ("All files", "*.*")])
         if path:
             self._load_cfg(path)

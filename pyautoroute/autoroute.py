@@ -1132,7 +1132,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "section); options given on the command line override it")
     p.add_argument("--write-config", nargs="?", const="", default=None, metavar="FILE",
                    help="write the effective settings to an INI file and exit "
-                        "(bare: <input>.pyautoroute.cfg beside the board)")
+                        "(bare: <input>.ini beside the board — the same file "
+                        "auto-loaded on the next run)")
     p.add_argument("--pro", help="project .kicad_pro (default: sibling)")
     p.add_argument("-o", "--output", help="output .kicad_pcb (default: INPUT_routed, "
                                           "or _placed_routed / _placed when placing)")
@@ -1259,8 +1260,7 @@ def main(argv=None) -> int:
 
     if args.write_config is not None:
         cfg_path = (Path(args.write_config) if args.write_config
-                    else Path(args.input).with_name(
-                        Path(args.input).stem + ".pyautoroute.cfg"))
+                    else Path(args.input).with_suffix(".ini"))
         write_config(parser, args, cfg_path)
         print(f"wrote settings to {cfg_path}")
         return 0
