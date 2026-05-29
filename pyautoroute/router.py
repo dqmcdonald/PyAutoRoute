@@ -36,6 +36,11 @@ except ImportError:
 
 SQRT2 = math.sqrt(2.0)
 
+# `RoutingState.cover_owner` sentinels (distinct from any net id, which are ≥0).
+_COVER_EMPTY = -1     # node covered by no committed copper
+_COVER_MIXED = -2     # node covered by 2+ different nets (blocks everyone)
+
+
 # A pad-centre stub shorter than this (mm) is dropped as a zero-length segment:
 # the path's terminal node already coincides with the pad anchor.
 _STUB_EPS = 1e-3
@@ -129,6 +134,32 @@ class RoutingState:
         self.cover: dict[tuple[int, int, int], set[int]] = {}   # node -> {conn_idx}
         self.conn_cover: dict[int, set[tuple[int, int, int]]] = {}
         self.conn_net: dict[int, int] = {}
+        # Vectorised mirror of `cover` for the A* free-mask overlay: per node, the
+        # net id of its committed copper, or `_COVER_EMPTY`/`_COVER_MIXED`. Built
+        # incrementally on commit/ripup (touching only the affected connection's
+        # nodes) so each search overlays "blocked by another net" with one numpy
+        # op instead of a Python loop over every committed node. `cover` /
+        # `conn_net` remain the source of truth; this is a derived index.
+        self.cover_owner = np.full((grid.n_layers, grid.ny, grid.nx),
+                                   _COVER_EMPTY, dtype=np.int32)
+        # hfield (octile heuristic) cache, keyed by the connection's target set;
+        # a connection's targets are fixed, so its field is identical every reroute.
+        self._hfield_cache: dict[frozenset, np.ndarray] = {}
+
+    def _refresh_owner(self, node: tuple[int, int, int]) -> None:
+        """Recompute `cover_owner[node]` from the connections currently covering it."""
+        occ = self.cover.get(node)
+        li, c, r = node
+        if not occ:
+            self.cover_owner[li, r, c] = _COVER_EMPTY
+            return
+        it = iter(occ)
+        net = self.conn_net[next(it)]
+        for i in it:
+            if self.conn_net[i] != net:
+                self.cover_owner[li, r, c] = _COVER_MIXED
+                return
+        self.cover_owner[li, r, c] = net
 
     def is_free(self, layer_idx: int, col: int, row: int, net_id: int) -> bool:
         """Whether `net_id` may occupy a node, considering routed copper too.
@@ -186,6 +217,7 @@ class RoutingState:
         self.conn_cover[conn_idx] = nodes
         for nd in nodes:
             self.cover.setdefault(nd, set()).add(conn_idx)
+            self._refresh_owner(nd)
 
     def ripup(self, conn_idx: int) -> None:
         """Remove a connection's committed copper from the occupancy.
@@ -199,6 +231,7 @@ class RoutingState:
                 occ.discard(conn_idx)
                 if not occ:
                     del self.cover[nd]
+            self._refresh_owner(nd)
         self.conn_net.pop(conn_idx, None)
 
     def _raster(self, geom, layer_idx: int, out: set):
@@ -325,9 +358,21 @@ def astar(state: RoutingState, net_id: int,
         free = np.zeros((n_layers, ny, nx), dtype=bool)
         ow = owner[:, rs_, cs_]
         free[:, rs_, cs_] = (ow == FREE) | (ow == net_id)
-        for (li, c, r), occ in state.cover.items():
-            if free[li, r, c] and any(state.conn_net[i] != net_id for i in occ):
-                free[li, r, c] = False
+        # Overlay dynamic routed copper: a node is blocked iff another net (or a
+        # mix of nets) covers it. `cover_owner` is maintained incrementally, so
+        # this is one vectorised numpy op instead of a Python loop over every
+        # committed node — the dominant cost of a reroute during annealing.
+        co = state.cover_owner[:, rs_, cs_]
+        free[:, rs_, cs_] &= (co == _COVER_EMPTY) | (co == net_id)
+
+        # Heuristic field. A connection's targets are fixed, so for the full-grid
+        # (unbounded) search the field is identical every reroute — cache it.
+        full = cmin == 0 and cmax == nx - 1 and rmin == 0 and rmax == ny - 1
+        if full:
+            key = frozenset(tgt_cr)
+            cached = state._hfield_cache.get(key)
+            if cached is not None:
+                return free, cached
         hfield = np.full((ny, nx), np.inf)
         bcols = np.arange(cmin, cmax + 1)[None, :]
         brows = np.arange(rmin, rmax + 1)[:, None]
@@ -339,6 +384,8 @@ def astar(state: RoutingState, net_id: int,
             hi = np.maximum(dx, dy)
             box_h = np.minimum(box_h, (hi - lo) + lo * SQRT2)
         hfield[rs_, cs_] = box_h * pitch
+        if full:
+            state._hfield_cache[key] = hfield
         return free, hfield
 
     # --- via neighbourhood (constant per grid) ------------------------------
