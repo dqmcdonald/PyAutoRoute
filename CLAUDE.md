@@ -44,6 +44,9 @@ adapted for a pre-1.0 project:
 Bump in the same piece of work as the change (it's part of "done", like the
 docs). Tagging a release is optional: `git tag v0.4.0`.
 
+On every version bump, add a matching entry to **`CHANGES.md`** (newest first) — a
+one-or-two-line human-readable summary of the change. It's part of "done" too.
+
 ## Environment
 
 - Python lives in the **`tf` venv**: `/Users/que/venvs/tf` (Python 3.12, with

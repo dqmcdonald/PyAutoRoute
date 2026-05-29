@@ -1,9 +1,21 @@
-# Feature suggestions
+# Feature suggestions / roadmap
 
-A set of proposed new features for PyAutoRoute (v0.24.0), grounded in a deep
-read of the codebase. Each suggestion cites the code it builds on or the gap it
-fills (`file:line`). Items are ordered by value-to-effort. This is a planning
-document, not a commitment — items here are candidates, not scheduled work.
+A set of proposed new features for PyAutoRoute, grounded in a deep read of the
+codebase. Each suggestion cites the code it builds on or the gap it fills
+(`file:line`). Items are ordered by value-to-effort. This is a planning document,
+not a commitment — items here are candidates, not scheduled work.
+
+This is the project's **central roadmap**: the completed-feature plan docs
+(`autorouter_plan.md`, `gui-plan.md`, `place-feature-plan.md`) and the
+performance/tuning docs point here for cross-cutting outstanding work, and link
+back for their own residual TODOs.
+
+> **In progress / recently started** (see `CHANGES.md`):
+> - **Bounded A\* search** (`--search-margin`) — *implemented*, PR #22 /
+>   branch `claude/bounded-astar-search` (was the top recommendation below).
+> - **Vectorised A\* overlay** — *implemented*, branch `claude/vectorize-astar-overlay`;
+>   the profiling that motivated it suggests the next perf step is caching the
+>   static free mask / heuristic field across reroutes.
 
 ## Context
 

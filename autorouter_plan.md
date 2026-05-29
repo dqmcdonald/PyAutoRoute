@@ -1,5 +1,15 @@
 # PyAutoRoute — Simulated-Annealing Autorouter for 2-Layer KiCad PCBs
 
+> **Status: ✅ Implemented (shipped in 0.1.0).** This is the *original design
+> record* — the plan the project was built from. It is kept for context; the
+> living reference is [`docs/architecture.md`](docs/architecture.md), and a plain
+> explanation of the algorithms is in [`docs/algorithms.md`](docs/algorithms.md).
+> Outstanding ideas live in [`docs/feature-suggestions.md`](docs/feature-suggestions.md);
+> a TODO of items from *this* plan is at the bottom.
+>
+> *(Historical note: the venv paths and "confirm with user" wording below reflect
+> the original development machine and are not current setup instructions.)*
+
 ## Context
 
 The user wants a Python tool (running in the `tf` venv at `/Users/que/venvs/tf`,
@@ -234,3 +244,18 @@ callback each accepted iteration — the SA engine stays I/O-free.
 - **Nothing Test1-specific is hardcoded** — pad/net/footprint counts, the outline
   primitive used, and the net-class set are all derived from the parsed board.
 - No new heavy dependencies; only `pytest` may be installed into `tf` for tests.
+
+## TODO / remaining from this plan
+
+All nine implementation phases above shipped; phases 1–8 are the modules
+described in `docs/architecture.md`. The only deferred items noted in this plan:
+
+- [ ] **Pour-aware routing.** v1 treats copper zones as obstacles (and, since
+      0.20.0, auto-excludes filled pours and refills via `kicad-cli`); the router
+      still does not *generate* pours. (Noted future extension, line ~224.)
+- [ ] **Per-net-class clearance masks.** The grid uses one global worst-case
+      clearance margin across all net classes — conservative on mixed-rule boards.
+      (Tracked in `docs/feature-suggestions.md`.)
+
+Everything else here is done. Newer work (placement, GUI, tuning, performance)
+has its own plan docs; see `CHANGES.md` for the version-by-version history.

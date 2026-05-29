@@ -2,7 +2,10 @@
 
 Developer-facing notes on how the autorouter is put together: the data flow, each
 module's job, the algorithms, and the non-obvious invariants that make the output
-DRC-clean. For user-facing usage see the top-level `README.md`.
+DRC-clean. For user-facing usage see the top-level `README.md`. For a friendly,
+jargon-light explanation of *what each algorithm does* (and why), read
+[`algorithms.md`](algorithms.md) first — this document is the precise reference
+behind it.
 
 ## API documentation
 
