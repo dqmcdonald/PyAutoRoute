@@ -548,6 +548,23 @@ Tracking which optimisations from §4 have landed.
   relative to net span, so larger boards than the test set benefit more; enabling
   it by default once tuned is future work.
 
+- **Vectorise the A\* dynamic-copper overlay** (`router.py`). Profiling a reroute
+  on Test4 showed the per-`astar` free-mask build was ~7 ms, of which the numpy
+  static OR `(owner==FREE)|(owner==net_id)` was only ~0.02 ms — the cost was the
+  Python loop over every committed-copper node (8k+ after a full route), run on
+  every search to overlay "blocked by another net". `RoutingState` now keeps a
+  vectorised mirror of the cover map, `cover_owner` (per node: the net id of its
+  committed copper, or `_COVER_EMPTY`/`_COVER_MIXED`), updated incrementally on
+  commit/ripup so only the affected connection's nodes are recomputed. Each
+  search then overlays the dynamic copper with one numpy op
+  (`free &= (cover_owner==EMPTY)|(cover_owner==net_id)`) instead of the per-node
+  loop. The octile heuristic field is also cached per connection target set (the
+  field is identical across that connection's reroutes) for the full-grid path.
+  `cover`/`conn_net` stay the source of truth, so `is_free`/`can_via` and all
+  routing results are unchanged. Measured on the **default** (unbounded) anneal
+  loop, identical routes: **1.26×** on both Test3 (59.7→47.4 ms/iter) and Test4
+  (189.5→150.3 ms/iter); stacks with `--search-margin`.
+
 ### Not yet done
 
 - P2 — Vectorise `_covered_nodes`; parallel placement runs / SA chains; adaptive
