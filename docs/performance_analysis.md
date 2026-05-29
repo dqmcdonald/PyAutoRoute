@@ -1,5 +1,11 @@
 # PyAutoRoute Performance Analysis
 
+> **Status:** most of the prioritised plan below has shipped — see the
+> **"Status / what landed"** section near the end, which already splits **Done**
+> from **Not yet done** (the latter is this doc's living TODO). Recent work
+> (bounded A\* search, vectorised A\* overlay) is tracked there and in `CHANGES.md`.
+> This document doubles as the analysis and the performance roadmap.
+
 A code-level performance review of the placement and routing pipeline, with
 complexity analysis, bottleneck identification (with `file:line` references), a
 profiling recipe, and a prioritised optimisation plan. GUI code

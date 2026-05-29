@@ -1,5 +1,14 @@
 # Plan: a Tk GUI for PyAutoRoute
 
+> **Status: ✅ Implemented (shipped in 0.15.0; phases 2–6 in commit `df9329a`
+> plus many follow-up fixes).** The GUI is functional: open a project, run
+> place/route in a worker thread with live board rendering, an energy graph,
+> metrics, Run/Stop with cooperative cancel, and a working Apply-to-project
+> (timestamped backup + overwrite). The "Open decisions" at the bottom were all
+> resolved by the implementation (matplotlib canvas; `on_snapshot` live routing;
+> hand-built parser-aware controls). See the **TODO** at the very bottom for the
+> handful of things still open.
+
 ## Context
 
 PyAutoRoute is a CLI today. This plan adds a **Tkinter desktop GUI** that opens a
@@ -234,18 +243,34 @@ non-UI logic tests still run.)
    (tune/`--auto`).
 7. **Docs + packaging + menu + version**.
 
-## Open decisions (please confirm)
+## Open decisions — resolved by the implementation
 
-1. **Rendering tech** — embed **matplotlib** (reuse `visualize`, least code,
-   consistent with `--debug-plot`) vs a native Tk `Canvas` renderer (faster live
-   updates on large boards, more code). Recommend matplotlib for v1, revisit if live
-   redraw is sluggish on big boards.
-2. **Live routing granularity** — reuse the annealer's `on_snapshot` (≈40 frames per
-   run, no lib change) vs add a time-throttled board hook to `anneal`. Recommend the
-   snapshot approach for v1.
-3. **Auto-built controls** — generate the form from the argparse parser (keeps
-   CLI/GUI in sync automatically) vs a hand-built form (more layout control).
-   Recommend auto-built, with manual grouping/labels.
-4. **Scope of the refactor in step 1** — how much of `autoroute.run()` to extract
-   into shared `pipeline` helpers now vs incrementally.
+1. **Rendering tech** → **matplotlib** (`gui/canvas.py` embeds
+   `FigureCanvasTkAgg`, drawing via `visualize.draw_board`). ✅
+2. **Live routing granularity** → the annealer's `on_snapshot` hook, plus a
+   time-throttled placement snapshot (commits `6f811a5`, `508dcd2`). ✅
+3. **Auto-built controls** → in practice a **hand-built** form (`gui/controls.py`)
+   that still reuses `autoroute.write_config` / `load_config` for Save/Load, so
+   presets share the CLI's `.pyautoroute.cfg` INI format. ✅
+4. **Refactor scope** → the shared `pipeline.*` helpers were **not** extracted;
+   `gui/worker.py` currently duplicates the `autoroute.run()` orchestration (see
+   TODO).
+
+## TODO / remaining
+
+- [ ] **Wire up the "Suggest" button.** `gui/app.py:_suggest` is a placeholder
+      dialog; it should call `tune`/`--auto` (the probe already exists) and apply
+      the chosen grid / via-weight to the controls. (`RunConfig.auto` is currently
+      hardcoded `False`.)
+- [ ] **Share one pipeline between CLI and GUI.** Extract the place/route/anneal
+      orchestration from `autoroute.run()` into `pipeline.*` helpers (the step-1
+      refactor that was skipped) so `gui/worker.py` stops duplicating it. The GUI
+      currently lacks `--jobs`, snapshot-file output, log output, and the
+      coarse-grid warning purely because of this drift.
+- [ ] **GUI tests.** The whole `gui/` package is untested. Add the non-UI unit
+      tests proposed under "Testing strategy" (worker/queue event protocol,
+      settings↔params mapping, backup/replace logic) and the skipped-unless-display
+      widget smoke test.
+
+(Cross-cutting ideas live in `docs/feature-suggestions.md`.)
 </content>

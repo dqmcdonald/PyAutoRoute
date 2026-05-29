@@ -1,5 +1,12 @@
 # Plan: experimental footprint auto-placement (`--place`)
 
+> **Status: ✅ Implemented (shipped in 0.6.0).** All planned pieces exist — the
+> `Footprint` model, `placement.py` (`_Placer`), `apply_placement` /
+> `sync_tree_from_placement`, and the `--place*` flags. Later work made the energy
+> incremental (0.22.0), added silkscreen-text awareness (0.19.0/0.21.0), and
+> recentred the result (0.23.1). Living reference:
+> [`docs/architecture.md`](docs/architecture.md). See the **TODO** at the bottom.
+
 ## Context
 
 PyAutoRoute today takes a board with **already-placed** footprints and routes it.
@@ -125,3 +132,18 @@ the reloaded board has the new origin and a changed `(at)` line.
    encloses the parts, and the plot shows a sensible, compacted layout. Re-run with
    a footprint locked / flagged `overlap` to confirm both are honoured.
 3. Optional KiCad cross-check: `kicad-cli pcb drc --severity-error <out>.kicad_pcb`.
+
+## TODO / remaining
+
+- [ ] **Lattice initial-seed de-overlap.** The "optionally re-grid movable
+      footprints on a lattice to start de-overlapped" idea (Energy model section)
+      was not implemented — placement starts from the parsed positions. Could help
+      convergence on dense boards.
+- [ ] **Placement parameters in the tuning sweep** (`--place-buffer`,
+      overlap/compact weights, `--place-temps`). Tracked in `docs/tuning.md`.
+- [ ] **Parallel placement runs** (best-of-N across processes, as routing already
+      does). Tracked in `docs/performance_analysis.md`.
+
+Everything else in this plan shipped. Quality caveat unchanged: placement is
+**experimental** and does not understand mechanical/thermal intent — review the
+result in KiCad.
