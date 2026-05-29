@@ -22,6 +22,9 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+import numpy as np
+from scipy.spatial import cKDTree
+
 from . import netlist, router
 from .router import RouteParams, RouteResult, RoutingState
 
@@ -86,6 +89,23 @@ def _energy(results, via_weight: float, unrouted_weight: float) -> float:
     return length + via_weight * vias + unrouted_weight * unrouted
 
 
+def _contribution(r, via_weight: float, unrouted_weight: float) -> float:
+    """Energy contribution of a single connection result.
+
+    Args:
+        r: a `RouteResult`, or `None` for an unrouted connection.
+        via_weight: mm-equivalent cost per via.
+        unrouted_weight: mm-equivalent penalty per unrouted connection.
+
+    Returns:
+        ``unrouted_weight`` if `r` is `None`, else ``length + via_weight*vias``.
+        Summing this over all results reproduces `_energy` exactly.
+    """
+    if r is None:
+        return unrouted_weight
+    return r.length + via_weight * r.vias
+
+
 def _aggregate(results):
     """Summarise a routing's totals.
 
@@ -130,6 +150,39 @@ class _Annealer:
         self.rng = random.Random(params.seed)
         self.via_weight = params.route_params.via_cost
 
+        # Connection centroids are fixed during routing SA (endpoints are pad
+        # centres, which never move here), so the KD-tree of centroids is built
+        # once and reused for every nearest-neighbour cluster query.
+        self._centroids = np.array([_centroid(c) for c in self.conns],
+                                   dtype=float).reshape(-1, 2)
+        self._tree = cKDTree(self._centroids) if len(self.conns) else None
+
+        # Live routed/unrouted index sets, kept in sync by `_apply`/`_revert`
+        # so `_propose` and `_rip_cluster` never rescan all M results.
+        self._routed = {i for i, r in enumerate(self.results) if r is not None}
+        self._unrouted = {i for i, r in enumerate(self.results) if r is None}
+
+        # Running energy total, maintained incrementally (see `_apply`).
+        self.E = _energy(self.results, self.via_weight, self.p.unrouted_weight)
+
+    def _set_result(self, idx: int, res) -> None:
+        """Store a connection result, updating the running energy and index sets.
+
+        Args:
+            idx: the connection index.
+            res: the new `RouteResult` or `None`.
+        """
+        old = self.results[idx]
+        self.E += (_contribution(res, self.via_weight, self.p.unrouted_weight)
+                   - _contribution(old, self.via_weight, self.p.unrouted_weight))
+        self.results[idx] = res
+        if res is None:
+            self._routed.discard(idx)
+            self._unrouted.add(idx)
+        else:
+            self._unrouted.discard(idx)
+            self._routed.add(idx)
+
     def _route(self, idx):
         """Route connection `idx` against the current state.
 
@@ -164,7 +217,7 @@ class _Annealer:
                 self.state.ripup(idx)
         for idx in suborder:
             res = self._route(idx)
-            self.results[idx] = res
+            self._set_result(idx, res)
             if res is not None:
                 self.state.commit(idx, res)
         return snapshot
@@ -179,9 +232,44 @@ class _Annealer:
             if self.results[idx] is not None:
                 self.state.ripup(idx)
         for idx, old in snapshot.items():
-            self.results[idx] = old
+            self._set_result(idx, old)
             if old is not None:
                 self.state.commit(idx, old)
+
+    def _nearest_routed(self, seed: int, k: int) -> list[int]:
+        """The ``k`` nearest *routed* connections to `seed` (excluding it).
+
+        Uses the prebuilt centroid KD-tree: queries the nearest neighbours and
+        filters to currently-routed indices, widening the query until ``k`` are
+        found or the whole board is exhausted. O(log M) per query versus the old
+        O(M log M) full sort.
+
+        Args:
+            seed: the seed connection index.
+            k: the number of routed neighbours wanted.
+
+        Returns:
+            Up to `k` routed connection indices, nearest-centroid first.
+        """
+        if self._tree is None or k <= 0 or not self._routed:
+            return []
+        n = len(self.conns)
+        query_k = min(n, k + 1)               # +1 to absorb the seed itself
+        out: list[int] = []
+        while True:
+            _, idxs = self._tree.query(self._centroids[seed], k=query_k)
+            idxs = np.atleast_1d(idxs)
+            out = []
+            for i in idxs:
+                i = int(i)
+                if i == seed or i not in self._routed:
+                    continue
+                out.append(i)
+                if len(out) >= k:
+                    break
+            if len(out) >= k or query_k >= n:
+                return out
+            query_k = min(n, query_k * 2)
 
     def _rip_cluster(self, seed: int, shuffle: bool) -> tuple[list[int], list[int]]:
         """Rip the seed connection plus its nearest routed neighbours and reroute
@@ -190,11 +278,9 @@ class _Annealer:
         held in the original sequential routing. ``shuffle`` randomises the
         re-route order (for optimising routed nets); otherwise the seed is routed
         first (to give a previously-failed net priority)."""
-        cs = _centroid(self.conns[seed])
-        neighbours = sorted(
-            (i for i, r in enumerate(self.results) if r is not None and i != seed),
-            key=lambda i: math.dist(cs, _centroid(self.conns[i])))
-        cluster = [seed] + neighbours[:self.p.rip_neighbours]
+        k_want = self.p.rip_neighbours
+        neighbours = self._nearest_routed(seed, k_want)
+        cluster = [seed] + neighbours[:k_want]
         order = list(cluster)
         if shuffle:
             self.rng.shuffle(order)
@@ -208,15 +294,15 @@ class _Annealer:
             re-route them in. See the module docstring for the move mix.
         """
         n = len(self.conns)
-        unrouted = [i for i, r in enumerate(self.results) if r is None]
-        if unrouted and self.rng.random() < 0.5:
-            return self._rip_cluster(self.rng.choice(unrouted), shuffle=False)
+        if self._unrouted and self.rng.random() < 0.5:
+            return self._rip_cluster(self.rng.choice(tuple(self._unrouted)),
+                                     shuffle=False)
 
-        routed = [i for i, r in enumerate(self.results) if r is not None]
         r = self.rng.random()
-        if routed and r < 0.7:
+        if self._routed and r < 0.7:
             # rip a routed cluster + reroute in a fresh order to shorten the wiring
-            return self._rip_cluster(self.rng.choice(routed), shuffle=True)
+            return self._rip_cluster(self.rng.choice(tuple(self._routed)),
+                                     shuffle=True)
         if n >= 2 and r < 0.9:
             i, j = self.rng.sample(range(n), 2)
             return [i, j], [j, i]                       # swap routing order
@@ -240,7 +326,7 @@ class _Annealer:
         Returns:
             The `AnnealResult` with the best routing and run statistics.
         """
-        E = _energy(self.results, self.via_weight, self.p.unrouted_weight)
+        E = self.E                              # maintained incrementally by `_apply`
         start_E = E
         best_E = E
         best = list(self.results)
@@ -276,7 +362,8 @@ class _Annealer:
 
             ripped, suborder = self._propose()
             snapshot = self._apply(ripped, suborder)
-            E_new = _energy(self.results, self.via_weight, self.p.unrouted_weight)
+            # `_apply` maintained `self.E` incrementally over the changed indices.
+            E_new = self.E
             dE = E_new - E
             accept = dE <= 0 or self.rng.random() < math.exp(-dE / max(T, 1e-9))
             if accept:
@@ -286,14 +373,14 @@ class _Annealer:
                     best_E = E
                     best = list(self.results)
             else:
-                self._revert(snapshot)
+                self._revert(snapshot)        # restores self.E back to E too
             recent.append(1 if accept else 0)
 
             it += 1
             window_seen += 1
             if on_progress is not None:
-                routed = sum(1 for r in self.results if r is not None)
-                on_progress(it, total, routed, len(self.results) - routed,
+                routed = len(self._routed)
+                on_progress(it, total, routed, len(self.conns) - routed,
                             E, best_E, T, sum(recent) / len(recent))
             # emit intermediate snapshots as the run crosses k/N of its progress;
             # the final k=N snapshot is taken after the loop on the best routing.

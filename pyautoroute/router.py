@@ -24,7 +24,7 @@ import numpy as np
 import shapely
 from shapely.geometry import LineString, Point
 
-from .grid import Grid
+from .grid import FREE, Grid
 from .sexpr import SList
 
 SQRT2 = math.sqrt(2.0)
@@ -249,6 +249,15 @@ def astar(state: RoutingState, net_id: int,
           params: RouteParams | None = None) -> list[tuple[int, int, int]] | None:
     """Find a min-cost node path from any source to any target.
 
+    Search internals are optimised for the Python inner loop without changing
+    the cost model or results: search states are packed into a single integer
+    key (``((layer*ny + row)*nx + col)*9 + dir+1``) instead of a tuple; a per-net
+    boolean free mask is built once from the static occupancy so neighbour
+    freeness is a direct array index rather than a `RoutingState.is_free` call;
+    the octile heuristic is precomputed over the whole grid as a numpy field; and
+    the via-target layer list is cached on the grid. These are transparent — the
+    returned path is identical to the unoptimised search.
+
     Args:
         state: the live routing state (occupancy the search must respect).
         net_id: the routing net's id (nodes owned by other nets are blocked).
@@ -264,34 +273,90 @@ def astar(state: RoutingState, net_id: int,
     grid = state.grid
     if not sources or not targets:
         return None
-    target_set = set(targets)
-    tgt_cr = [(c, r) for (_, c, r) in targets]
-    pitch = grid.pitch
+    nx, ny, n_layers, pitch = grid.nx, grid.ny, grid.n_layers, grid.pitch
 
-    def h(col: int, row: int) -> float:
-        best = math.inf
-        for tc, tr in tgt_cr:
-            dx, dy = abs(col - tc), abs(row - tr)
-            lo, hi = (dx, dy) if dx < dy else (dy, dx)
-            best = min(best, (hi - lo) + lo * SQRT2)
-        return best * pitch
+    # --- flattened integer state key ----------------------------------------
+    # `(layer, col, row, dir)` is packed into a single int; dict lookups on ints
+    # are faster than on tuples and avoid a tuple allocation per neighbour. `dir`
+    # ranges over -1..7, shifted to 0..8 by the +1 so all keys stay non-negative.
+    #   key = ((layer * ny + row) * nx + col) * 9 + (dir + 1)
+    _D = 9
+    _LROW = nx * _D
+
+    def encode(li: int, c: int, r: int, d: int) -> int:
+        return (li * ny + r) * _LROW + c * _D + (d + 1)
+
+    # --- per-net free mask ---------------------------------------------------
+    # Occupancy is static during a single search, so collapse `state.is_free`
+    # into a boolean array indexed directly (no per-expansion method call). A
+    # node is free for this net iff the static grid permits it AND no *other*
+    # net's committed copper covers it.
+    owner = grid.owner
+    free = (owner == FREE) | (owner == net_id)        # (n_layers, ny, nx)
+    for (li, c, r), occ in state.cover.items():
+        if free[li, r, c] and any(state.conn_net[i] != net_id for i in occ):
+            free[li, r, c] = False
+
+    def is_free(li: int, c: int, r: int) -> bool:
+        return 0 <= c < nx and 0 <= r < ny and bool(free[li, r, c])
+
+    # --- precomputed heuristic field ----------------------------------------
+    # The heuristic is octile distance to the nearest target, independent of
+    # layer and direction, so precompute it once over the whole grid via numpy
+    # broadcast instead of looping all targets on every push/pop.
+    tgt_cr = [(c, r) for (_, c, r) in targets]
+    cols = np.arange(nx)[None, :]                     # (1, nx)
+    rows = np.arange(ny)[:, None]                     # (ny, 1)
+    hfield = np.full((ny, nx), np.inf)
+    for tc, tr in tgt_cr:
+        dx = np.abs(cols - tc)
+        dy = np.abs(rows - tr)
+        lo = np.minimum(dx, dy)
+        hi = np.maximum(dx, dy)
+        hfield = np.minimum(hfield, (hi - lo) + lo * SQRT2)
+    hfield = hfield * pitch                           # (ny, nx)
+
+    def h(c: int, r: int) -> float:
+        return float(hfield[r, c])
+
+    target_set = set((li, c, r) for (li, c, r) in targets)
+
+    # --- via neighbourhood (constant per grid) ------------------------------
+    # The set of layers a via can jump to from any node is just "all other
+    # layers"; precompute it once on the grid so the via branch doesn't rebuild
+    # the layer list on every expansion.
+    via_layers = getattr(grid, "_via_layer_neighbours", None)
+    if via_layers is None:
+        via_layers = [tuple(j for j in range(n_layers) if j != i)
+                      for i in range(n_layers)]
+        grid._via_layer_neighbours = via_layers
+
+    def can_via(c: int, r: int) -> bool:
+        for dc, dr in grid._via_stencil:
+            cc, rr = c + dc, r + dr
+            if not (0 <= cc < nx and 0 <= rr < ny):
+                return False
+            if not free[:, rr, cc].all():
+                return False
+        return True
 
     counter = itertools.count()
-    gscore: dict[tuple[int, int, int, int], float] = {}
-    came: dict[tuple[int, int, int, int], tuple] = {}
+    gscore: dict[int, float] = {}
+    # key -> (predecessor_key, (layer, col, row)); the node tuple is stored so
+    # path reconstruction needs no decode of the packed integer key.
+    came: dict[int, tuple | None] = {}
     heap = []
     for (li, c, r) in sources:
-        if not state.is_free(li, c, r, net_id):
+        if not is_free(li, c, r):
             continue
-        s = (li, c, r, -1)
+        s = encode(li, c, r, -1)
         gscore[s] = 0.0
-        came[s] = None
-        heapq.heappush(heap, (h(c, r), next(counter), s))
+        came[s] = (None, (li, c, r))
+        heapq.heappush(heap, (h(c, r), next(counter), s, li, c, r, -1))
 
     expansions = 0
     while heap:
-        f, _, st = heapq.heappop(heap)
-        li, c, r, pdir = st
+        f, _, st, li, c, r, pdir = heapq.heappop(heap)
         g = gscore[st]
         if f > g + h(c, r) + 1e-9:
             continue
@@ -304,34 +369,33 @@ def astar(state: RoutingState, net_id: int,
 
         for di, (dx, dy) in enumerate(_DIRS):
             nc, nr = c + dx, r + dy
-            if not state.is_free(li, nc, nr, net_id):
+            if not is_free(li, nc, nr):
                 continue
             diagonal = dx != 0 and dy != 0
-            if diagonal and not (state.is_free(li, c + dx, r, net_id)
-                                 and state.is_free(li, c, r + dy, net_id)):
+            if diagonal and not (is_free(li, c + dx, r)
+                                 and is_free(li, c, r + dy)):
                 continue
             step = pitch * (SQRT2 if diagonal else 1.0)
             cost = step + params.bend(_turn_units(pdir, di))
             if li != 0:
                 cost += params.back_layer_penalty
             ng = g + cost
-            ns = (li, nc, nr, di)
+            ns = encode(li, nc, nr, di)
             if ng < gscore.get(ns, math.inf):
                 gscore[ns] = ng
-                came[ns] = st
-                heapq.heappush(heap, (ng + h(nc, nr), next(counter), ns))
+                came[ns] = (st, (li, nc, nr))
+                heapq.heappush(heap, (ng + h(nc, nr), next(counter),
+                                      ns, li, nc, nr, di))
 
-        for nli in range(grid.n_layers):
-            if nli == li:
-                continue
-            if not state.can_via(c, r, net_id):
-                continue
+        if n_layers > 1 and can_via(c, r):
             ng = g + params.via_cost
-            ns = (nli, c, r, -1)
-            if ng < gscore.get(ns, math.inf):
-                gscore[ns] = ng
-                came[ns] = st
-                heapq.heappush(heap, (ng + h(c, r), next(counter), ns))
+            for nli in via_layers[li]:
+                ns = encode(nli, c, r, -1)
+                if ng < gscore.get(ns, math.inf):
+                    gscore[ns] = ng
+                    came[ns] = (st, (nli, c, r))
+                    heapq.heappush(heap, (ng + h(c, r), next(counter),
+                                          ns, nli, c, r, -1))
 
     return None
 
@@ -340,8 +404,9 @@ def _reconstruct(came, st) -> list[tuple[int, int, int]]:
     """Rebuild the node path from the A* came-from map.
 
     Args:
-        came: mapping of search state -> predecessor state.
-        st: the goal search state to walk back from.
+        came: mapping of integer search-state key -> ``(predecessor_key,
+            (layer, col, row))`` (or `None` at a source).
+        st: the goal search-state key to walk back from.
 
     Returns:
         The ``(layer, col, row)`` path from source to goal, with consecutive
@@ -349,9 +414,9 @@ def _reconstruct(came, st) -> list[tuple[int, int, int]]:
     """
     out = []
     while st is not None:
-        li, c, r, _ = st
-        out.append((li, c, r))
-        st = came[st]
+        prev, node = came[st]
+        out.append(node)
+        st = prev
     out.reverse()
     dedup = [out[0]]
     for n in out[1:]:

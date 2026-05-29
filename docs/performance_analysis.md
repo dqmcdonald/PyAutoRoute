@@ -447,6 +447,36 @@ Tracking which optimisations from §4 have landed.
   off whenever either knob is ≤ 0, so the full iteration budget is honoured unless
   the caller opts in.
 
+- **P1 — Incremental routing-SA energy + spatial cluster index** (`anneal.py`).
+  `_Annealer` keeps a running energy total (`self.E`) maintained by `_set_result`
+  over only the connections a move touches, instead of re-summing all M results
+  each iteration; `_contribution` gives the per-connection term so the delta
+  reconciles exactly with a full `_energy`. A `scipy.spatial.cKDTree` of the
+  fixed connection centroids is built once (`_centroids`/`_tree`) and serves the
+  nearest-routed-neighbour query in `_rip_cluster` (`_nearest_routed`,
+  O(log M) vs the old O(M log M) full sort), and live `_routed`/`_unrouted`
+  index sets — updated in `_set_result` — replace the two O(M) rescans in
+  `_propose`. `bench_router.py` reports the per-iteration step time.
+
+- **P1 — A\* constant factors** (`router.py`, `astar`). Transparent inner-loop
+  optimisations that leave the cost model and results bit-for-bit identical
+  (verified across the `TestProjects` boards):
+  - *Integer state keys* — `(layer, col, row, dir)` is packed into a single int
+    (`encode`), so `gscore`/`came` are int-keyed and no tuple is allocated per
+    neighbour.
+  - *Per-net free mask* — a boolean `free[layer, row, col]` array is built once
+    from the static `grid.owner` plus the other-net `cover`, so neighbour and
+    via freeness checks are direct array indices, not `RoutingState.is_free`
+    method calls (8–24× per expansion).
+  - *Precomputed heuristic field* — the octile distance to the nearest target is
+    computed once over the whole grid as a numpy field (`hfield`), so `h` is an
+    array lookup rather than a per-call loop over all targets.
+  - *Via neighbourhood* — the via-target layer list is cached on the grid
+    (`_via_layer_neighbours`) and `can_via` is hoisted out of the per-layer loop.
+  - Result: ~2–3× on the A\* core on real boards (e.g. Test5 greedy route
+    3.37s → 1.45s), compounding through the annealer (which calls A\* `cluster`
+    times per iteration). `bench_router.py` reports per-`astar`-call timing.
+
 - **Performance harness** (`tests/perf/`, `scripts/profile_anneal.py`). A
   synthetic-board factory (`tests/perf/board_factory.py:make_synthetic_board` /
   `make_routing_setup`) builds duck-typed `Board`/`Footprint`/`Pad` objects at
@@ -459,9 +489,7 @@ Tracking which optimisations from §4 have landed.
 
 ### Not yet done
 
-- P1 — Incremental routing-SA energy + spatial cluster index.
 - P1 — Memoise `rules.class_for`.
-- P1 — A\* constant factors (precomputed `h`, per-net free mask, integer state).
 - P2 — Vectorise `_covered_nodes`; parallel placement runs / SA chains; adaptive
   cooling.
 - P3 — C/Cython A\* core.
