@@ -139,6 +139,46 @@ def test_commit_blocks_other_nets_and_ripup_restores():
     assert s.is_free(0, col, row, b_id)
 
 
+# --- bounded search (search_margin) ------------------------------------------
+
+def test_bounded_matches_unbounded_on_clear_board():
+    # A generous margin covers the whole region the optimal diagonal uses, so a
+    # bounded search returns exactly the same path as the unbounded one.
+    a, b = _pad("A", 3, 3), _pad("A", 15, 15)
+    s1, s2 = _state(_board([a, b])), _state(_board([a, b]))
+    unb = route_connection(s1, "A", _access(s1, a), _access(s1, b))
+    bnd = route_connection(s2, "A", _access(s2, a), _access(s2, b),
+                           params=_router.RouteParams(search_margin=10.0))
+    assert unb is not None and bnd is not None
+    assert bnd.path == unb.path
+
+
+def test_bounded_widens_to_find_detour_route():
+    # A tall wall on both layers blocks the direct corridor and forces a detour
+    # well below the endpoints' bounding box. A tiny initial margin can't reach
+    # the detour, so the search must widen the box until it does.
+    a, b = _pad("A", 4, 10), _pad("A", 16, 10)
+    wall = _pad("X", 10, 13, w=0.8, h=14, layers=("F.Cu", "B.Cu"))  # spans y~6..20
+    s = _state(_board([a, b, wall]))
+    res = route_connection(s, "A", _access(s, a), _access(s, b),
+                           params=_router.RouteParams(search_margin=1.0))
+    assert res is not None                       # widening reached the gap below
+    # the route dips below the endpoints (which sit at y=10) to get around
+    endpoint_row = s.grid.nearest_node(4, 10)[1]
+    assert min(r for (_, _, r) in res.path) < endpoint_row
+
+
+def test_bounded_still_unroutable_when_fully_walled():
+    # Completeness: when no path exists, widening to the full grid still reports
+    # None rather than a spurious route.
+    a, b = _pad("A", 4, 10), _pad("A", 16, 10)
+    wall = _pad("X", 10, 10, w=0.8, h=20, layers=("F.Cu", "B.Cu"))
+    s = _state(_board([a, b, wall]))
+    res = route_connection(s, "A", _access(s, a), _access(s, b),
+                           params=_router.RouteParams(search_margin=1.0))
+    assert res is None
+
+
 # --- C extension parity ------------------------------------------------------
 
 # Scenarios exercising the tricky paths: straight run, diagonal, via dive.

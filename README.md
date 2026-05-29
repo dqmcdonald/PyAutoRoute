@@ -86,6 +86,7 @@ The original file is never modified — a routed copy is written alongside it.
 | `--anneal-temps START END` | Start/end temperature of the geometric cooling schedule (default `4.0 0.05`); `START > END > 0`. Higher `START` explores more (better escape from local minima, slower convergence); lower `END` exploits harder at the finish. |
 | `--exclude-net PATTERN` | Leave matching nets un-routed (repeatable; glob, e.g. `GND` or `"/PWR*"`). Their pads still act as obstacles. |
 | `--via-weight W` | Via cost in mm-equivalent (higher ⇒ fewer vias). Default 2.0. |
+| `--search-margin MM` | Bound each connection's A\* search to a box around its two endpoints, grown by `MM` on every side (widening the box and retrying if it can't find a route, ultimately falling back to the whole grid). Speeds up routing — especially the rip-up/reroute annealing loop — on large boards, at a small cost to path optimality (a bounded route may be slightly longer). Unset (the default) searches the whole grid. |
 | `--seed S` | Random seed for the optimiser. |
 | `--snapshots N` | During annealing, save `N` intermediate board snapshots to a `snapshots/` subdir (beside the output), so you can watch the optimisation progress. Requires `--iters` or `--time`. |
 | `--config FILE` | Read options from an INI settings file (see below). Options given on the command line override it. |
@@ -271,7 +272,7 @@ as attached to the pad and keeps it connected when you move the footprint.
 - Two copper layers only (F.Cu / B.Cu).
 - Copper fills (zones with `fill yes`) are automatically detected: their net is excluded from routing and placement scoring, and the zone polygon is not treated as a routing obstacle. After writing the output board, PyAutoRoute tries to refill the zones using `kicad-cli` if it is installed; otherwise it prints a note to open the board in KiCad and run _Edit → Fill All Zones_ manually.
 - Custom-shaped pads are approximated by their bounding box.
-- Runtime is dominated by a few long/awkward nets; a finer `--grid` improves coverage but is slower.
+- Runtime is dominated by a few long/awkward nets; a finer `--grid` improves coverage but is slower. `--search-margin MM` bounds each A\* search to a box around the connection's endpoints, which speeds up large boards (and the annealing reroute loop) at a small cost to path optimality.
 - The optimiser improves length and via count; it does not guarantee a global optimum.
 
 ## Finding good settings

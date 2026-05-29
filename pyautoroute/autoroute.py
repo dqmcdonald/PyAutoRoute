@@ -657,7 +657,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"  warning: {note}")
         rep.log(f"warning: {note}")
 
-    params = router.RouteParams(via_cost=args.via_weight)
+    params = router.RouteParams(via_cost=args.via_weight,
+                                search_margin=args.search_margin)
     order = netlist.greedy_order(conns)
     annealing = bool(args.iters or args.time_budget)
 
@@ -1201,6 +1202,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="net name/glob to leave un-routed (repeatable)")
     p.add_argument("--seed", type=int, default=0, help="random seed")
     p.add_argument("--via-weight", type=float, default=2.0, help="via cost (mm-equiv)")
+    p.add_argument("--search-margin", type=float, default=None, metavar="MM",
+                   help="bound each connection's A* search to a box around its "
+                        "endpoints, grown by MM on every side (widening and "
+                        "retrying on failure). Speeds up routing on large boards "
+                        "at a small cost to path optimality; unset = search the "
+                        "whole grid (default)")
     p.add_argument("--unrouted-weight", type=float,
                    default=anneal.AnnealParams.unrouted_weight, metavar="W",
                    help="annealing penalty per unrouted connection — higher tries "
@@ -1263,6 +1270,8 @@ def main(argv=None) -> int:
         parser.error("--anneal-temps requires START > END > 0")
     if args.unrouted_weight < 0:
         parser.error("--unrouted-weight must be >= 0")
+    if args.search_margin is not None and args.search_margin < 0:
+        parser.error("--search-margin must be >= 0")
     if args.place_margin < 0:
         parser.error("--place-margin must be >= 0")
     if args.place_buffer is not None and args.place_buffer < 0:
