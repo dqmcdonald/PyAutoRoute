@@ -204,6 +204,12 @@ class PlaceParams:
     rotate_mode: str = "ortho"        # "ortho" (+/-90/180), "free" (any angle), "none"
     seed: int = 0
     exclude: list[str] = field(default_factory=list)
+    # Early-termination (stall detection): if the windowed accept ratio stays
+    # below `stall_ratio` for `stall_patience` consecutive full accept-windows,
+    # the run stops early. Disabled when `stall_patience <= 0` or
+    # `stall_ratio <= 0` (the default), so the full budget is honoured.
+    stall_ratio: float = 0.02
+    stall_patience: int = 0
 
 
 @dataclass
@@ -259,6 +265,109 @@ class _Placer:
             for cx, cy, hr in _board_silk_text_boxes(board)
         ]
         self._fixed_tree = STRtree(self._fixed_text) if self._fixed_text else None
+
+        # Incremental-energy cache (populated by `_rebuild_cache`).
+        #
+        # The ratsnest topology is fixed for the whole run: a move changes pad
+        # *positions*, never which pads are connected, so the connection list and
+        # the footprint->incident-connection index are built once, and a move
+        # recomputes only the lengths of the connections touching the moved
+        # footprints. Overlap is cached per box and updated for the moved boxes
+        # against their neighbours; the bbox is recomputed from the cached box
+        # bounds (O(N), cheap relative to the old O(P^2) MST rebuild).
+        self._boxes: list = []            # per-footprint body box, parallel to self.boxed
+        self._conns: list = []            # cached netlist connections (fixed topology)
+        self._fp_conns: dict[int, list[int]] = {}   # boxed-index -> incident conn indices
+        self._rats = 0.0
+        self._overlap = 0.0
+        self._bbox = 0.0
+        self._idx_of_fp: dict[int, int] = {id(fp): i for i, fp in enumerate(self.boxed)}
+
+    def _build_index(self) -> None:
+        """Build the fixed connection list and footprint->connection incidence.
+
+        Called once: the ratsnest topology does not change across moves, so the
+        connection list (and which footprint each connection's pads belong to)
+        is computed a single time.
+        """
+        self._conns = netlist.build_connections(self.board, self.p.exclude)
+        pad_to_fp: dict[int, int] = {}
+        for i, fp in enumerate(self.boxed):
+            for pad in fp.pads:
+                pad_to_fp[id(pad)] = i
+        self._fp_conns = {i: [] for i in range(len(self.boxed))}
+        for ci, c in enumerate(self._conns):
+            fa = pad_to_fp.get(id(c.a))
+            fb = pad_to_fp.get(id(c.b))
+            for fi in {fa, fb}:
+                if fi is not None:
+                    self._fp_conns[fi].append(ci)
+
+    def _rebuild_cache(self) -> None:
+        """Full recompute of the energy cache (init / after a structural change)."""
+        if not self._conns and self.boxed:
+            self._build_index()
+        self._boxes = [self._fp_box(fp) for fp in self.boxed]
+        self._rats = sum(c.est_length for c in self._conns)
+        self._overlap = self._overlap_area(self._boxes) + \
+            self._fixed_text_overlap(self._boxes)
+        self._bbox = self._bbox_area(self._boxes)
+
+    @staticmethod
+    def _bbox_area(boxes) -> float:
+        """Area of the bounding box enclosing all `boxes` (0 if none)."""
+        if not boxes:
+            return 0.0
+        minx = min(b.bounds[0] for b in boxes)
+        miny = min(b.bounds[1] for b in boxes)
+        maxx = max(b.bounds[2] for b in boxes)
+        maxy = max(b.bounds[3] for b in boxes)
+        return max(0.0, maxx - minx) * max(0.0, maxy - miny)
+
+    def _cached_energy(self) -> float:
+        """Energy from the current cache (see the module docstring)."""
+        return (self._rats + self.p.overlap_weight * self._overlap
+                + self.p.compact_weight * self._bbox)
+
+    def _overlap_touching(self, idxs: set[int], boxes) -> float:
+        """Overlap area of every pair/fixed-text touching a footprint in `idxs`.
+
+        Each footprint-footprint pair with at least one endpoint in `idxs` is
+        counted exactly once (pairs wholly inside `idxs` included once), plus the
+        fixed board-silk-text overlap of the boxes in `idxs`.
+
+        Args:
+            idxs: boxed-indices of the moved footprints.
+            boxes: the per-footprint body boxes to evaluate against.
+
+        Returns:
+            The total overlap (mm^2) attributable to the moved footprints.
+        """
+        tree = STRtree(boxes) if len(boxes) >= 2 else None
+        total = 0.0
+        seen: set[tuple[int, int]] = set()
+        for i in idxs:
+            bi = boxes[i]
+            if tree is not None:
+                for j in tree.query(bi):
+                    j = int(j)
+                    if j == i or not bi.intersects(boxes[j]):
+                        continue
+                    key = (i, j) if i < j else (j, i)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    fi, fj = self.boxed[i], self.boxed[j]
+                    if fi.overlap_ok or fj.overlap_ok:
+                        total += self._pad_overlap(fi, fj)
+                    else:
+                        total += bi.intersection(boxes[j]).area
+            if self._fixed_tree is not None and not self.boxed[i].overlap_ok:
+                for j in self._fixed_tree.query(bi):
+                    t = self._fixed_text[int(j)]
+                    if bi.intersects(t):
+                        total += bi.intersection(t).area
+        return total
 
     def _fp_box(self, fp: Footprint):
         """Buffer-inflated axis-aligned body box of a footprint.
