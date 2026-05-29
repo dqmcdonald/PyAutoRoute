@@ -7004,4 +7004,19 @@
 		)
 	)
 	(embedded_fonts no)
+	(zone
+		(net "GND")
+		(layer "B.Cu")
+		(uuid "358f0c95-9919-4e3b-a23b-d0f496abe9a2")
+		(hatch edge 0.5)
+		(connect_pads (clearance 0.5))
+		(min_thickness 0.25)
+		(fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5) (island_removal_mode 0))
+		(polygon
+			(pts
+				(xy 39 37) (xy 77.54296 37.03724) (xy 77.5 81.5)
+				(xy 43.088185 81.937418) (xy 42.907907 67.754942) (xy 38.5 65)
+			)
+		)
+	)
 )

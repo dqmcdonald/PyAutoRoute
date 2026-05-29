@@ -251,6 +251,8 @@ def board_obstacles(board: Board) -> list[Obstacle]:
         for layer in board.copper_layers:
             obs.append(Obstacle(poly, via.net, layer))
     for zone in board.zones:
+        if zone.get("fill_enabled"):
+            continue  # copper pours are managed by KiCad; not routing obstacles
         pts = zone.get("polygon") or []
         if len(pts) >= 3:
             zpoly = Polygon(pts)

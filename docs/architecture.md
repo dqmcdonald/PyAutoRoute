@@ -68,7 +68,7 @@ KiCad defaults when no project file is present. Handles both name-only nets
 ### `pcb.py` — board model + writer
 Loads the board into a `Board`: copper layer stack, every `Pad` with **absolute**
 position/rotation/shape/layers/net, the per-footprint grouping, free (dangling)
-vias, existing segments and zones, and the Edge.Cuts outline shapes. Two file
+vias, existing segments and zones (with a `fill_enabled` flag for copper fills), and the Edge.Cuts outline shapes. Two file
 conventions are handled transparently:
 
 - **Net references** — `(net "GND")` (name-only) and `(net 3 "GND")` /
@@ -403,7 +403,7 @@ integration tests and validated end-to-end with `kicad-cli pcb drc`.
 ## Known limitations / future work
 
 - **Two layers only.** The stack is read generically but routing assumes F.Cu/B.Cu.
-- **No copper pours.** Zones are obstacles + same-net connectivity, not regenerated.
+- **Copper fills.** Zones with `(fill yes …)` are auto-detected: their net is excluded from routing and placement, and the zone polygon is skipped in `board_obstacles` (it is not a routing obstacle). After writing the output board, `pcb.try_refill_zones` invokes `kicad-cli pcb drc --refill-zones --save-board` to regenerate the pour; if `kicad-cli` is not available the user is prompted to refill manually in KiCad. Zones without `fill yes` (e.g. keepouts, teardrops) are still treated as obstacles.
 - **Custom pads** are approximated by their bounding box.
 - **Conservative clearance for mixed net-class boards.** The single global inflation margin uses the maximum track/clearance across classes; exact per-net masks would route denser mixed-rule boards.
 - **Hole-to-hole** is approximated by copper clearance rather than checked explicitly.

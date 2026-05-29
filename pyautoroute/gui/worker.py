@@ -90,6 +90,15 @@ class Worker:
         board = pcb.load_board(input_path)
         if getattr(cfg, "fix_values", False):
             pcb.fix_value_layers(board)
+
+        fill_nets = pcb.zone_fill_nets(board)
+        if fill_nets:
+            current_excludes = list(cfg.exclude_net or [])
+            for n in sorted(fill_nets):
+                if n not in current_excludes:
+                    current_excludes.append(n)
+            cfg.exclude_net = current_excludes
+
         pro_path = (_P(cfg.pro) if cfg.pro
                     else input_path.with_suffix(".kicad_pro"))
         if not pro_path.exists():
@@ -172,6 +181,8 @@ class Worker:
                 f"{datetime.date.today().isoformat()}")
             pcb.write_board(board, out_path, new_nodes=None,
                             strip_free_vias=True)
+            if fill_nets:
+                pcb.try_refill_zones(out_path)
             placed = pcb.load_board(out_path)
             violations = geometry.clearance_violations(placed, rules)
             self._post(Done(str(out_path), 0, 0, 0, 0.0, 0,
@@ -302,6 +313,8 @@ class Worker:
         pcb.write_board(board, out_path,
                         new_nodes=_results_to_nodes(board, grid, final_results),
                         strip_free_vias=True)
+        if fill_nets:
+            pcb.try_refill_zones(out_path)
         routed_board = pcb.load_board(out_path)
         violations = geometry.clearance_violations(routed_board, rules)
         total = routed + unrouted

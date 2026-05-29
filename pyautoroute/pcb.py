@@ -599,22 +599,29 @@ def _parse_segments(tree: SList, numbered: dict[int, str]) -> list[Segment]:
 
 
 def _parse_zones(tree: SList, numbered: dict[int, str]) -> list[dict]:
-    """Parse copper ``(zone ...)`` regions into ``{net, layers, polygon}`` dicts.
+    """Parse copper ``(zone ...)`` regions into ``{net, layers, polygon, fill_enabled}`` dicts.
 
     Args:
         tree: the parsed board tree.
         numbered: the net-number -> name table (for net resolution).
 
     Returns:
-        One dict per zone with its net name, layer list, and outline points.
+        One dict per zone with its net name, layer list, outline points, and
+        whether the zone has an active copper fill (``fill_enabled``).
     """
     out = []
     for it in children(tree, "zone"):
+        fill_node = child(it, "fill")
+        fill_enabled = False
+        if fill_node is not None:
+            a = atoms_after_head(fill_node)
+            fill_enabled = bool(a) and a[0].text == "yes"
         out.append({
             "net": _net_name(child(it, "net_name"), numbered)
                    or _net_name(child(it, "net"), numbered),
             "layers": strings(child(it, "layers")) or strings(child(it, "layer")),
             "polygon": _pts(child(child(it, "polygon"), "pts") if child(it, "polygon") else None),
+            "fill_enabled": fill_enabled,
         })
     return out
 
@@ -700,6 +707,60 @@ def load_board(pcb_path: str | Path) -> Board:
     )
     ensure_outline(board)
     return board
+
+
+def zone_fill_nets(board: Board) -> set[str]:
+    """Return the net names that have at least one active copper-fill zone.
+
+    Args:
+        board: the loaded board.
+
+    Returns:
+        A set of net name strings (e.g. ``{"GND"}``).  Empty when no filled
+        zones exist.
+    """
+    return {z["net"] for z in board.zones
+            if z.get("fill_enabled") and z.get("net")}
+
+
+def try_refill_zones(board_path: Path) -> bool:
+    """Attempt to refill copper zones in *board_path* using ``kicad-cli``.
+
+    Locates ``kicad-cli`` from ``PATH`` or common macOS install locations,
+    then runs ``kicad-cli pcb drc --refill-zones --save-board``.
+
+    Args:
+        board_path: path to the ``.kicad_pcb`` file to refill in-place.
+
+    Returns:
+        ``True`` if ``kicad-cli`` ran and exited 0; ``False`` otherwise
+        (tool not found, non-zero exit, or any exception).
+    """
+    import shutil
+    import subprocess
+
+    kicad_cli = shutil.which("kicad-cli")
+    if kicad_cli is None:
+        for candidate in [
+            "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
+            "/Applications/Kicad9/KiCad.app/Contents/MacOS/kicad-cli",
+        ]:
+            if Path(candidate).exists():
+                kicad_cli = candidate
+                break
+    if kicad_cli is None:
+        return False
+    try:
+        result = subprocess.run(
+            [kicad_cli, "pcb", "drc",
+             "--refill-zones", "--save-board",
+             "--output", "/dev/null",
+             str(board_path)],
+            capture_output=True, text=True, timeout=120,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 # --- node builders for the writer --------------------------------------------
