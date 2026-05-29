@@ -73,10 +73,15 @@ class _MetricsPanel(ttk.Frame):
     def update(self, ev: Progress) -> None:
         if self._t0 is not None:
             self._vars["elapsed"].set(f"{time.monotonic() - self._t0:.1f}s")
-        total = ev.total or 1
-        pct = min(100, int(100 * ev.it / total))
+        if ev.budget > 0:
+            pct = min(100, int(100 * ev.elapsed / ev.budget))
+            remaining = max(0.0, ev.budget - ev.elapsed)
+            self._vars["iter"].set(f"{remaining:.0f}s remaining")
+        else:
+            total = ev.total or 1
+            pct = min(100, int(100 * ev.it / total))
+            self._vars["iter"].set(f"{ev.it} / {ev.total}")
         self._pb_var.set(pct)
-        self._vars["iter"].set(f"{ev.it} / {ev.total}")
         if ev.kind in ("annealing", "placing"):
             self._vars["energy"].set(f"{ev.energy:.1f} / {ev.best:.1f}")
             self._vars["accept"].set(f"{ev.accept * 100:.0f}%")

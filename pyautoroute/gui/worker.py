@@ -100,7 +100,10 @@ class Worker:
 
         # ---- placement -----------------------------------------------
         if place or place_only:
-            self._post(Phase(f"placing {len(board.footprints)} footprints"))
+            place_runs = max(1, cfg.place_runs)
+            n_fps = len(board.footprints)
+            run_suffix = f" — run 1/{place_runs}" if place_runs > 1 else ""
+            self._post(Phase(f"placing {n_fps} footprints{run_suffix}"))
             if cfg.place_buffer is None:
                 buf = default_place_buffer(rules)
             else:
@@ -108,15 +111,30 @@ class Worker:
 
             last_place_prog = [0.0]
             last_place_snap = [float("inf"), 0.0]  # [best_energy, timestamp]
+            place_run_idx = [0]       # 0-based current run number
+            last_place_it = [-1]      # previous it value; reset detection
+            place_run_t0 = [time.monotonic()]
 
             def on_place(it, total, energy, best, temp, accept):
                 if self._cancel.is_set():
                     return
                 now = time.monotonic()
+                # Detect SA run reset: iteration counter went back down → new run.
+                if last_place_it[0] >= 0 and it < last_place_it[0]:
+                    place_run_idx[0] += 1
+                    place_run_t0[0] = now
+                    if place_runs > 1:
+                        k = place_run_idx[0] + 1
+                        self._post(Phase(
+                            f"placing {n_fps} footprints — run {k}/{place_runs}"))
+                last_place_it[0] = it
                 if now - last_place_prog[0] >= _PROGRESS_INTERVAL:
                     last_place_prog[0] = now
+                    budget = cfg.place_time or 0.0
+                    elapsed = now - place_run_t0[0]
                     self._post(Progress("placing", it, total, energy, best,
-                                        temp, accept, 0, 0))
+                                        temp, accept, 0, 0,
+                                        elapsed=elapsed, budget=budget))
                 new_best = best < last_place_snap[0]
                 min_interval = 0.5 if new_best else 2.0
                 if now - last_place_snap[1] >= min_interval:
@@ -140,7 +158,7 @@ class Worker:
             )
             place_mod.place(board, pp,
                             on_progress=on_place,
-                            runs=max(1, cfg.place_runs),
+                            runs=place_runs,
                             cancel=self._cancel)
             pcb.apply_placement(board, margin=cfg.place_margin)
             pcb.sync_tree_from_placement(board)

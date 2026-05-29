@@ -24,6 +24,8 @@ class Progress:
     accept: float   # fraction of recent moves accepted (0..1); 0 for greedy routing
     routed: int
     unrouted: int
+    elapsed: float = 0.0   # seconds elapsed in current run (non-zero → use time display)
+    budget: float = 0.0    # time budget in seconds
 
 
 @dataclass
