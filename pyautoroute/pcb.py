@@ -893,6 +893,26 @@ def _pad_half_extent(pad: Pad) -> float:
     return 0.5 * math.hypot(pad.w, pad.h)
 
 
+def pad_bounding_outline(pads: list[Pad], margin: float = 2.0) -> list[OutlineShape]:
+    """Build a single-rectangle outline bounding all *pads*, grown by *margin*.
+
+    Each pad contributes its rotation-independent half-extent (`_pad_half_extent`)
+    so the rectangle conservatively covers every pad at any rotation.
+
+    Args:
+        pads: the pads to bound (must be non-empty).
+        margin: extra space (mm) added around the pads.
+
+    Returns:
+        A one-element list holding the bounding `OutlineShape` rectangle.
+    """
+    x0 = min(p.cx - _pad_half_extent(p) for p in pads) - margin
+    y0 = min(p.cy - _pad_half_extent(p) for p in pads) - margin
+    x1 = max(p.cx + _pad_half_extent(p) for p in pads) + margin
+    y1 = max(p.cy + _pad_half_extent(p) for p in pads) + margin
+    return [OutlineShape("rect", {"start": (x0, y0), "end": (x1, y1)})]
+
+
 def apply_placement(board: Board, margin: float = 2.0) -> None:
     """Push the footprints' current poses into the model for routing.
 
@@ -909,11 +929,7 @@ def apply_placement(board: Board, margin: float = 2.0) -> None:
         fp.sync_pads()
     if not board.pads:
         return
-    x0 = min(p.cx - _pad_half_extent(p) for p in board.pads) - margin
-    y0 = min(p.cy - _pad_half_extent(p) for p in board.pads) - margin
-    x1 = max(p.cx + _pad_half_extent(p) for p in board.pads) + margin
-    y1 = max(p.cy + _pad_half_extent(p) for p in board.pads) + margin
-    board.outline = [OutlineShape("rect", {"start": (x0, y0), "end": (x1, y1)})]
+    board.outline = pad_bounding_outline(board.pads, margin)
 
 
 def ensure_outline(board: Board, margin: float = 2.0) -> bool:

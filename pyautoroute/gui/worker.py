@@ -28,10 +28,33 @@ _ROUTE_SNAP_INTERVAL = 1.5
 _ANNEAL_SNAP_COUNT = 40
 
 
-def _snap_pads(board):
-    """Return a shallow Board copy with frozen pad positions (for placement)."""
+def _snap_pads(board, margin: float = 2.0):
+    """Return a Board copy frozen at a consistent instant for live placement.
+
+    Both ``board.pads`` and ``board.footprints`` are copied so the snapshot is an
+    internally consistent moment: ``draw_board`` positions footprint outlines from
+    the footprint pose (``fp.x/y/angle``) while pads come from ``board.pads``.  If
+    only the pads were frozen, the still-running placer would keep moving the
+    shared footprint poses, so the outlines would render offset from their pads.
+
+    The snapshot's outline is also regenerated to bound the current pads (the same
+    rectangle ``apply_placement`` produces), so the autoscaled view tracks the
+    footprints as they compress instead of staying framed to the original, larger
+    board edge.
+
+    Args:
+        board: the live board being placed.
+        margin: extra space (mm) around the pads when sizing the preview outline;
+            pass the placement margin so the preview matches the final outline.
+    """
+    from pyautoroute import pcb
+
     pads_copy = [dataclasses.replace(p) for p in board.pads]
-    return dataclasses.replace(board, pads=pads_copy)
+    fps_copy = [dataclasses.replace(fp) for fp in board.footprints]
+    snap = dataclasses.replace(board, pads=pads_copy, footprints=fps_copy)
+    if pads_copy:
+        snap.outline = pcb.pad_bounding_outline(pads_copy, margin)
+    return snap
 
 
 class Worker:
@@ -150,7 +173,7 @@ class Worker:
                     if new_best:
                         last_place_snap[0] = best
                     last_place_snap[1] = now
-                    self._post(BoardSnap(_snap_pads(board)))
+                    self._post(BoardSnap(_snap_pads(board, cfg.place_margin)))
 
             pp = place_mod.PlaceParams(
                 iters=cfg.place_iters,
@@ -172,7 +195,7 @@ class Worker:
             pcb.apply_placement(board, margin=cfg.place_margin)
             pcb.sync_tree_from_placement(board)
             # Final placement snapshot
-            self._post(BoardSnap(_snap_pads(board)))
+            self._post(BoardSnap(_snap_pads(board, cfg.place_margin)))
 
         if place_only:
             self._post(Phase("writing placed board"))
