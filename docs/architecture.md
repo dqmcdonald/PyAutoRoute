@@ -204,7 +204,20 @@ O(deg + neighbours). Optional **stall detection**
 (`PlaceParams.stall_ratio`/`stall_patience`, off by default) mirrors `anneal`'s.
 
 Each move keeps the moved footprint's pad coordinates in sync
-(`Footprint.sync_pads`) so the energy geometry stays consistent. `place()` leaves
+(`Footprint.sync_pads`) so the energy geometry stays consistent.
+
+**Recentering (anti-drift).** Every energy term depends only on the footprints'
+*relative* poses, so the energy is **translation-invariant**: with nothing locked,
+the cluster random-walks during annealing and drifts off the board origin — the
+more iterations run, the further it migrates (this became visible once the Cython
+core let many more iterations run). Before returning, `place()` calls `recenter`,
+which shifts every movable footprint by one rigid offset so their centroid returns
+to where it started. Because it is a pure translation it leaves every energy term
+(and the `PlaceResult`) exactly unchanged. It is a no-op when any footprint is
+locked: locked footprints anchor the layout in absolute coordinates, so there is no
+drift to undo and shifting the movable group would only break alignment with them.
+
+`place()` leaves
 the board at the best placement; `autoroute` then calls `pcb.apply_placement` (pads
 + new outline) before building the grid, and `pcb.sync_tree_from_placement` before
 the write. The whole stage is transparent to the router, which already consumes

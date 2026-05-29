@@ -174,6 +174,13 @@ stays DRC-clean. Rotated footprints keep their pads correctly oriented in the
 output (KiCad stores pad angles absolutely, so the footprint rotation is
 propagated into each pad).
 
+When it finishes, the placed group is **recentred** on its starting position, so
+the footprints don't migrate off the board origin. (The placement cost only cares
+about the parts' positions relative to each other, so the cluster is free to
+wander as a whole during annealing; recentring shifts it rigidly back without
+changing the result. It's skipped when a footprint is locked, since the locks
+already anchor the layout.)
+
 It also keeps footprints clear of **silkscreen text** — both each footprint's own
 visible Reference/Value labels and any standalone board text (`gr_text`, e.g.
 connector pin labels or a title block), so parts aren't dropped on top of existing

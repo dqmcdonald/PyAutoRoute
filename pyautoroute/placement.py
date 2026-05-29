@@ -32,6 +32,11 @@ board. Pad absolute coordinates are kept in sync on every move
 (`pcb.Footprint.sync_pads`) so the energy geometry stays consistent; after the run
 the caller applies `pcb.apply_placement` to finalise the pads and board outline
 before routing.
+
+The energy depends only on the footprints' *relative* poses, so it is
+translation-invariant and an unlocked cluster random-walks (drifts) during the
+run. `place` therefore calls `recenter` before returning, shifting the placement
+rigidly back onto its starting centroid without changing any energy term.
 """
 
 from __future__ import annotations
@@ -692,6 +697,49 @@ class _Placer:
                            self._rats, self._overlap, self._bbox)
 
 
+def recenter(board: Board) -> tuple[float, float]:
+    """Translate the placed footprints back onto their original centroid.
+
+    Placement energy (ratsnest + overlap + bbox-area) is *translation-invariant*:
+    none of its terms depends on where the cluster sits, only on the footprints'
+    relative poses. With nothing locked, the whole group therefore random-walks
+    during annealing and drifts away from the board origin — the more iterations
+    run, the further it migrates. This shifts every movable footprint by a single
+    rigid offset so the movable footprints' centroid returns to where it started,
+    leaving every energy term (and so the placement result) exactly unchanged.
+
+    A rigid translation only restores the original position when the layout is
+    free to move as a whole, so this is a no-op when any footprint is locked:
+    locked footprints are fixed obstacles that anchor the layout in absolute
+    coordinates, so there is no drift to correct and shifting the movable group
+    would only break its alignment with the anchors.
+
+    Args:
+        board: the board whose movable footprints are recentred in place (pads
+            re-synced).
+
+    Returns:
+        The ``(dx, dy)`` offset applied (``(0.0, 0.0)`` when nothing moved, e.g.
+        no movable footprints or any footprint locked).
+    """
+    movable = [fp for fp in board.footprints if fp.pads and not fp.locked]
+    if not movable or any(fp.locked for fp in board.footprints if fp.pads):
+        return 0.0, 0.0
+    n = len(movable)
+    cur_cx = sum(fp.x for fp in movable) / n
+    cur_cy = sum(fp.y for fp in movable) / n
+    orig_cx = sum(fp.x0 for fp in movable) / n
+    orig_cy = sum(fp.y0 for fp in movable) / n
+    dx, dy = orig_cx - cur_cx, orig_cy - cur_cy
+    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+        return 0.0, 0.0
+    for fp in movable:
+        fp.x += dx
+        fp.y += dy
+        fp.sync_pads()
+    return dx, dy
+
+
 def place(board: Board, params: PlaceParams | None = None,
           on_progress=None, runs: int = 1, cancel=None) -> PlaceResult:
     """Place a board's footprints by simulated annealing; return the best seen.
@@ -720,7 +768,9 @@ def place(board: Board, params: PlaceParams | None = None,
     """
     params = params or PlaceParams()
     if runs <= 1:
-        return _Placer(board, params).run(on_progress, cancel)
+        result = _Placer(board, params).run(on_progress, cancel)
+        recenter(board)               # undo translation-invariant drift
+        return result
 
     orig = [(fp, fp.x, fp.y, fp.angle) for fp in board.footprints]
     best: PlaceResult | None = None
@@ -741,4 +791,5 @@ def place(board: Board, params: PlaceParams | None = None,
     for fp, x, y, a in best_poses:               # leave the board at the best
         fp.x, fp.y, fp.angle = x, y, a
         fp.sync_pads()
+    recenter(board)                              # undo translation-invariant drift
     return best
