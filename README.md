@@ -90,7 +90,7 @@ The original file is never modified — a routed copy is written alongside it.
 | `--seed S` | Random seed for the optimiser. |
 | `--snapshots N` | During annealing, save `N` intermediate board snapshots to a `snapshots/` subdir (beside the output), so you can watch the optimisation progress. Requires `--iters` or `--time`. |
 | `--config FILE` | Read options from an INI settings file (see below). Options given on the command line override it. |
-| `--write-config [FILE]` | Write the effective settings to an INI file and exit. Bare `--write-config` writes `<input>.pyautoroute.cfg` beside the board. |
+| `--write-config [FILE]` | Write the effective settings to an INI file and exit. Bare `--write-config` writes `<input>.ini` beside the board — the same file auto-loaded on the next run. |
 | `--log [FILE]` | Write a verbose log of the input parameters and routing/annealing progress. Bare `--log` writes `<output>.log`; `--log FILE` uses the given path. |
 | `--fix-values` | Move footprint **Value** text to the silkscreen layer before routing. KiCad libraries often default to `F.Fab`/`B.Fab` for Value text; this flag moves it to `F.SilkS`/`B.SilkS` so it appears on the physical silkscreen. The fix is applied in-memory and written to the output file. Off by default. Also available as a standalone `pyautoroute-fix --values` command and in the GUI's Advanced settings. |
 | `--debug-plot` | Also write a `.png` render of the routed board. |
@@ -160,9 +160,14 @@ so it doubles as a template):
 
 ```bash
 pyautoroute MyBoard.kicad_pcb --grid 0.2 --time 120 --write-config
-# -> MyBoard.pyautoroute.cfg, then later:
-pyautoroute MyBoard.kicad_pcb --config MyBoard.pyautoroute.cfg
+# -> MyBoard.ini, then later just:
+pyautoroute MyBoard.kicad_pcb        # MyBoard.ini is auto-loaded
 ```
+
+A sibling `<board>.ini` (with a `[pyautoroute]` section) is **auto-loaded**
+whenever you route that board — no `--config` needed — so the bare
+`--write-config` output and the auto-loaded file are the same `<board>.ini`. Use
+`--config FILE` to point at a different file; it overrides the sibling one.
 
 ### Auto-placement (experimental)
 
