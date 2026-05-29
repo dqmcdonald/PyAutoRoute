@@ -5,18 +5,28 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
-## Unreleased (on feature branches)
+## 0.25.3
 
-- **0.25.1 — Vectorised A\* dynamic-copper overlay.** Each reroute previously
+- **Perf: vectorised A\* dynamic-copper overlay.** Each reroute previously
   re-scanned every committed-copper node in Python to mask "blocked by another
   net"; this is now one vectorised numpy op backed by an incrementally-maintained
   per-node owner array. ~1.26× faster annealing on the default (no-flag) path,
-  with identical routes. *(branch `claude/vectorize-astar-overlay`)*
-- **0.25.0 — Optional bounded A\* search (`--search-margin MM`).** Confines each
+  with identical routes.
+
+## 0.25.2
+
+- **Fix: rationalise the config-file extension to `.ini`.** Bare `--write-config`
+  (and the GUI Save dialog) now write `<board>.ini` — the same file auto-loaded on
+  the next run — instead of `<board>.pyautoroute.cfg`. `--config FILE` still
+  accepts any path. Existing `*.pyautoroute.cfg` files are no longer auto-loaded.
+
+## 0.25.0
+
+- **Optional bounded A\* search (`--search-margin MM`).** Confines each
   connection's search (and its precompute) to a box around the endpoints,
   widening and retrying on failure, falling back to the full grid. ~1.2× faster
   greedy routing / annealing on large boards at a small cost to optimality;
-  unset (default) is unchanged. *(PR #22, branch `claude/bounded-astar-search`)*
+  unset (default) is unchanged.
 
 ## 0.24.1
 
