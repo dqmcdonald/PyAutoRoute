@@ -38,6 +38,31 @@ install and run it as a module with any interpreter that has the dependencies:
 python -m pyautoroute.autoroute board.kicad_pcb
 ```
 
+### Optional fast A* (native extension)
+
+The A* maze router has an optional Cython core that runs the inner search loop in
+native code for a roughly 5-20x speedup on larger grids (it produces bit-for-bit
+identical routes). It is entirely optional: without it the router uses its
+optimised pure-Python search and nothing else changes.
+
+To build it, install the `fast` extras (Cython + numpy) and compile the
+extension in place:
+
+```bash
+pip install -e ".[fast]"
+python setup.py build_ext --inplace
+```
+
+Check whether the native core is active:
+
+```python
+import pyautoroute
+print(pyautoroute.HAS_C_ASTAR)   # True once the extension is built
+```
+
+If Cython is unavailable at build time the extension is simply skipped and the
+package installs as pure Python.
+
 ## Usage
 
 ```bash

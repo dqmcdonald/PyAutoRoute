@@ -93,13 +93,32 @@ def bench_astar(n_footprints: int) -> float:
 
 
 def run() -> None:
-    print(f"{'N':>5} {'step ms':>12} {'astar ms':>12}")
-    for n in SIZES:
-        s = bench_anneal_step(n)
-        a = bench_astar(n)
-        print(f"{n:>5} {s * 1e3:>12.2f} {a * 1e3:>12.2f}")
-        assert s < STEP_BUDGET, f"anneal step {s:.4f}s over budget at N={n}"
-        assert a < ASTAR_BUDGET, f"astar call {a:.4f}s over budget at N={n}"
+    has_c = getattr(router, "_USE_C_ASTAR", False)
+    if has_c:
+        # Time both the native and pure-Python A* by toggling the dispatch flag,
+        # so the speedup of the optional Cython core is visible side by side.
+        print(f"{'N':>5} {'step ms':>12} {'astar(C) ms':>12} "
+              f"{'astar(py) ms':>13} {'speedup':>9}")
+        for n in SIZES:
+            s = bench_anneal_step(n)
+            router._USE_C_ASTAR = True
+            a_c = bench_astar(n)
+            router._USE_C_ASTAR = False
+            a_py = bench_astar(n)
+            router._USE_C_ASTAR = True
+            spd = a_py / a_c if a_c else float("inf")
+            print(f"{n:>5} {s * 1e3:>12.2f} {a_c * 1e3:>12.3f} "
+                  f"{a_py * 1e3:>13.3f} {spd:>8.1f}x")
+            assert s < STEP_BUDGET, f"anneal step {s:.4f}s over budget at N={n}"
+            assert a_c < ASTAR_BUDGET, f"astar call {a_c:.4f}s over budget at N={n}"
+    else:
+        print(f"{'N':>5} {'step ms':>12} {'astar ms':>12}")
+        for n in SIZES:
+            s = bench_anneal_step(n)
+            a = bench_astar(n)
+            print(f"{n:>5} {s * 1e3:>12.2f} {a * 1e3:>12.2f}")
+            assert s < STEP_BUDGET, f"anneal step {s:.4f}s over budget at N={n}"
+            assert a < ASTAR_BUDGET, f"astar call {a:.4f}s over budget at N={n}"
     print("OK: all sizes within budget")
 
 
