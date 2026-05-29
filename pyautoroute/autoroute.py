@@ -75,7 +75,8 @@ class Reporter:
             self.stream.write(line + "\n")
 
     def annealing(self, it, total, routed, unrouted, energy, best, temp,
-                  accept) -> None:
+                  accept, *, elapsed: float = 0.0, budget: float = 0.0,
+                  overall_best: float | None = None) -> None:
         """Report an annealing iteration.
 
         Args:
@@ -87,9 +88,15 @@ class Reporter:
             best: best energy seen so far.
             temp: current annealing temperature.
             accept: fraction of recent moves accepted (0..1); falls as T cools.
+            elapsed: seconds elapsed in this run (non-zero enables time display).
+            budget: time budget in seconds.
+            overall_best: best energy across all runs so far (shown when > 1 run).
         """
-        msg = (f"{self.tag}anneal {it}/{total}  T={temp:5.2f}  E={energy:7.1f}  "
-               f"best={best:7.1f}  acc={accept*100:3.0f}%  "
+        iter_str = (f"{max(0.0, budget - elapsed):.0f}s rem"
+                    if budget > 0 else f"{it}/{total}")
+        ob_str = (f"  ob={overall_best:7.1f}" if overall_best is not None else "")
+        msg = (f"{self.tag}anneal {iter_str}  T={temp:5.2f}  E={energy:7.1f}  "
+               f"best={best:7.1f}{ob_str}  acc={accept*100:3.0f}%  "
                f"routed={routed} failed={unrouted}")
         if it % 25 == 0:
             self.log(msg)
@@ -101,7 +108,9 @@ class Reporter:
         elif it % 25 == 0:
             self.stream.write(line + "\n")
 
-    def placing(self, it, total, energy, best, temp, accept) -> None:
+    def placing(self, it, total, energy, best, temp, accept,
+               *, elapsed: float = 0.0, budget: float = 0.0,
+               overall_best: float | None = None) -> None:
         """Report a placement-annealing iteration.
 
         Args:
@@ -111,9 +120,15 @@ class Reporter:
             best: best energy seen so far.
             temp: current annealing temperature.
             accept: fraction of recent moves accepted (0..1); falls as T cools.
+            elapsed: seconds elapsed in this run (non-zero enables time display).
+            budget: time budget in seconds.
+            overall_best: best energy across all runs so far (shown when > 1 run).
         """
-        msg = (f"{self.tag}place {it}/{total}  T={temp:5.2f}  E={energy:8.1f}  "
-               f"best={best:8.1f}  acc={accept*100:3.0f}%")
+        iter_str = (f"{max(0.0, budget - elapsed):.0f}s rem"
+                    if budget > 0 else f"{it}/{total}")
+        ob_str = (f"  ob={overall_best:8.1f}" if overall_best is not None else "")
+        msg = (f"{self.tag}place {iter_str}  T={temp:5.2f}  E={energy:8.1f}  "
+               f"best={best:8.1f}{ob_str}  acc={accept*100:3.0f}%")
         if it % 25 == 0:
             self.log(msg)
         if self.quiet:
@@ -406,6 +421,8 @@ def run(args: argparse.Namespace) -> int:
         place_runs = max(1, args.place_runs)
         _place_run_idx = [0]
         _place_last_it = [-1]
+        _place_run_t0 = [time.monotonic()]
+        _place_overall_best = [float("inf")]
         n_fps = len(board.footprints)
         run_tag = f"run 1/{place_runs}: " if place_runs > 1 else ""
         rep.tag = run_tag
@@ -414,11 +431,17 @@ def run(args: argparse.Namespace) -> int:
         def _on_place(it, total, energy, best, temp, accept):
             if _place_last_it[0] >= 0 and it < _place_last_it[0]:
                 _place_run_idx[0] += 1
+                _place_run_t0[0] = time.monotonic()
                 tag = f"run {_place_run_idx[0] + 1}/{place_runs}: "
                 rep.tag = tag
                 rep.phase(f"{tag}placing {n_fps} footprints (annealing)")
             _place_last_it[0] = it
-            rep.placing(it, total, energy, best, temp, accept)
+            if best < _place_overall_best[0]:
+                _place_overall_best[0] = best
+            elapsed = time.monotonic() - _place_run_t0[0]
+            rep.placing(it, total, energy, best, temp, accept,
+                        elapsed=elapsed, budget=args.place_time or 0.0,
+                        overall_best=_place_overall_best[0] if place_runs > 1 else None)
 
         pp = placement.PlaceParams(
             iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
@@ -530,6 +553,15 @@ def run(args: argparse.Namespace) -> int:
     best_energy = float("inf")
     final_results = None
     routed = unrouted = length = vias = 0
+    _anneal_t0 = [0.0]
+
+    def _on_anneal(it, total, r, u, energy, best, temp, accept):
+        elapsed = time.monotonic() - _anneal_t0[0]
+        ob = best_energy if runs > 1 and best_energy < float("inf") else None
+        rep.annealing(it, total, r, u, energy, best, temp, accept,
+                      elapsed=elapsed, budget=args.time_budget or 0.0,
+                      overall_best=ob)
+
     for k in range(runs):
         tag = f"run {k + 1}/{runs}: " if runs > 1 else ""
         rep.tag = tag
@@ -543,13 +575,14 @@ def run(args: argparse.Namespace) -> int:
 
         if annealing:
             rep.phase(f"{tag}annealing (rip-up & reroute)")
+            _anneal_t0[0] = time.monotonic()
             ap = anneal.AnnealParams(iters=args.iters, time_budget=args.time_budget,
                                      seed=args.seed + k, snapshots=snap_n,
                                      unrouted_weight=args.unrouted_weight,
                                      t_start=args.anneal_temps[0], t_end=args.anneal_temps[1],
                                      route_params=params)
             aout = anneal.anneal(state, conns, list(result.results), ap,
-                                 on_progress=rep.annealing,
+                                 on_progress=_on_anneal,
                                  on_snapshot=on_snapshot if snap_n else None)
             rep.done()
             run_results = aout.results
