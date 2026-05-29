@@ -58,11 +58,14 @@
             <ul>
                     <li><a href="pyautoroute/anneal.html">anneal</a></li>
                     <li><a href="pyautoroute/autoroute.html">autoroute</a></li>
+                    <li><a href="pyautoroute/fixup.html">fixup</a></li>
                     <li><a href="pyautoroute/geometry.html">geometry</a></li>
                     <li><a href="pyautoroute/grid.html">grid</a></li>
+                    <li><a href="pyautoroute/gui.html">gui</a></li>
                     <li><a href="pyautoroute/netlist.html">netlist</a></li>
                     <li><a href="pyautoroute/pcb.html">pcb</a></li>
                     <li><a href="pyautoroute/placement.html">placement</a></li>
+                    <li><a href="pyautoroute/report.html">report</a></li>
                     <li><a href="pyautoroute/router.html">router</a></li>
                     <li><a href="pyautoroute/rules.html">rules</a></li>
                     <li><a href="pyautoroute/sexpr.html">sexpr</a></li>
@@ -165,7 +168,7 @@ KiCad defaults when no project file is present. Handles both name-only nets
 
 <p>Loads the board into a <code>Board</code>: copper layer stack, every <code>Pad</code> with <strong>absolute</strong>
 position/rotation/shape/layers/net, the per-footprint grouping, free (dangling)
-vias, existing segments and zones, and the Edge.Cuts outline shapes. Two file
+vias, existing segments and zones (with a <code>fill_enabled</code> flag for copper fills), and the Edge.Cuts outline shapes. Two file
 conventions are handled transparently:</p>
 
 <ul>
@@ -188,11 +191,12 @@ edits. When placement has run, two helpers prepare the tree first:
 <code>apply_placement</code> pushes the moved poses into the pads and replaces <code>Board.outline</code>
 with a margin-grown bounding rectangle, and <code>sync_tree_from_placement</code> rewrites each
 moved footprint's <code>(at …)</code> node (clearing its span so only that line changes) and
-swaps the Edge.Cuts graphics for a single generated <code>gr_rect</code>. For a footprint that
-was <strong>rotated</strong>, <code>_rotate_pad_nodes</code> also adds the rotation delta to each pad's
-<code>(at …)</code> angle: KiCad stores pad angles <em>absolutely</em>, so without this a rotated
-footprint's pads would reload in their old orientation — mis-orienting rectangular
-pads and failing DRC.</p>
+swaps the Edge.Cuts graphics for a single generated <code>gr_rect</code>. For a footprint that was <strong>rotated</strong>, <code>_rotate_pad_nodes</code> adds the rotation delta
+to each pad's <code>(at …)</code> angle — KiCad stores pad angles <em>absolutely</em>, so without
+this a rotated footprint's pads would reload in their old orientation, mis-orienting
+rectangular pads and failing DRC. The symmetric <code>_rotate_text_nodes</code> does the same
+for <code>fp_text</code> and <code>property</code> <code>(at …)</code> angles so silkscreen labels also rotate with
+the footprint in the written file.</p>
 
 <h3 id="geometrypy-shapes-self-check"><code>geometry.py</code> — shapes &amp; self-check</h3>
 
@@ -309,6 +313,26 @@ the write. The whole stage is transparent to the router, which already consumes
 <code>--place-overlap-weight</code>, <code>--place-compact-weight</code>; <code>--seed</code> is shared.</li>
 </ul>
 
+<p><strong>Silkscreen text in body boxes.</strong> <code>_fp_silk_text_extents</code> pre-computes a list of
+<code>(local_x, local_y, half_diag)</code> for each visible, non-hidden silkscreen text item
+(<code>property "Reference"</code> / <code>"Value"</code> and <code>fp_text</code> on <code>F.SilkS</code> / <code>B.SilkS</code>)
+in a footprint. <code>_fp_box</code> transforms these local positions to board coordinates
+using the footprint's current pose and extends the AABB to cover them (using a
+rotation-invariant circular half-diagonal estimate). This means the overlap penalty
+also pushes <em>text labels</em> apart — footprints won't be placed so close that their
+Reference or Value silkscreen text overlaps a neighbour.</p>
+
+<p><strong>Board-level silkscreen text.</strong> Top-level <code>gr_text</code> items (connector pin labels, a
+title block, "Bus Indicator" — silkscreen annotations that aren't part of any
+footprint) are not in <code>Board.footprints</code>, so the placer would otherwise drop a
+footprint straight on top of them. <code>_board_silk_text_boxes</code> scans the board tree
+once for each visible, non-hidden silk <code>gr_text</code>, estimating its extent the same way
+as footprint text (centre + half-diagonal, honouring the <code>at</code> angle and <code>justify</code>
+anchor). These become <em>static</em> keep-out boxes (an <code>STRtree</code>), and
+<code>_fixed_text_overlap</code> adds each footprint's intersection with them into the same
+<code>overlap_weight</code> term — so footprints are pushed clear of fixed silkscreen text.
+<code>overlap_ok</code> footprints (meant to sit over the board) are exempt.</p>
+
 <h3 id="autoroutepy-cli-orchestration"><code>autoroute.py</code> — CLI &amp; orchestration</h3>
 
 <p><strong>Settings file.</strong> <code>--config FILE</code> is resolved by a throwaway pre-parser that reads
@@ -383,6 +407,24 @@ small <code>--auto-probe-time</code> budget), then sets <code>--grid</code>/<cod
 to confirm on a TTY (<code>--auto-yes</code> skips). See <a href="tuning.md"><code>tuning.md</code></a> for the
 method and roadmap. <code>tune</code> imports <code>default_pitch</code> from <code>autoroute</code>, so <code>autoroute</code>
 imports <code>tune</code> lazily (inside <code>--auto</code>) to avoid a cycle.</p>
+
+<h3 id="fixuppy-board-fixup-cli"><code>fixup.py</code> — board fixup CLI</h3>
+
+<p><code>pyautoroute-fix</code> corrects footprint-level issues that don't affect routing but
+matter for fabrication.  Currently one operation:</p>
+
+<ul>
+<li><strong><code>--values</code></strong> — calls <code>pcb.fix_value_layers(board)</code>, which walks every
+<code>(property "Value" ...)</code> (KiCad 7+) and <code>(fp_text value ...)</code> (KiCad 6)
+node in the board tree.  For each node not already on a silkscreen layer
+the <code>(layer ...)</code> atom is replaced with the front or back silk name (<code>F.SilkS</code>
+/ <code>B.SilkS</code>, discovered from the board's own layer table) that matches the
+footprint's side.  Span invalidation on the changed <code>layer</code>, <code>property</code>,
+and <code>footprint</code> nodes ensures <code>write_board</code> re-serializes only those subtrees.</li>
+</ul>
+
+<p><code>--dry-run</code> reports what would change without writing.  <code>-o OUT</code> writes to a
+separate output path instead of overwriting the input.</p>
 
 <h3 id="pyautoroutesh-helper-menu"><code>pyautoroute.sh</code> — helper menu</h3>
 
@@ -498,7 +540,7 @@ button (the SA runs on a worker thread; see <code>docs/gui-plan.md</code>).</li>
 <li><code>test_pcb</code> — pad absolute position/rotation, both net formats, writer no-op byte-identity, free-via stripping, segment append.</li>
 <li><code>test_rules</code>, <code>test_geometry</code>, <code>test_grid</code>, <code>test_netlist</code>, <code>test_router</code> — per-module behaviour (occupancy semantics, via crossing, diagonal preference, exact rip-up).</li>
 <li><code>test_anneal</code> — best energy never worsens; routing stays clean after annealing.</li>
-<li><code>test_placement</code> — placement energy never worsens; locked footprints stay put; bodies separate while <code>Autoroute=overlap</code> parts may overlap (pads kept apart); lock/property parsing and the footprint-<code>(at)</code> + Edge.Cuts tree rewrite round-trip.</li>
+<li><code>test_placement</code> — placement energy never worsens; locked footprints stay put; bodies separate while <code>Autoroute=overlap</code> parts may overlap (pads kept apart); lock/property parsing and the footprint-<code>(at)</code> + Edge.Cuts tree rewrite round-trip; silkscreen text extents returned by <code>_fp_silk_text_extents</code> and included in <code>_fp_box</code>.</li>
 <li><code>test_endtoend</code> — routes a synthetic board with a <strong><code>gr_line</code> outline</strong> (generality) and <code>--exclude-net</code>, asserting zero clearance violations via the self-check.</li>
 <li><code>test_boards</code> — parametrized over every board in <code>TestProjects/</code> (ids <code>Test1</code>..<code>Test5</code>; hidden stray files like <code>.kicad_pcb.kicad_pcb</code> are skipped): parse, round-trip, writer no-op, outline/pads-inside, and a routing self-check. Routing the large boards (&gt;30 pads) is skipped by default and enabled with <code>pytest --slow</code> (defined in <code>conftest.py</code>).</li>
 </ul>
@@ -510,7 +552,7 @@ integration tests and validated end-to-end with <code>kicad-cli pcb drc</code>.<
 
 <ul>
 <li><strong>Two layers only.</strong> The stack is read generically but routing assumes F.Cu/B.Cu.</li>
-<li><strong>No copper pours.</strong> Zones are obstacles + same-net connectivity, not regenerated.</li>
+<li><strong>Copper fills.</strong> Zones with <code>(fill yes …)</code> are auto-detected: their net is excluded from routing and placement, and the zone polygon is skipped in <code>board_obstacles</code> (it is not a routing obstacle). After writing the output board, <code>pcb.try_refill_zones</code> invokes <code>kicad-cli pcb drc --refill-zones --save-board</code> to regenerate the pour; if <code>kicad-cli</code> is not available the user is prompted to refill manually in KiCad. Zones without <code>fill yes</code> (e.g. keepouts, teardrops) are still treated as obstacles.</li>
 <li><strong>Custom pads</strong> are approximated by their bounding box.</li>
 <li><strong>Conservative clearance for mixed net-class boards.</strong> The single global inflation margin uses the maximum track/clearance across classes; exact per-net masks would route denser mixed-rule boards.</li>
 <li><strong>Hole-to-hole</strong> is approximated by copper clearance rather than checked explicitly.</li>

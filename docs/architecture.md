@@ -205,6 +205,17 @@ rotation-invariant circular half-diagonal estimate). This means the overlap pena
 also pushes *text labels* apart — footprints won't be placed so close that their
 Reference or Value silkscreen text overlaps a neighbour.
 
+**Board-level silkscreen text.** Top-level `gr_text` items (connector pin labels, a
+title block, "Bus Indicator" — silkscreen annotations that aren't part of any
+footprint) are not in `Board.footprints`, so the placer would otherwise drop a
+footprint straight on top of them. `_board_silk_text_boxes` scans the board tree
+once for each visible, non-hidden silk `gr_text`, estimating its extent the same way
+as footprint text (centre + half-diagonal, honouring the `at` angle and `justify`
+anchor). These become *static* keep-out boxes (an `STRtree`), and
+`_fixed_text_overlap` adds each footprint's intersection with them into the same
+`overlap_weight` term — so footprints are pushed clear of fixed silkscreen text.
+`overlap_ok` footprints (meant to sit over the board) are exempt.
+
 ### `autoroute.py` — CLI & orchestration
 **Settings file.** `--config FILE` is resolved by a throwaway pre-parser that reads
 only `--config`; its `[pyautoroute]` values are coerced to each option's type

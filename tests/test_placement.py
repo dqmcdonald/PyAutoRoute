@@ -371,3 +371,73 @@ def test_fp_box_grows_to_include_silk_text():
     # The Reference label is at local (0, -6) — which is board (10, 4) after
     # translation; its half_diag > 0, so the box must reach below y=4.
     assert b.bounds[1] < 4.0   # miny well below the text centre
+
+
+# --- board-level silkscreen text (gr_text) -----------------------------------
+
+def test_board_silk_text_boxes_parsed():
+    """_board_silk_text_boxes returns visible silk gr_text and skips others."""
+    text = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+        '  (5 "F.SilkS" user "F.Silkscreen"))'
+        ' (gr_text "GND" (at 20 30 0) (layer "F.SilkS")'
+        '  (effects (font (size 1.5 1.5)) (justify left bottom)))'
+        ' (gr_text "Fab" (at 5 5 0) (layer "F.Fab")'          # not silk → ignored
+        '  (effects (font (size 1 1))))'
+        ' (gr_text "Hidden" (at 8 8 0) (layer "F.SilkS") (hide yes)'
+        '  (effects (font (size 1 1)))))'
+    )
+    board = _board_from_text(text)
+    from pyautoroute.placement import _board_silk_text_boxes
+    boxes = _board_silk_text_boxes(board)
+    assert len(boxes) == 1                       # only the visible silk text
+    cx, cy, hr = boxes[0]
+    assert hr > 0.0
+    # justify left/bottom puts the anchor at the box's left/bottom (y-down),
+    # so the centre is to the right of and above the (20, 30) anchor.
+    assert cx > 20.0 and cy < 30.0
+
+
+def test_place_avoids_board_silk_text():
+    """A movable footprint is pushed off a fixed board-level silk label."""
+    text = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+        '  (5 "F.SilkS" user "F.Silkscreen"))'
+        ' (gr_text "LABEL" (at 40 40 0) (layer "F.SilkS")'
+        '  (effects (font (size 3 3))))'
+        ' (footprint "Lib:R" (layer "F.Cu") (at 40 40 0)'      # sits on the text
+        '  (pad "1" smd rect (at -1 0) (size 1 1) (layers "F.Cu") (net "A"))'
+        '  (pad "2" smd rect (at 1 0) (size 1 1) (layers "F.Cu") (net "B")))'
+        ' (footprint "Lib:R" (layer "F.Cu") (at 60 60 0)'      # gives net pull
+        '  (pad "1" smd rect (at -1 0) (size 1 1) (layers "F.Cu") (net "A"))'
+        '  (pad "2" smd rect (at 1 0) (size 1 1) (layers "F.Cu") (net "B"))))'
+    )
+    board = _board_from_text(text)
+    from pyautoroute.placement import _Placer, PlaceParams
+
+    placer = _Placer(board, PlaceParams(iters=1, seed=0))
+    before = placer._fixed_text_overlap([placer._fp_box(fp) for fp in placer.boxed])
+    assert before > 0.0                          # starts overlapping the label
+
+    placement.place(board, PlaceParams(iters=3000, seed=0))
+    placer = _Placer(board, PlaceParams(iters=1, seed=0))
+    after = placer._fixed_text_overlap([placer._fp_box(fp) for fp in placer.boxed])
+    assert after < before                        # placement moved it off the text
+
+
+def test_overlap_ok_exempt_from_board_silk_text():
+    """An overlap_ok footprint contributes no fixed-text overlap penalty."""
+    text = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+        '  (5 "F.SilkS" user "F.Silkscreen"))'
+        ' (gr_text "LABEL" (at 40 40 0) (layer "F.SilkS")'
+        '  (effects (font (size 3 3))))'
+        ' (footprint "Lib:SH" (layer "F.Cu") (at 40 40 0)'
+        '  (property "Autoroute" "overlap" (at 0 0 0) (layer "F.Fab"))'
+        '  (pad "1" smd rect (at -1 0) (size 1 1) (layers "F.Cu") (net "A"))))'
+    )
+    board = _board_from_text(text)
+    from pyautoroute.placement import _Placer, PlaceParams
+    placer = _Placer(board, PlaceParams(iters=1, seed=0))
+    boxes = [placer._fp_box(fp) for fp in placer.boxed]
+    assert placer._fixed_text_overlap(boxes) == 0.0

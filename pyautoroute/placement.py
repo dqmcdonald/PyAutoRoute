@@ -16,7 +16,10 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
   (this is the fix for placements packing so tightly that the routed board failed
   DRC). A pair where either footprint opted in via the ``Autoroute=overlap``
   property (`pcb.Footprint.overlap_ok`) contributes only its *pad-vs-pad* overlap
-  (also buffer-inflated), not body overlap — the shield-over-board case.
+  (also buffer-inflated), not body overlap — the shield-over-board case. Each
+  footprint box also covers its visible silkscreen text, and standalone
+  board-level silk text (``gr_text`` pin labels, title block) is added as fixed
+  keep-out boxes, so footprints aren't placed on top of existing silkscreen.
 - **bbox_area** — area of the bounding box of all footprints; compaction emerges
   from this term under cooling, with no separate phase.
 
@@ -125,6 +128,69 @@ def _fp_silk_text_extents(fp: Footprint) -> list[tuple[float, float, float]]:
     return extents
 
 
+def _board_silk_text_boxes(board: Board) -> list[tuple[float, float, float]]:
+    """Return ``(cx, cy, half_diag)`` for each visible board-level silk text.
+
+    Board-level ``gr_text`` items — connector pin labels, a title block, etc. —
+    are not footprints, so the placer would otherwise ignore them and happily
+    drop a footprint on top (the locked "Bus Indicator" / pin-label text on the
+    Test1 board). Each tuple is the text's centre and a rotation-invariant
+    half-diagonal radius of its extent, in board coordinates, mirroring the
+    estimate `_fp_silk_text_extents` uses for footprint text, so footprints can
+    be pushed clear of the text.
+
+    Args:
+        board: the board whose top-level ``gr_text`` nodes are scanned.
+
+    Returns:
+        One tuple per visible, non-hidden silkscreen ``gr_text`` on the board.
+    """
+    from .pcb import children, child, strings, floats, atoms_after_head
+
+    out: list[tuple[float, float, float]] = []
+    for txt in children(board.tree, "gr_text"):
+        h = child(txt, "hide")
+        if h is not None:
+            vals = atoms_after_head(h)
+            if vals and vals[0].text == "yes":
+                continue
+        ls = strings(child(txt, "layer"))
+        if not ls or ls[0] not in _SILK_LAYERS:
+            continue
+        atoms = atoms_after_head(txt)
+        if not atoms:
+            continue
+        content = atoms[0].text
+        at = floats(child(txt, "at"))
+        if not content or len(at) < 2:
+            continue
+        x, y, angle = at[0], at[1], (at[2] if len(at) >= 3 else 0.0)
+
+        fh = 1.0
+        eff = child(txt, "effects")
+        fnt = child(eff, "font") if eff is not None else None
+        sz = child(fnt, "size") if fnt is not None else None
+        szv = floats(sz) if sz is not None else []
+        if szv:
+            fh = szv[0]
+
+        # Estimate the unrotated text extent, then offset the box centre from
+        # the `at` anchor per the justify (KiCad's `at` is an edge/corner when
+        # justified, the centre otherwise); y grows downward.
+        w = len(content) * fh * 0.7
+        th = fh * 1.3
+        just_node = child(eff, "justify") if eff is not None else None
+        just = {a.text for a in atoms_after_head(just_node)} if just_node else set()
+        dx = 0.5 * w if "left" in just else (-0.5 * w if "right" in just else 0.0)
+        dy = -0.5 * th if "bottom" in just else (0.5 * th if "top" in just else 0.0)
+        cos_a = math.cos(math.radians(angle))
+        sin_a = math.sin(math.radians(angle))
+        cx = x + dx * cos_a + dy * sin_a
+        cy = y - dx * sin_a + dy * cos_a
+        out.append((cx, cy, 0.5 * math.hypot(w, th)))
+    return out
+
+
 @dataclass
 class PlaceParams:
     iters: int | None = None
@@ -185,6 +251,14 @@ class _Placer:
         self._text_extents: dict[int, list[tuple[float, float, float]]] = {
             id(fp): _fp_silk_text_extents(fp) for fp in self.boxed
         }
+        # Fixed board-level silkscreen text (pin labels, title block): static
+        # keep-out boxes footprints must avoid, so they aren't dropped on top.
+        self._fixed_text = [
+            box(cx - hr - self.half_buffer, cy - hr - self.half_buffer,
+                cx + hr + self.half_buffer, cy + hr + self.half_buffer)
+            for cx, cy, hr in _board_silk_text_boxes(board)
+        ]
+        self._fixed_tree = STRtree(self._fixed_text) if self._fixed_text else None
 
     def _fp_box(self, fp: Footprint):
         """Buffer-inflated axis-aligned body box of a footprint.
@@ -251,12 +325,35 @@ class _Placer:
                     total += bi.intersection(boxes[j]).area
         return total
 
+    def _fixed_text_overlap(self, boxes) -> float:
+        """Overlap (mm²) between footprint boxes and fixed board silk text.
+
+        Args:
+            boxes: per-footprint body boxes, parallel to ``self.boxed``.
+
+        Returns:
+            Total intersection area of each footprint box with the static
+            board-level silkscreen text boxes. ``overlap_ok`` footprints (which
+            are meant to sit over the board) are exempt.
+        """
+        if self._fixed_tree is None:
+            return 0.0
+        total = 0.0
+        for i, bi in enumerate(boxes):
+            if self.boxed[i].overlap_ok:
+                continue
+            for j in self._fixed_tree.query(bi):
+                t = self._fixed_text[j]
+                if bi.intersects(t):
+                    total += bi.intersection(t).area
+        return total
+
     def _energy_components(self) -> tuple[float, float, float]:
         """Return the ``(ratsnest, overlap_area, bbox_area)`` energy terms."""
         rats = sum(c.est_length
                    for c in netlist.build_connections(self.board, self.p.exclude))
         boxes = [self._fp_box(fp) for fp in self.boxed]
-        overlap = self._overlap_area(boxes)
+        overlap = self._overlap_area(boxes) + self._fixed_text_overlap(boxes)
         if boxes:
             minx = min(b.bounds[0] for b in boxes)
             miny = min(b.bounds[1] for b in boxes)

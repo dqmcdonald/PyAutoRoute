@@ -149,6 +149,11 @@ stays DRC-clean. Rotated footprints keep their pads correctly oriented in the
 output (KiCad stores pad angles absolutely, so the footprint rotation is
 propagated into each pad).
 
+It also keeps footprints clear of **silkscreen text** — both each footprint's own
+visible Reference/Value labels and any standalone board text (`gr_text`, e.g.
+connector pin labels or a title block), so parts aren't dropped on top of existing
+silkscreen annotations. (`Autoroute = overlap` footprints, below, are exempt.)
+
 Two footprint attributes steer it:
 
 - **Locked footprints stay put.** Lock a footprint in KiCad (it stores `(locked
