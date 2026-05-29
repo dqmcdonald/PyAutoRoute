@@ -112,7 +112,7 @@ class Reporter:
             temp: current annealing temperature.
             accept: fraction of recent moves accepted (0..1); falls as T cools.
         """
-        msg = (f"place {it}/{total}  T={temp:5.2f}  E={energy:8.1f}  "
+        msg = (f"{self.tag}place {it}/{total}  T={temp:5.2f}  E={energy:8.1f}  "
                f"best={best:8.1f}  acc={accept*100:3.0f}%")
         if it % 25 == 0:
             self.log(msg)
@@ -401,17 +401,33 @@ def run(args: argparse.Namespace) -> int:
         print(f"  initial board: {init.summary()}")
 
     if args.place or args.place_only:
-        rep.phase(f"placing {len(board.footprints)} footprints (annealing)")
         if args.place_buffer is None:
             args.place_buffer = default_place_buffer(rules)
         place_runs = max(1, args.place_runs)
+        _place_run_idx = [0]
+        _place_last_it = [-1]
+        n_fps = len(board.footprints)
+        run_tag = f"run 1/{place_runs}: " if place_runs > 1 else ""
+        rep.tag = run_tag
+        rep.phase(f"{run_tag}placing {n_fps} footprints (annealing)")
+
+        def _on_place(it, total, energy, best, temp, accept):
+            if _place_last_it[0] >= 0 and it < _place_last_it[0]:
+                _place_run_idx[0] += 1
+                tag = f"run {_place_run_idx[0] + 1}/{place_runs}: "
+                rep.tag = tag
+                rep.phase(f"{tag}placing {n_fps} footprints (annealing)")
+            _place_last_it[0] = it
+            rep.placing(it, total, energy, best, temp, accept)
+
         pp = placement.PlaceParams(
             iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
             exclude=args.exclude_net, overlap_weight=args.place_overlap_weight,
             compact_weight=args.place_compact_weight, buffer=args.place_buffer,
             t_start=args.place_temps[0], t_end=args.place_temps[1],
             step=args.place_step, rotate_mode=args.place_rotate)
-        pout = placement.place(board, pp, on_progress=rep.placing, runs=place_runs)
+        pout = placement.place(board, pp, on_progress=_on_place, runs=place_runs)
+        rep.tag = ""
         pcb.apply_placement(board, margin=args.place_margin)
         pcb.sync_tree_from_placement(board)
         rep.done()
