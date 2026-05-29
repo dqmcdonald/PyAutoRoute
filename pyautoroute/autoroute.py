@@ -402,6 +402,16 @@ def run(args: argparse.Namespace) -> int:
     board = pcb.load_board(input_path)
     if board.outline_synthesized:
         print("  note: no Edge.Cuts outline found — default bounding-box outline added")
+
+    fill_nets = pcb.zone_fill_nets(board)
+    if fill_nets:
+        current_excludes = list(args.exclude_net or [])
+        for n in sorted(fill_nets):
+            if n not in current_excludes:
+                current_excludes.append(n)
+                print(f"  fill zone:     auto-excluding net '{n}' (has copper pour)")
+        args.exclude_net = current_excludes
+
     rules = load_rules(pro_path)
     pitch = args.grid if args.grid else default_pitch(rules)
 
@@ -474,6 +484,14 @@ def run(args: argparse.Namespace) -> int:
         rep.phase("writing placed board")
         _stamp(board, "placed")
         pcb.write_board(board, out_path, new_nodes=None, strip_free_vias=True)
+        if fill_nets:
+            ok = pcb.try_refill_zones(out_path)
+            if ok:
+                rep.log("zones refilled via kicad-cli")
+                print("  zones:         copper fill refilled (kicad-cli)")
+            else:
+                rep.log("zone refill skipped — kicad-cli not found or failed")
+                print("  note: kicad-cli not available; open in KiCad to refill copper zones")
         placed_board = pcb.load_board(out_path)
         violations = geometry.clearance_violations(placed_board, rules)
         rep.done()
@@ -621,6 +639,15 @@ def run(args: argparse.Namespace) -> int:
     pcb.write_board(board, out_path,
                     new_nodes=_results_to_nodes(board, grid, final_results),
                     strip_free_vias=True)
+
+    if fill_nets:
+        ok = pcb.try_refill_zones(out_path)
+        if ok:
+            rep.log("zones refilled via kicad-cli")
+            print("  zones:         copper fill refilled (kicad-cli)")
+        else:
+            rep.log("zone refill skipped — kicad-cli not found or failed")
+            print("  note: kicad-cli not available; open in KiCad to refill copper zones")
 
     # reload the written board and self-check clearances
     routed_board = pcb.load_board(out_path)

@@ -263,3 +263,55 @@ def test_rotate_text_nodes_updates_fp_text_and_property():
         at_vals = floats(child(prop_node, "at"))
         assert len(at_vals) >= 3
         assert abs(at_vals[2] - 90.0) < 1e-6, f"property angle {at_vals[2]} != 90"
+
+
+# --- fill zone tests ---------------------------------------------------------
+
+_BOARD_WITH_FILL_ZONE = (
+    '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
+    ' (net "GND") (net "VCC")'
+    ' (zone (net "GND") (layer "B.Cu")'
+    '  (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5))'
+    '  (polygon (pts (xy 0 0) (xy 10 0) (xy 10 10) (xy 0 10))))'
+    ' (zone (net "VCC") (layer "F.Cu")'
+    '  (fill no)'
+    '  (polygon (pts (xy 0 0) (xy 10 0) (xy 10 10) (xy 0 10)))))'
+)
+
+_BOARD_NO_FILL_ZONE = (
+    '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
+    ' (net "GND")'
+    ' (zone (net "GND") (layer "B.Cu")'
+    '  (polygon (pts (xy 0 0) (xy 10 0) (xy 10 10) (xy 0 10)))))'
+)
+
+
+def test_zone_fill_enabled_parsed():
+    board = _board_from_text(_BOARD_WITH_FILL_ZONE)
+    assert len(board.zones) == 2
+    gnd_zone = next(z for z in board.zones if z["net"] == "GND")
+    vcc_zone = next(z for z in board.zones if z["net"] == "VCC")
+    assert gnd_zone["fill_enabled"] is True
+    assert vcc_zone["fill_enabled"] is False
+
+
+def test_zone_fill_nets_returns_only_filled():
+    board = _board_from_text(_BOARD_WITH_FILL_ZONE)
+    assert pcb.zone_fill_nets(board) == {"GND"}
+
+
+def test_zone_fill_nets_empty_when_no_fill():
+    board = _board_from_text(_BOARD_NO_FILL_ZONE)
+    assert pcb.zone_fill_nets(board) == set()
+
+
+def test_fill_zone_not_in_obstacles():
+    from pyautoroute.geometry import board_obstacles
+    board = _board_from_text(_BOARD_WITH_FILL_ZONE)
+    obs = board_obstacles(board)
+    # GND zone has fill_enabled → should not appear as an obstacle
+    gnd_obs = [o for o in obs if o.net == "GND"]
+    assert gnd_obs == [], "filled zone should not be an obstacle"
+    # VCC zone has fill_enabled=False → should appear as an obstacle (layer is in copper_layers)
+    vcc_obs = [o for o in obs if o.net == "VCC"]
+    assert len(vcc_obs) == 1, "unfilled zone should be an obstacle"

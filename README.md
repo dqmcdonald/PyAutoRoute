@@ -228,7 +228,7 @@ as attached to the pad and keeps it connected when you move the footprint.
 ## Limitations (v1)
 
 - Two copper layers only (F.Cu / B.Cu).
-- No copper-pour generation. Existing zones are treated as obstacles and same-net connectivity, not regenerated.
+- Copper fills (zones with `fill yes`) are automatically detected: their net is excluded from routing and placement scoring, and the zone polygon is not treated as a routing obstacle. After writing the output board, PyAutoRoute tries to refill the zones using `kicad-cli` if it is installed; otherwise it prints a note to open the board in KiCad and run _Edit → Fill All Zones_ manually.
 - Custom-shaped pads are approximated by their bounding box.
 - Runtime is dominated by a few long/awkward nets; a finer `--grid` improves coverage but is slower.
 - The optimiser improves length and via count; it does not guarantee a global optimum.
