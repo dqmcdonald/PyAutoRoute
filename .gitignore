@@ -25,9 +25,12 @@ venv/
 fp-info-cache
 
 # Generated autorouter output
+*_placed.kicad_pcb
+*_placed.png
 *_routed.kicad_pcb
 *_routed.png
 *_routed.log
+*.log
 snapshots/
 
 
