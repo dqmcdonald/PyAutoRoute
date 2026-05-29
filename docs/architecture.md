@@ -159,6 +159,10 @@ routing is kept. Because the router is DRC-clean by construction, there is no
 violation term. The energy/schedule knobs exposed on the CLI are `--via-weight`,
 `--unrouted-weight`, and `--anneal-temps START END`; `rip_neighbours` and the
 A* bend/via cost weights remain `AnnealParams`/`RouteParams` defaults.
+Optional **stall detection** (`AnnealParams.stall_ratio`/`stall_patience`, off by
+default) breaks the loop early when the windowed acceptance ratio stays below
+`stall_ratio` for `stall_patience` consecutive accept-windows, still returning the
+best routing.
 
 ### `placement.py` — optional footprint placement
 The placement analogue of `anneal.py`, enabled by `--place`. Simulated annealing
@@ -173,7 +177,10 @@ placement. Energy
 `E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area`:
 
 - **ratsnest** — total MST length over pad centroids, reusing `netlist`
-  (`build_connections` + `Connection.est_length`), recomputed per evaluation.
+  (`build_connections` + `Connection.est_length`). The connection topology is
+  fixed for the run, so it is built once and only the lengths of connections
+  incident on a moved footprint are recomputed per move (see incremental energy
+  below).
 - **overlap_area** — pairwise intersection of footprint body boxes via a shapely
   `STRtree` (as in `geometry.clearance_violations`). Each box is grown by half of
   `--place-buffer` per side, so a pair counts as overlapping until its gap exceeds
@@ -185,6 +192,16 @@ placement. Energy
   footprints are immovable obstacles included in the overlap term.
 - **bbox_area** — area of the bounding box of all footprints; compaction emerges
   from this term under cooling, with no separate phase.
+
+**Incremental energy.** The energy is cached and updated per move rather than
+recomputed wholesale: `_rebuild_cache` does the one-time full pass (and runs again
+only at the final report), while `_move_delta` updates just the parts a move can
+change — the lengths of connections incident on the moved footprint(s), those
+footprints' overlap contributions (against neighbours and fixed silk text), and
+the layout bbox from cached per-box bounds. A rejected move restores the disturbed
+cache entries. This turns each iteration from O(P² + N·log N) into roughly
+O(deg + neighbours). Optional **stall detection**
+(`PlaceParams.stall_ratio`/`stall_patience`, off by default) mirrors `anneal`'s.
 
 Each move keeps the moved footprint's pad coordinates in sync
 (`Footprint.sync_pads`) so the energy geometry stays consistent. `place()` leaves

@@ -204,6 +204,12 @@ class PlaceParams:
     rotate_mode: str = "ortho"        # "ortho" (+/-90/180), "free" (any angle), "none"
     seed: int = 0
     exclude: list[str] = field(default_factory=list)
+    # Early-termination (stall detection): if the windowed accept ratio stays
+    # below `stall_ratio` for `stall_patience` consecutive full accept-windows,
+    # the run stops early. Disabled when `stall_patience <= 0` or
+    # `stall_ratio <= 0` (the default), so the full budget is honoured.
+    stall_ratio: float = 0.02
+    stall_patience: int = 0
 
 
 @dataclass
@@ -259,6 +265,129 @@ class _Placer:
             for cx, cy, hr in _board_silk_text_boxes(board)
         ]
         self._fixed_tree = STRtree(self._fixed_text) if self._fixed_text else None
+
+        # Incremental-energy cache (populated by `_rebuild_cache`).
+        #
+        # The ratsnest topology is fixed for the whole run: a move changes pad
+        # *positions*, never which pads are connected, so the connection list and
+        # the footprint->incident-connection index are built once, and a move
+        # recomputes only the lengths of the connections touching the moved
+        # footprints. Overlap is cached per box and updated for the moved boxes
+        # against their neighbours; the bbox is recomputed from the cached box
+        # bounds (O(N), cheap relative to the old O(P^2) MST rebuild).
+        self._boxes: list = []            # per-footprint body box, parallel to self.boxed
+        self._bounds: list = []           # per-box (minx,miny,maxx,maxy), parallel to _boxes
+        self._conns: list = []            # cached netlist connections (fixed topology)
+        self._conn_len: list = []         # cached per-connection length, parallel to _conns
+        self._fp_conns: dict[int, list[int]] = {}   # boxed-index -> incident conn indices
+        self._rats = 0.0
+        self._overlap = 0.0
+        self._bbox = 0.0
+        self._idx_of_fp: dict[int, int] = {id(fp): i for i, fp in enumerate(self.boxed)}
+
+    def _build_index(self) -> None:
+        """Build the fixed connection list and footprint->connection incidence.
+
+        Called once: the ratsnest topology does not change across moves, so the
+        connection list (and which footprint each connection's pads belong to)
+        is computed a single time.
+        """
+        self._conns = netlist.build_connections(self.board, self.p.exclude)
+        pad_to_fp: dict[int, int] = {}
+        for i, fp in enumerate(self.boxed):
+            for pad in fp.pads:
+                pad_to_fp[id(pad)] = i
+        self._fp_conns = {i: [] for i in range(len(self.boxed))}
+        for ci, c in enumerate(self._conns):
+            fa = pad_to_fp.get(id(c.a))
+            fb = pad_to_fp.get(id(c.b))
+            for fi in {fa, fb}:
+                if fi is not None:
+                    self._fp_conns[fi].append(ci)
+
+    def _rebuild_cache(self) -> None:
+        """Full recompute of the energy cache (init / after a structural change)."""
+        if not self._conns and self.boxed:
+            self._build_index()
+        self._boxes = [self._fp_box(fp) for fp in self.boxed]
+        self._bounds = [b.bounds for b in self._boxes]
+        self._conn_len = [c.est_length for c in self._conns]
+        self._rats = sum(self._conn_len)
+        self._overlap = self._overlap_area(self._boxes) + \
+            self._fixed_text_overlap(self._boxes)
+        self._bbox = self._bbox_from_bounds()
+
+    @staticmethod
+    def _bbox_area(boxes) -> float:
+        """Area of the bounding box enclosing all `boxes` (0 if none)."""
+        if not boxes:
+            return 0.0
+        minx = min(b.bounds[0] for b in boxes)
+        miny = min(b.bounds[1] for b in boxes)
+        maxx = max(b.bounds[2] for b in boxes)
+        maxy = max(b.bounds[3] for b in boxes)
+        return max(0.0, maxx - minx) * max(0.0, maxy - miny)
+
+    def _bbox_from_bounds(self) -> float:
+        """Area of the layout bbox from the cached per-box ``(minx,miny,maxx,maxy)``.
+
+        Reads the plain-tuple bounds cached in ``self._bounds`` rather than calling
+        shapely ``.bounds`` on every box each step, which dominated the placement
+        SA hot loop.
+        """
+        bnds = self._bounds
+        if not bnds:
+            return 0.0
+        minx = min(b[0] for b in bnds)
+        miny = min(b[1] for b in bnds)
+        maxx = max(b[2] for b in bnds)
+        maxy = max(b[3] for b in bnds)
+        return max(0.0, maxx - minx) * max(0.0, maxy - miny)
+
+    def _cached_energy(self) -> float:
+        """Energy from the current cache (see the module docstring)."""
+        return (self._rats + self.p.overlap_weight * self._overlap
+                + self.p.compact_weight * self._bbox)
+
+    def _overlap_touching(self, idxs: set[int], boxes) -> float:
+        """Overlap area of every pair/fixed-text touching a footprint in `idxs`.
+
+        Each footprint-footprint pair with at least one endpoint in `idxs` is
+        counted exactly once (pairs wholly inside `idxs` included once), plus the
+        fixed board-silk-text overlap of the boxes in `idxs`.
+
+        Args:
+            idxs: boxed-indices of the moved footprints.
+            boxes: the per-footprint body boxes to evaluate against.
+
+        Returns:
+            The total overlap (mm^2) attributable to the moved footprints.
+        """
+        tree = STRtree(boxes) if len(boxes) >= 2 else None
+        total = 0.0
+        seen: set[tuple[int, int]] = set()
+        for i in idxs:
+            bi = boxes[i]
+            if tree is not None:
+                for j in tree.query(bi):
+                    j = int(j)
+                    if j == i or not bi.intersects(boxes[j]):
+                        continue
+                    key = (i, j) if i < j else (j, i)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    fi, fj = self.boxed[i], self.boxed[j]
+                    if fi.overlap_ok or fj.overlap_ok:
+                        total += self._pad_overlap(fi, fj)
+                    else:
+                        total += bi.intersection(boxes[j]).area
+            if self._fixed_tree is not None and not self.boxed[i].overlap_ok:
+                for j in self._fixed_tree.query(bi):
+                    t = self._fixed_text[int(j)]
+                    if bi.intersects(t):
+                        total += bi.intersection(t).area
+        return total
 
     def _fp_box(self, fp: Footprint):
         """Buffer-inflated axis-aligned body box of a footprint.
@@ -348,6 +477,45 @@ class _Placer:
                     total += bi.intersection(t).area
         return total
 
+    def _move_delta(self, idxs: set[int]) -> None:
+        """Update the energy cache for a move that touched footprints ``idxs``.
+
+        Recomputes only the parts of the energy the move can change: the lengths
+        of the ratsnest connections incident on the moved footprints, the overlap
+        contributions of the moved boxes (against their neighbours and the fixed
+        board silk text), and the layout bounding box. The connection *topology*
+        and the per-footprint silk extents are fixed for the run, so they are
+        never rebuilt here.
+
+        The cached ``self._boxes`` for ``idxs`` must still hold the *pre-move*
+        boxes when this is called; they are refreshed in place as part of the
+        update. The footprints themselves must already be at their post-move
+        poses (pads synced).
+
+        Args:
+            idxs: boxed-indices of the footprints whose pose changed.
+        """
+        # Ratsnest: only connections incident on a moved footprint change length.
+        seen_conns: set[int] = set()
+        for fi in idxs:
+            for ci in self._fp_conns.get(fi, ()):
+                seen_conns.add(ci)
+        for ci in seen_conns:
+            self._rats -= self._conn_len[ci]
+        # Overlap: remove the moved boxes' old contribution, refresh the boxes,
+        # then add their new contribution.
+        self._overlap -= self._overlap_touching(idxs, self._boxes)
+        for fi in idxs:
+            self._boxes[fi] = self._fp_box(self.boxed[fi])
+            self._bounds[fi] = self._boxes[fi].bounds
+        self._overlap += self._overlap_touching(idxs, self._boxes)
+        for ci in seen_conns:
+            nl = self._conns[ci].est_length
+            self._conn_len[ci] = nl
+            self._rats += nl
+        # bbox: cheap O(N) recompute from the cached plain-tuple box bounds.
+        self._bbox = self._bbox_from_bounds()
+
     def _energy_components(self) -> tuple[float, float, float]:
         """Return the ``(ratsnest, overlap_area, bbox_area)`` energy terms."""
         rats = sum(c.est_length
@@ -382,14 +550,15 @@ class _Placer:
             fp.sync_pads()
 
     def _move(self, temp_frac: float):
-        """Apply one random move and return its undo snapshot.
+        """Apply one random move and return its undo snapshot and touched indices.
 
         Args:
             temp_frac: ``T / t_start`` in ``[t_end/t_start, 1]``; scales the
                 translate step so moves shrink as the schedule cools.
 
         Returns:
-            The `_snapshot` of the footprints touched, for `_restore`.
+            ``(snapshot, idxs)`` — the `_snapshot` of the footprints touched (for
+            `_restore`) and the set of their boxed-indices (for `_move_delta`).
         """
         r = self.rng.random()
         if len(self.movable) >= 2 and r < 0.2:
@@ -399,7 +568,7 @@ class _Placer:
             a.y, b.y = b.y, a.y
             a.sync_pads()
             b.sync_pads()
-            return snap
+            return snap, {self._idx_of_fp[id(a)], self._idx_of_fp[id(b)]}
         fp = self.rng.choice(self.movable)
         snap = self._snapshot([fp])
         if self.p.rotate_mode != "none" and r < 0.5:         # rotate
@@ -412,7 +581,7 @@ class _Placer:
             fp.x += self.rng.uniform(-s, s)
             fp.y += self.rng.uniform(-s, s)
         fp.sync_pads()
-        return snap
+        return snap, {self._idx_of_fp[id(fp)]}
 
     def run(self, on_progress=None, cancel=None) -> PlaceResult:
         """Run the annealing loop; leave the board at the best placement seen.
@@ -432,15 +601,24 @@ class _Placer:
         for fp in self.boxed:
             fp.sync_pads()
         if not self.movable:
-            E = self._energy()
-            rats, overlap, bbox = self._energy_components()
-            return PlaceResult(E, E, 0, 0, 0, rats, overlap, bbox)
+            self._rebuild_cache()
+            E = self._cached_energy()
+            return PlaceResult(E, E, 0, 0, 0,
+                               self._rats, self._overlap, self._bbox)
 
-        E = self._energy()
+        self._rebuild_cache()
+        E = self._cached_energy()
         start_E = best_E = E
         best = self._snapshot(self.movable)
         accepted = 0
         recent = deque(maxlen=_ACCEPT_WINDOW)   # 1/0 per recent move, for the live ratio
+
+        # Stall detection: count consecutive completed accept-windows whose
+        # acceptance ratio stayed below `stall_ratio`; break after `stall_patience`
+        # of them. Disabled when either knob is non-positive.
+        stall_on = self.p.stall_patience > 0 and self.p.stall_ratio > 0.0
+        stall_count = 0
+        window_seen = 0
 
         total = self.p.iters if self.p.iters else 1_000_000
         t0 = time.time()
@@ -460,8 +638,16 @@ class _Placer:
                 1.0, (time.time() - t0) / self.p.time_budget)
             T = self.p.t_start * (ratio ** frac)
 
-            snap = self._move(T / self.p.t_start)
-            E_new = self._energy()
+            snap, idxs = self._move(T / self.p.t_start)
+            # Snapshot the cache entries the move can disturb, for a cheap revert:
+            # the scalar totals, the moved boxes, and the lengths of the
+            # connections incident on the moved footprints.
+            touched_conns = {ci for i in idxs for ci in self._fp_conns.get(i, ())}
+            cache_save = (self._rats, self._overlap, self._bbox,
+                          {i: (self._boxes[i], self._bounds[i]) for i in idxs},
+                          {ci: self._conn_len[ci] for ci in touched_conns})
+            self._move_delta(idxs)
+            E_new = self._cached_energy()
             dE = E_new - E
             accept = dE <= 0 or self.rng.random() < math.exp(-dE / max(T, 1e-9))
             if accept:
@@ -472,16 +658,38 @@ class _Placer:
                     best = self._snapshot(self.movable)
             else:
                 self._restore(snap)
+                (self._rats, self._overlap, self._bbox,
+                 saved_boxes, saved_lens) = cache_save
+                for i, (b, bnd) in saved_boxes.items():
+                    self._boxes[i] = b
+                    self._bounds[i] = bnd
+                for ci, ln in saved_lens.items():
+                    self._conn_len[ci] = ln
             recent.append(1 if accept else 0)
 
             it += 1
+            window_seen += 1
             if on_progress is not None:
                 on_progress(it, total, E, best_E, T, sum(recent) / len(recent))
 
+            if stall_on and window_seen >= _ACCEPT_WINDOW:
+                if sum(recent) / len(recent) < self.p.stall_ratio:
+                    stall_count += 1
+                    if stall_count >= self.p.stall_patience:
+                        break
+                else:
+                    stall_count = 0
+                window_seen = 0
+
         self._restore(best)
         moved = sum(1 for fp in self.board.footprints if fp.moved)
-        rats, overlap, bbox = self._energy_components()
-        return PlaceResult(start_E, best_E, it, accepted, moved, rats, overlap, bbox)
+        # Recompute the cache at the best placement so the reported breakdown is
+        # exactly consistent with `best_E` (both use the fixed ratsnest topology),
+        # then re-derive best_E from it so they reconcile to the last bit.
+        self._rebuild_cache()
+        best_E = self._cached_energy()
+        return PlaceResult(start_E, best_E, it, accepted, moved,
+                           self._rats, self._overlap, self._bbox)
 
 
 def place(board: Board, params: PlaceParams | None = None,
