@@ -304,6 +304,11 @@ board, write a settings file, or clean generated outputs. Each action echoes the
 command it runs, so the script doubles as a cheat-sheet. Override the interpreter
 with `PYTHON=/path/to/python ./pyautoroute.sh`.
 
+The **Install** action offers a `fast (native A* core)` option that installs the
+`fast` extras and builds the [Cython A* extension](#optional-fast-a-native-extension)
+in place (the default install also offers to build it afterward); it reports
+whether the native core or the pure-Python fallback ended up active.
+
 ## Tests
 
 ```bash
