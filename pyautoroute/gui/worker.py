@@ -117,8 +117,11 @@ class Worker:
                     last_place_prog[0] = now
                     self._post(Progress("placing", it, total, energy, best,
                                         temp, accept, 0, 0))
-                if best < last_place_snap[0] and now - last_place_snap[1] >= 0.5:
-                    last_place_snap[0] = best
+                new_best = best < last_place_snap[0]
+                min_interval = 0.5 if new_best else 2.0
+                if now - last_place_snap[1] >= min_interval:
+                    if new_best:
+                        last_place_snap[0] = best
                     last_place_snap[1] = now
                     self._post(BoardSnap(_snap_pads(board)))
 
