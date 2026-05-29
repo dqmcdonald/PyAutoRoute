@@ -407,3 +407,61 @@ dominates.
 Re-profile after each step (§3): the ranking above is a prediction, and the
 bottleneck will shift (probably from placement → routing-SA → A\* core) as the
 top items land.
+
+---
+
+## 6. Status
+
+Tracking which optimisations from §4 have landed.
+
+### Done
+
+- **P0 — Incremental placement energy** (`placement.py`). `_Placer.run` now
+  builds the energy cache once (`_rebuild_cache`) and, on each move, updates only
+  the delta for the touched footprint(s) via `_move_delta`:
+  - *Ratsnest* — the connection topology is fixed for the run (a move changes pad
+    *positions*, never which pads connect), so the connection list and the
+    footprint→incident-connection index (`_build_index`) are built once; a move
+    recomputes only the lengths of the connections incident on the moved
+    footprints, cached per connection in `_conn_len`.
+  - *Overlap* — the moved boxes' old contribution is removed and their new
+    contribution added (`_overlap_touching`), against neighbours and the fixed
+    board silk text.
+  - *bbox* — each box's bounds are cached as a plain tuple in `_bounds`; the
+    layout bbox is recomputed from those (`_bbox_from_bounds`) instead of calling
+    shapely `.bounds` on every box each step (which had become the new hot spot).
+  - Reject restores the disturbed cache entries (scalars + the moved boxes,
+    bounds, and connection lengths); the full recompute now only runs on init and
+    on `place()`'s final report (so the reported breakdown reconciles exactly with
+    `best_energy` under the fixed topology).
+  - Result: the per-iteration cost drops from O(P² + N·log N) to roughly
+    O(deg + neighbours); the `sa_step` benchmark is near-flat across N=10→100
+    (~90→135 µs) where it was ~210→1470 µs before.
+
+- **P0 — Early termination / stall detection** (`anneal.py`, `placement.py`).
+  Both annealers take `stall_ratio` / `stall_patience` parameters
+  (`AnnealParams`, `PlaceParams`). When the windowed acceptance ratio stays below
+  `stall_ratio` for `stall_patience` consecutive full accept-windows
+  (`_ACCEPT_WINDOW`), the loop breaks early and still returns the best routing /
+  placement. The feature is **disabled by default** (`stall_patience = 0`), and is
+  off whenever either knob is ≤ 0, so the full iteration budget is honoured unless
+  the caller opts in.
+
+- **Performance harness** (`tests/perf/`, `scripts/profile_anneal.py`). A
+  synthetic-board factory (`tests/perf/board_factory.py:make_synthetic_board` /
+  `make_routing_setup`) builds duck-typed `Board`/`Footprint`/`Pad` objects at
+  sizes 10/25/50/100 without a `.kicad_pcb` parse; `bench_placement.py` and
+  `bench_router.py` time the hot routines with `time.perf_counter`, print the
+  scaling curve, and assert (loose) timing budgets — runnable standalone *and*
+  collected by pytest (`bench_*.py` in `python_files`).
+  `scripts/profile_anneal.py` runs cProfile over the placement annealer, writes
+  `/tmp/profile_anneal.prof`, and prints the top-20 cumulative lines.
+
+### Not yet done
+
+- P1 — Incremental routing-SA energy + spatial cluster index.
+- P1 — Memoise `rules.class_for`.
+- P1 — A\* constant factors (precomputed `h`, per-net free mask, integer state).
+- P2 — Vectorise `_covered_nodes`; parallel placement runs / SA chains; adaptive
+  cooling.
+- P3 — C/Cython A\* core.

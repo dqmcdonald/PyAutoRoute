@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import random
 
-from pyautoroute import sexpr
+from pyautoroute import netlist, rules, router, sexpr
+from pyautoroute.grid import Grid
 from pyautoroute.pcb import Board, Footprint, OutlineShape, Pad
 
 
@@ -69,3 +70,26 @@ def make_synthetic_board(n_footprints: int, n_nets: int, seed: int = 42) -> Boar
     return Board(tree=sexpr.SList(), copper_layers=["F.Cu", "B.Cu"], pads=pads,
                  free_vias=[], segments=[], zones=[], outline=outline,
                  footprints=footprints)
+
+
+def make_routing_setup(n_footprints: int, n_nets: int, seed: int = 42,
+                       pitch: float = 1.0):
+    """Build a synthetic board and greedily route it, ready for `anneal.anneal`.
+
+    Args:
+        n_footprints: number of footprints on the synthetic board.
+        n_nets: number of distinct nets.
+        seed: RNG seed for the board.
+        pitch: routing grid pitch (mm); larger grids faster to build/route.
+
+    Returns:
+        ``(state, conns, results)`` — the live `RoutingState`, the connection
+        list, and the per-connection results from the initial greedy route, as
+        `anneal.anneal` expects.
+    """
+    board = make_synthetic_board(n_footprints, n_nets, seed)
+    conns = netlist.build_connections(board)
+    state = router.RoutingState(Grid(board, rules.default_rules(), pitch=pitch))
+    params = router.RouteParams(max_expansions=200_000)
+    result = router.route_all(state, conns, netlist.greedy_order(conns), params)
+    return state, conns, list(result.results)

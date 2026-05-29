@@ -43,6 +43,12 @@ class AnnealParams:
     seed: int = 0
     snapshots: int = 0          # number of board snapshots to emit across the run
     route_params: RouteParams = field(default_factory=lambda: RouteParams(max_expansions=400_000))
+    # Early-termination (stall detection): if the windowed accept ratio stays
+    # below `stall_ratio` for `stall_patience` consecutive full accept-windows,
+    # the run stops early. Disabled when `stall_patience <= 0` or
+    # `stall_ratio <= 0` (the default), so the full budget is honoured.
+    stall_ratio: float = 0.02
+    stall_patience: int = 0
 
 
 @dataclass
@@ -241,6 +247,13 @@ class _Annealer:
         accepted = 0
         recent = deque(maxlen=_ACCEPT_WINDOW)   # 1/0 per recent move, for the live ratio
 
+        # Stall detection: count consecutive completed accept-windows whose
+        # acceptance ratio stayed below `stall_ratio`; break after
+        # `stall_patience` of them. Disabled when either knob is non-positive.
+        stall_on = self.p.stall_patience > 0 and self.p.stall_ratio > 0.0
+        stall_count = 0
+        window_seen = 0
+
         total = self.p.iters if self.p.iters else 1_000_000
         t0 = time.time()
         ratio = self.p.t_end / self.p.t_start
@@ -277,6 +290,7 @@ class _Annealer:
             recent.append(1 if accept else 0)
 
             it += 1
+            window_seen += 1
             if on_progress is not None:
                 routed = sum(1 for r in self.results if r is not None)
                 on_progress(it, total, routed, len(self.results) - routed,
@@ -286,6 +300,15 @@ class _Annealer:
             while n_snap and next_snap < n_snap and frac >= next_snap / n_snap:
                 on_snapshot(next_snap, n_snap, self.results)
                 next_snap += 1
+
+            if stall_on and window_seen >= _ACCEPT_WINDOW:
+                if sum(recent) / len(recent) < self.p.stall_ratio:
+                    stall_count += 1
+                    if stall_count >= self.p.stall_patience:
+                        break
+                else:
+                    stall_count = 0
+                window_seen = 0
 
         while n_snap and next_snap <= n_snap:
             on_snapshot(next_snap, n_snap, best)

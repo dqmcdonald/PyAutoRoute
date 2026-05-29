@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyautoroute"
-version = "0.21.0"
+version = "0.22.0"
 description = "Simulated-annealing autorouter for 2-layer KiCad PCBs"
 requires-python = ">=3.10"
 dependencies = [
@@ -33,3 +33,7 @@ include = ["pyautoroute*"]
 # can import the pyautoroute package without an editable install.
 pythonpath = ["."]
 testpaths = ["tests"]
+# Also collect the perf-harness benchmarks (tests/perf/bench_*.py): each exposes
+# a `test_*_within_budget` that asserts the timing budget, so a perf regression
+# fails the suite as well as being runnable standalone.
+python_files = ["test_*.py", "bench_*.py"]
