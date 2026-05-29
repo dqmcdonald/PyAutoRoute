@@ -84,6 +84,43 @@ def test_place_never_worsens_energy_and_respects_locks():
     assert (fixed.x, fixed.y) == (40.0, 40.0)
 
 
+def test_place_recenters_unlocked_group_onto_starting_centroid():
+    # With nothing locked the placement is translation-invariant and the cluster
+    # drifts; place() must recenter it back onto its original centroid.
+    a = _fp("U1", 10.0, 10.0, [(0.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    b = _fp("U2", 70.0, 70.0, [(0.0, 0.0, "N1"), (2.0, 0.0, "N2")])
+    c = _fp("U3", 40.0, 20.0, [(0.0, 0.0, "N2"), (2.0, 0.0, "N0")])
+    board = _board([a, b, c])
+    orig = (sum(fp.x0 for fp in (a, b, c)) / 3, sum(fp.y0 for fp in (a, b, c)) / 3)
+    placement.place(board, placement.PlaceParams(iters=4000, seed=7))
+    cx = sum(fp.x for fp in (a, b, c)) / 3
+    cy = sum(fp.y for fp in (a, b, c)) / 3
+    assert math.isclose(cx, orig[0], abs_tol=1e-6)
+    assert math.isclose(cy, orig[1], abs_tol=1e-6)
+
+
+def test_recenter_preserves_energy_and_is_noop_when_locked():
+    a = _fp("U1", 10.0, 10.0, [(0.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    b = _fp("U2", 70.0, 70.0, [(0.0, 0.0, "N1"), (2.0, 0.0, "N2")])
+    board = _board([a, b])
+    # rigid drift, then recenter brings it back with no energy change
+    for fp in (a, b):
+        fp.x += 25.0
+        fp.y -= 13.0
+        fp.sync_pads()
+    before = placement._Placer(board, placement.PlaceParams())._energy()
+    dx, dy = placement.recenter(board)
+    after = placement._Placer(board, placement.PlaceParams())._energy()
+    assert math.isclose(dx, -25.0) and math.isclose(dy, 13.0)
+    assert math.isclose(before, after, rel_tol=1e-9)
+    # a lock anchors the layout: recenter must do nothing
+    locked = _fp("LK", 5.0, 5.0, [(0.0, 0.0, "N0")], locked=True)
+    board2 = _board([locked, a])
+    a.x += 30.0
+    a.sync_pads()
+    assert placement.recenter(board2) == (0.0, 0.0)
+
+
 def test_place_separates_overlapping_bodies():
     a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
     b = _fp("U2", 21.0, 20.5, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])  # overlapping a

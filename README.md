@@ -178,6 +178,13 @@ stays DRC-clean. Rotated footprints keep their pads correctly oriented in the
 output (KiCad stores pad angles absolutely, so the footprint rotation is
 propagated into each pad).
 
+When it finishes, the placed group is **recentred** on its starting position, so
+the footprints don't migrate off the board origin. (The placement cost only cares
+about the parts' positions relative to each other, so the cluster is free to
+wander as a whole during annealing; recentring shifts it rigidly back without
+changing the result. It's skipped when a footprint is locked, since the locks
+already anchor the layout.)
+
 It also keeps footprints clear of **silkscreen text** — both each footprint's own
 visible Reference/Value labels and any standalone board text (`gr_text`, e.g.
 connector pin labels or a title block), so parts aren't dropped on top of existing
@@ -303,10 +310,16 @@ pyautoroute-fix --values BOARD.kicad_pcb --dry-run  # report only, no write
 ## Helper script
 
 `./pyautoroute.sh` is an interactive menu of common tasks — install the package,
-regenerate the API docs from the code, run the short/long test suite, route a test
-board, write a settings file, or clean generated outputs. Each action echoes the
-command it runs, so the script doubles as a cheat-sheet. Override the interpreter
-with `PYTHON=/path/to/python ./pyautoroute.sh`.
+regenerate the API docs from the code, run the short/long test suite, run the
+performance benchmarks (router / placement scaling tables), route a test board,
+write a settings file, or clean generated outputs. Each action echoes the command
+it runs, so the script doubles as a cheat-sheet. Override the interpreter with
+`PYTHON=/path/to/python ./pyautoroute.sh`.
+
+The **Install** action offers a `fast (native A* core)` option that installs the
+`fast` extras and builds the [Cython A* extension](#optional-fast-a-native-extension)
+in place (the default install also offers to build it afterward); it reports
+whether the native core or the pure-Python fallback ended up active.
 
 ## Tests
 
