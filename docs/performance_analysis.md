@@ -477,6 +477,26 @@ Tracking which optimisations from §4 have landed.
     3.37s → 1.45s), compounding through the annealer (which calls A\* `cluster`
     times per iteration). `bench_router.py` reports per-`astar`-call timing.
 
+- **P3 — C/Cython A\* core** (`pyautoroute/_astar_c.pyx`, `setup.py`). An
+  *optional* native reimplementation of the A\* inner search loop. It consumes the
+  exact same precomputed structures the Python `astar` builds — the per-net
+  boolean `free` mask (typed `uint8[:, :, ::1]` memoryview), the octile heuristic
+  field (`double[:, ::1]`), the via stencil and via-layer neighbour lists — and
+  uses the identical integer state packing
+  (`((layer*ny + row)*nx + col)*9 + dir+1`) and `(f, counter)` heap ordering, so
+  it returns **bit-for-bit identical** paths and costs (asserted by
+  `test_c_and_python_astar_identical` and verified across 100+ synthetic routes).
+  The heap is a C-level binary min-heap of structs (no Python tuple allocation
+  per push); `gscore`/`came` stay as Python dicts so memory tracks the Python
+  version. `router.astar` dispatches to it via a `try/except` import
+  (`_USE_C_ASTAR`) and falls back transparently to the optimised Python search
+  when the extension is not built — the whole test suite passes either way.
+  Build with `pip install -e ".[fast]" && python setup.py build_ext --inplace`;
+  `pyautoroute.HAS_C_ASTAR` reports whether it is active. Result: ~1.4–3.4× on
+  the coarse synthetic bench grids and 5–20× on larger real grids where the
+  search dominates; `bench_router.py` prints the C-vs-Python columns side by side
+  when the extension is present.
+
 - **Performance harness** (`tests/perf/`, `scripts/profile_anneal.py`). A
   synthetic-board factory (`tests/perf/board_factory.py:make_synthetic_board` /
   `make_routing_setup`) builds duck-typed `Board`/`Footprint`/`Pad` objects at
@@ -492,4 +512,3 @@ Tracking which optimisations from §4 have landed.
 - P1 — Memoise `rules.class_for`.
 - P2 — Vectorise `_covered_nodes`; parallel placement runs / SA chains; adaptive
   cooling.
-- P3 — C/Cython A\* core.

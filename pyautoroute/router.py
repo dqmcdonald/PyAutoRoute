@@ -27,6 +27,13 @@ from shapely.geometry import LineString, Point
 from .grid import FREE, Grid
 from .sexpr import SList
 
+try:
+    from pyautoroute._astar_c import astar as _astar_fast
+    _USE_C_ASTAR = True
+except ImportError:
+    _astar_fast = None
+    _USE_C_ASTAR = False
+
 SQRT2 = math.sqrt(2.0)
 
 # A pad-centre stub shorter than this (mm) is dropped as a zero-length segment:
@@ -339,6 +346,26 @@ def astar(state: RoutingState, net_id: int,
             if not free[:, rr, cc].all():
                 return False
         return True
+
+    # --- optional Cython fast path ------------------------------------------
+    # The native core consumes the exact same precomputed structures (free mask,
+    # heuristic field, via stencil/layer lists) and integer state packing, so it
+    # returns a bit-for-bit identical path. It is skipped transparently when the
+    # extension is not built (`_USE_C_ASTAR` is False).
+    if _USE_C_ASTAR:
+        free_c = np.ascontiguousarray(free, dtype=np.uint8)
+        hfield_c = np.ascontiguousarray(hfield, dtype=np.float64)
+        return _astar_fast(
+            free_c, hfield_c,
+            list(sources), list(targets),
+            [(int(dc), int(dr)) for dc, dr in grid._via_stencil],
+            [tuple(v) for v in via_layers],
+            float(pitch), float(params.via_cost),
+            float(params.bend45), float(params.bend90),
+            float(params.bend135), float(params.bend180),
+            float(params.back_layer_penalty),
+            int(params.max_expansions),
+        )
 
     counter = itertools.count()
     gscore: dict[int, float] = {}

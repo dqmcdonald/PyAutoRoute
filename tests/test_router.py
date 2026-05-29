@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from pyautoroute import pcb, rules, sexpr
+from pyautoroute import router as _router
 from pyautoroute.grid import Grid
 from pyautoroute.pcb import Board, OutlineShape, Pad
 from pyautoroute.router import RoutingState, path_to_nodes, route_connection
@@ -134,3 +137,42 @@ def test_commit_blocks_other_nets_and_ripup_restores():
     # ripping the connection restores the node to free for everyone
     s.ripup(0)
     assert s.is_free(0, col, row, b_id)
+
+
+# --- C extension parity ------------------------------------------------------
+
+# Scenarios exercising the tricky paths: straight run, diagonal, via dive.
+_PARITY_CASES = [
+    ("straight", [_pad("A", 4, 10), _pad("A", 16, 10)]),
+    ("diagonal", [_pad("A", 3, 3), _pad("A", 15, 15)]),
+    ("via_dive", [_pad("A", 4, 10), _pad("A", 16, 10),
+                  _pad("X", 10, 10, w=0.8, h=20, layers=("F.Cu",))]),
+]
+
+
+@pytest.mark.skipif(not _router._USE_C_ASTAR,
+                    reason="native A* extension not built")
+@pytest.mark.parametrize("name,pads", _PARITY_CASES, ids=[c[0] for c in _PARITY_CASES])
+def test_c_and_python_astar_identical(name, pads):
+    """The Cython A* returns a bit-for-bit identical path to the Python A*.
+
+    Runs each scenario through both the native fast path and the pure-Python
+    fallback (by toggling the dispatch flag) and asserts the paths, lengths and
+    via counts match exactly.
+    """
+    a, b = pads[0], pads[1]
+    orig = _router._USE_C_ASTAR
+    try:
+        _router._USE_C_ASTAR = True
+        s = _state(_board(pads))
+        c_res = route_connection(s, "A", _access(s, a), _access(s, b))
+        _router._USE_C_ASTAR = False
+        s2 = _state(_board(pads))
+        py_res = route_connection(s2, "A", _access(s2, a), _access(s2, b))
+    finally:
+        _router._USE_C_ASTAR = orig
+    assert (c_res is None) == (py_res is None)
+    assert c_res is not None
+    assert c_res.path == py_res.path
+    assert c_res.length == pytest.approx(py_res.length)
+    assert c_res.vias == py_res.vias
