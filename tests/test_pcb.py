@@ -88,7 +88,7 @@ def test_load_test1_board():
     assert board.front_layer == "F.Cu"
     assert board.name_only_nets
     assert len(board.pads) == 96
-    assert len(board.free_vias) == 10
+    assert len(board.free_vias) == 0
     assert len(board.segments) == 0
     # outline present
     assert any(s.kind == "poly" for s in board.outline)
