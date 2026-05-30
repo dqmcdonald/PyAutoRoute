@@ -1289,3 +1289,183 @@ def write_board(board: Board, out_path: str | Path,
     for node in (new_nodes or []):
         new_root.append(node)
     Path(out_path).write_text(sexpr.dump_file(new_root))
+
+
+# --- footprint constraint editor (GUI) ----------------------------------------
+
+
+def footprint_bbox(fp: Footprint) -> tuple[float, float, float, float]:
+    """Axis-aligned bounding box over a footprint's pads.
+
+    Returns:
+        ``(x0, y0, x1, y1)`` in board mm, or ``(0, 0, 0, 0)`` if no pads.
+    """
+    if not fp.pads:
+        return (0.0, 0.0, 0.0, 0.0)
+    he = lambda p: 0.5 * math.hypot(p.w, p.h)
+    xs = [p.cx - he(p) for p in fp.pads] + [p.cx + he(p) for p in fp.pads]
+    ys = [p.cy - he(p) for p in fp.pads] + [p.cy + he(p) for p in fp.pads]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def footprint_at(board: Board, x: float, y: float) -> Footprint | None:
+    """The footprint whose body box contains (x, y); the smallest if overlapping.
+
+    Args:
+        board: the board.
+        x, y: board coordinates in mm.
+
+    Returns:
+        A `Footprint` whose bbox fully encloses (x, y), or `None` if no match.
+        If multiple footprints overlap the point, returns the one with the
+        smallest area (easiest to click precisely inside a dense group).
+    """
+    hits: list[tuple[float, Footprint]] = []
+    for fp in board.footprints:
+        if not fp.pads:
+            continue
+        x0, y0, x1, y1 = footprint_bbox(fp)
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            area = (x1 - x0) * (y1 - y0)
+            hits.append((area, fp))
+    return min(hits, key=lambda t: t[0])[1] if hits else None
+
+
+def _make_property_node(
+    fp: Footprint, name: str, value: str
+) -> SList:
+    """Build a KiCad-valid hidden custom field for a footprint.
+
+    Creates a full property node with placement, layer, hide, uuid, and effects.
+    The font effects are borrowed from an existing property on the footprint
+    if present; otherwise uses a default.
+
+    Args:
+        fp: the footprint.
+        name: property name (e.g. "Autoroute-edge").
+        value: property value (e.g. "left").
+
+    Returns:
+        A fresh `SList` (span=None, will re-serialize) ready to append to the
+        footprint node. The structure is KiCad 7+ compliant.
+    """
+    uid = sexpr.string(str(_uuid.uuid4()))
+
+    # Try to borrow font effects from an existing property.
+    font_effects = None
+    for prop in children(fp.fp_node, "property"):
+        fx = child(prop, "effects")
+        if fx is not None:
+            font_effects = fx
+            break
+    if font_effects is None:
+        font_effects = SList(
+            [
+                sexpr.sym("effects"),
+                SList([sexpr.sym("font"), sexpr.sym("size"),
+                       sexpr.Atom("1"), sexpr.Atom("1"),
+                       sexpr.sym("thickness"), sexpr.Atom("0.15")]),
+            ]
+        )
+
+    return SList(
+        [
+            sexpr.sym("property"),
+            sexpr.string(name),
+            sexpr.string(value),
+            SList([sexpr.sym("at"), sexpr.Atom(str(fp.x)), sexpr.Atom(str(fp.y)),
+                   sexpr.Atom(str(fp.angle))]),
+            SList([sexpr.sym("layer"), sexpr.string("F.Fab")]),
+            SList([sexpr.sym("hide"), sexpr.sym("yes")]),
+            SList([sexpr.sym("uuid"), uid]),
+            font_effects,
+        ]
+    )
+
+
+def set_footprint_property(fp: Footprint, name: str, value: str | None) -> None:
+    """Set/replace/remove a footprint custom property in the sexpr tree.
+
+    Updates the footprint's in-memory `fp_node` (sexpr) so the change reflects
+    in serialization; also sets `.span = None` on modified nodes to force
+    re-serialization.
+
+    Args:
+        fp: the footprint whose property is being edited.
+        name: property name (e.g. "Autoroute-overlap").
+        value: property value, or `None` to remove the property.
+    """
+    fp_node = fp.fp_node
+    existing = None
+    for prop in children(fp_node, "property"):
+        vals = atoms_after_head(prop)
+        if vals and vals[0].text == name:
+            existing = prop
+            break
+    if value is None:
+        if existing is not None:
+            fp_node.remove(existing)
+            fp_node.span = None
+        return
+    if existing is not None:
+        vals = atoms_after_head(existing)
+        if len(vals) >= 2:
+            existing[existing.index(vals[1])] = sexpr.string(value)
+            existing.span = None
+    else:
+        fp_node.append(_make_property_node(fp, name, value))
+    fp_node.span = None
+
+
+def set_footprint_edge(fp: Footprint, side: str | None) -> None:
+    """Set a footprint's edge-affinity constraint.
+
+    Updates both the `Footprint.edge_affinity` field and the sexpr tree.
+
+    Args:
+        fp: the footprint.
+        side: "left", "right", "top", "bottom", "any", or `None` (no constraint).
+    """
+    fp.edge_affinity = side
+    set_footprint_property(
+        fp, "Autoroute-edge", side if side is not None else None
+    )
+
+
+def set_footprint_overlap(fp: Footprint, on: bool) -> None:
+    """Set a footprint's overlap-ok constraint.
+
+    Updates both the `Footprint.overlap_ok` field and the sexpr tree.
+
+    Args:
+        fp: the footprint.
+        on: whether the body may overlap other footprints.
+    """
+    fp.overlap_ok = on
+    set_footprint_property(
+        fp, "Autoroute-overlap", "yes" if on else None
+    )
+
+
+def set_footprint_locked(fp: Footprint, locked: bool) -> None:
+    """Set a footprint's lock state.
+
+    Updates both the `Footprint.locked` field and the sexpr tree, removing
+    any existing lock node/atom and adding a fresh `(locked yes)` if locked.
+
+    Args:
+        fp: the footprint.
+        locked: whether the footprint is fixed during placement.
+    """
+    fp.locked = locked
+    node = fp.fp_node
+    # Remove any existing lock nodes (bare atom or sublist).
+    node[:] = [
+        it
+        for it in node
+        if not (isinstance(it, Atom) and it.raw == "locked")
+        and not (isinstance(it, SList) and sexpr.head_symbol(it) == "locked")
+    ]
+    if locked:
+        node.insert(1, SList([sexpr.sym("locked"), sexpr.sym("yes")]))
+    node.span = None

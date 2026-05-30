@@ -315,3 +315,178 @@ def test_fill_zone_not_in_obstacles():
     # VCC zone has fill_enabled=False → should appear as an obstacle (layer is in copper_layers)
     vcc_obs = [o for o in obs if o.net == "VCC"]
     assert len(vcc_obs) == 1, "unfilled zone should be an obstacle"
+
+
+# --- footprint constraint editor tests ----------------------------------------
+
+
+class TestFootprintConstraints:
+    """Test footprint constraint helpers (Phase 1 of interactive GUI feature)."""
+
+    def test_footprint_bbox_single_pad(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "x" (at 10 20)'
+            '  (pad "1" smd roundrect (at 5 0) (size 2 4) '
+            '   (layers "F.Cu") (net ""))))'
+        )
+        board = _board_from_text(text)
+        fp = board.footprints[0]
+        x0, y0, x1, y1 = pcb.footprint_bbox(fp)
+        # Pad center (10+5, 20+0) = (15, 20), size 2x4
+        # half-extent = 0.5 * sqrt(2^2 + 4^2) = 0.5 * sqrt(20) ≈ 2.236
+        he = 0.5 * math.sqrt(4 + 16)
+        assert math.isclose(x0, 15 - he, abs_tol=1e-6)
+        assert math.isclose(x1, 15 + he, abs_tol=1e-6)
+        assert math.isclose(y0, 20 - he, abs_tol=1e-6)
+        assert math.isclose(y1, 20 + he, abs_tol=1e-6)
+
+    def test_footprint_bbox_empty(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "x" (at 10 20)))'
+        )
+        board = _board_from_text(text)
+        fp = board.footprints[0]
+        bbox = pcb.footprint_bbox(fp)
+        assert bbox == (0.0, 0.0, 0.0, 0.0)
+
+    def test_footprint_at_direct_hit(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "x" (at 10 20)'
+            '  (property "Reference" "U1")'
+            '  (pad "1" smd roundrect (at 0 0) (size 4 4) '
+            '   (layers "F.Cu") (net ""))))'
+        )
+        board = _board_from_text(text)
+        # Center is at (10, 20), half-extent = 2*sqrt(2) ≈ 2.828
+        fp = pcb.footprint_at(board, 10.0, 20.0)
+        assert fp is not None
+        assert fp.ref == "U1"
+
+    def test_footprint_at_miss(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "x" (at 10 20)'
+            '  (property "Reference" "U1")'
+            '  (pad "1" smd roundrect (at 0 0) (size 2 2) '
+            '   (layers "F.Cu") (net ""))))'
+        )
+        board = _board_from_text(text)
+        # Click far away
+        fp = pcb.footprint_at(board, 100.0, 100.0)
+        assert fp is None
+
+    def test_footprint_at_overlapping_smallest_wins(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "x" (at 10 20)'
+            '  (property "Reference" "U1")'
+            '  (pad "1" smd roundrect (at 0 0) (size 20 20) '
+            '   (layers "F.Cu") (net "")))'
+            ' (footprint "y" (at 11 21)'
+            '  (property "Reference" "U2")'
+            '  (pad "1" smd roundrect (at 0 0) (size 2 2) '
+            '   (layers "F.Cu") (net ""))))'
+        )
+        board = _board_from_text(text)
+        # Click at (11, 21), which is in both footprints' bboxes
+        # U1 bbox ≈ [0, 10] x [10, 30], U2 bbox ≈ [10, 12] x [20, 22]
+        # U2 is smaller so should win
+        fp = pcb.footprint_at(board, 11.0, 21.0)
+        assert fp is not None
+        assert fp.ref == "U2"
+
+    def test_set_footprint_edge_creates_property(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "U1" (at 10 20)'
+            '  (property "Reference" "U1")))'
+        )
+        board = _board_from_text(text)
+        fp = board.footprints[0]
+        assert fp.edge_affinity is None
+        pcb.set_footprint_edge(fp, "left")
+        assert fp.edge_affinity == "left"
+        # Verify it's in the tree
+        assert pcb._footprint_edge_affinity(fp.fp_node) == "left"
+
+    def test_set_footprint_edge_removes_with_none(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "U1" (at 10 20)'
+            '  (property "Autoroute-edge" "left")))'
+        )
+        board = _board_from_text(text)
+        fp = board.footprints[0]
+        assert fp.edge_affinity == "left"
+        pcb.set_footprint_edge(fp, None)
+        assert fp.edge_affinity is None
+        assert pcb._footprint_edge_affinity(fp.fp_node) is None
+
+    def test_set_footprint_overlap(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "U1" (at 10 20)'
+            '  (property "Reference" "U1")))'
+        )
+        board = _board_from_text(text)
+        fp = board.footprints[0]
+        assert fp.overlap_ok is False
+        pcb.set_footprint_overlap(fp, True)
+        assert fp.overlap_ok is True
+        assert pcb._footprint_overlap_ok(fp.fp_node) is True
+        pcb.set_footprint_overlap(fp, False)
+        assert fp.overlap_ok is False
+        assert pcb._footprint_overlap_ok(fp.fp_node) is False
+
+    def test_set_footprint_locked(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "U1" (at 10 20)'
+            '  (property "Reference" "U1")))'
+        )
+        board = _board_from_text(text)
+        fp = board.footprints[0]
+        assert fp.locked is False
+        pcb.set_footprint_locked(fp, True)
+        assert fp.locked is True
+        assert pcb._footprint_locked(fp.fp_node) is True
+        pcb.set_footprint_locked(fp, False)
+        assert fp.locked is False
+        assert pcb._footprint_locked(fp.fp_node) is False
+
+    def test_constraint_round_trip_to_file(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "U1" (at 10 20)'
+            '  (property "Reference" "U1"))'
+            ' (footprint "U2" (at 30 40)'
+            '  (property "Reference" "U2")))'
+        )
+        board = _board_from_text(text)
+        u1, u2 = board.footprints
+        pcb.set_footprint_edge(u1, "right")
+        pcb.set_footprint_overlap(u1, True)
+        pcb.set_footprint_locked(u1, True)
+        pcb.set_footprint_edge(u2, "any")
+
+        # Write and reload
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.kicad_pcb',
+                                         delete=False) as f:
+            tmp_path = f.name
+        try:
+            pcb.write_board(board, tmp_path)
+            board2 = pcb.load_board(tmp_path)
+            u1_r, u2_r = board2.footprints
+            assert u1_r.edge_affinity == "right"
+            assert u1_r.overlap_ok is True
+            assert u1_r.locked is True
+            assert u2_r.edge_affinity == "any"
+            assert u2_r.overlap_ok is False
+            assert u2_r.locked is False
+        finally:
+            import os
+            os.unlink(tmp_path)
