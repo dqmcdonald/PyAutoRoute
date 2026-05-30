@@ -36,8 +36,9 @@ class BoardSnap:
     a consistent state, so the main thread can read it safely.
     """
     board: Any
-    results: Any = None   # list[RouteResult|None] for in-progress routing
-    grid: Any = None      # routing grid, required when results is set
+    results: Any = None        # list[RouteResult|None] for in-progress routing
+    grid: Any = None           # routing grid, required when results is set
+    kind: str = "current"      # "current" | "best"
 
 
 @dataclass

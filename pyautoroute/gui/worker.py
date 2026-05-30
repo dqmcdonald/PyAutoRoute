@@ -173,7 +173,9 @@ class Worker:
                     if new_best:
                         last_place_snap[0] = best
                     last_place_snap[1] = now
-                    self._post(BoardSnap(_snap_pads(board, cfg.place_margin)))
+                    snap_kind = "best" if new_best else "current"
+                    self._post(BoardSnap(_snap_pads(board, cfg.place_margin),
+                                        kind=snap_kind))
 
             pp = place_mod.PlaceParams(
                 iters=cfg.place_iters,
@@ -300,6 +302,14 @@ class Worker:
                         grid=grid,
                     ))
 
+                def on_best_ann(best_e, best_results):
+                    self._post(BoardSnap(
+                        dataclasses.replace(board),
+                        results=best_results,
+                        grid=grid,
+                        kind="best",
+                    ))
+
                 ap = anneal.AnnealParams(
                     iters=cfg.iters,
                     time_budget=cfg.time_budget,
@@ -315,6 +325,7 @@ class Worker:
                     on_progress=on_anneal,
                     on_snapshot=on_snap,
                     cancel=self._cancel,
+                    on_best=on_best_ann,
                 )
                 run_results = aout.results
                 run_metrics = (aout.routed, aout.unrouted,

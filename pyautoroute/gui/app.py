@@ -133,7 +133,9 @@ class App:
         self._t_run_start = 0.0
         self._initial_board = None
         self._initial_stats = None
-        self._show_initial = tk.BooleanVar(value=False)
+        self._current_snap: BoardSnap | None = None
+        self._best_snap: BoardSnap | None = None
+        self._view_mode = tk.StringVar(value="current")
 
         self._build_menu()
         self._build_layout()
@@ -187,22 +189,22 @@ class App:
         )
         pw.add(self._controls, weight=0)
 
-        # Centre: board canvas + view toggle
+        # Centre: board canvas + view selector
         canvas_frame = ttk.Frame(pw)
         pw.add(canvas_frame, weight=3)
         self._board_canvas = BoardCanvas(canvas_frame)
         self._board_canvas.pack(fill=tk.BOTH, expand=True)
         view_bar = ttk.Frame(canvas_frame)
         view_bar.pack(fill=tk.X, padx=4, pady=2)
-        self._toggle_cb = ttk.Checkbutton(
-            view_bar, text="Show initial state",
-            variable=self._show_initial,
-            command=self._on_view_toggle,
-            state=tk.DISABLED,
-        )
-        self._toggle_cb.pack(side=tk.LEFT)
-        self._toggle_label = ttk.Label(view_bar, text="", foreground="#666")
-        self._toggle_label.pack(side=tk.LEFT, padx=8)
+        ttk.Label(view_bar, text="View:").pack(side=tk.LEFT, padx=(0, 4))
+        for label, value in (("Initial", "initial"),
+                              ("Current", "current"),
+                              ("Best", "best")):
+            ttk.Radiobutton(
+                view_bar, text=label, value=value,
+                variable=self._view_mode,
+                command=self._on_view_change,
+            ).pack(side=tk.LEFT, padx=2)
 
         # Right: metrics + energy graph (vertical stack)
         right = ttk.Frame(pw)
@@ -237,17 +239,17 @@ class App:
             except queue.Empty:
                 pass
 
-            # Identify last BoardSnap and last Progress per kind.
-            last_snap_idx: int | None = None
+            # Identify last BoardSnap per kind and last Progress per kind.
+            last_snap_idx: dict[str, int] = {}
             last_prog_idx: dict[str, int] = {}
             for i, ev in enumerate(events):
                 if isinstance(ev, BoardSnap):
-                    last_snap_idx = i
+                    last_snap_idx[ev.kind] = i
                 elif isinstance(ev, Progress):
                     last_prog_idx[ev.kind] = i
 
             for i, ev in enumerate(events):
-                if isinstance(ev, BoardSnap) and i != last_snap_idx:
+                if isinstance(ev, BoardSnap) and last_snap_idx.get(ev.kind) != i:
                     continue
                 if isinstance(ev, Progress) and last_prog_idx.get(ev.kind) != i:
                     continue
@@ -283,8 +285,13 @@ class App:
                     self._energy_plot.refresh()
                     self._last_plot_refresh = now
         elif isinstance(event, BoardSnap):
-            self._board_canvas.show_board(
-                event.board, event.results, event.grid)
+            if event.kind == "best":
+                self._best_snap = event
+            else:
+                self._current_snap = event
+            if self._view_mode.get() == event.kind:
+                self._board_canvas.show_board(
+                    event.board, event.results, event.grid)
         elif isinstance(event, Done):
             self._on_done(event)
         elif isinstance(event, Error):
@@ -300,9 +307,9 @@ class App:
         self._controls.set_running(True)
         self._controls.set_apply_enabled(False)
         self._last_done = None
-        self._show_initial.set(False)
-        self._toggle_cb.configure(state=tk.DISABLED)
-        self._toggle_label.configure(text="")
+        self._current_snap = None
+        self._best_snap = None
+        self._view_mode.set("current")
         self._metrics.reset()
         self._energy_plot.reset()
         self._t_run_start = time.monotonic()
@@ -324,14 +331,10 @@ class App:
         msg = (f"Done — {ev.routed}/{ev.total} routed, "
                f"{ev.length:.0f} mm, {ev.vias} vias.  {check}")
         self._status_var.set(msg)
-        # Enable initial/final toggle when we have both states
-        if self._initial_board is not None:
-            self._toggle_cb.configure(state=tk.NORMAL)
-            if self._initial_stats is not None:
-                s = self._initial_stats
-                self._toggle_label.configure(
-                    text=f"Initial: {s.routed}/{s.total} routed, "
-                         f"{s.length:.0f} mm, {s.vias} vias")
+        if ev.board is not None:
+            final_snap = BoardSnap(ev.board, kind="current")
+            self._current_snap = final_snap
+            self._best_snap = final_snap
         if n_viol:
             messagebox.showwarning("Self-check",
                                    f"{n_viol} clearance violation(s) found.\n"
@@ -406,9 +409,9 @@ class App:
             self._initial_board = board
             self._initial_stats = None
             self._last_done = None
-            self._show_initial.set(False)
-            self._toggle_cb.configure(state=tk.DISABLED)
-            self._toggle_label.configure(text="")
+            self._current_snap = None
+            self._best_snap = None
+            self._view_mode.set("current")
 
             self._board_canvas.show_board(board, title=Path(path).name)
 
@@ -439,21 +442,36 @@ class App:
         except Exception as exc:
             messagebox.showerror("Open failed", str(exc))
 
-    def _on_view_toggle(self) -> None:
-        """Switch the canvas between initial and final board state."""
+    def _on_view_change(self) -> None:
+        """Switch the canvas to the selected view state."""
         inp = self._controls._full_input_path()
         title_base = Path(inp).name if inp else "board"
-        if self._show_initial.get():
+        mode = self._view_mode.get()
+        if mode == "initial":
             if self._initial_board is not None:
                 self._board_canvas.show_board(
                     self._initial_board, title=f"{title_base} (initial)")
             if self._initial_stats is not None:
                 self._metrics.set_initial_stats(self._initial_stats)
-        else:
-            ev = self._last_done
-            if ev is not None and ev.board is not None:
-                self._board_canvas.show_board(ev.board, title=f"{title_base} (routed)")
-                self._metrics.set_done(ev)
+        elif mode == "current":
+            snap = self._current_snap
+            if snap is not None:
+                self._board_canvas.show_board(
+                    snap.board, snap.results, snap.grid,
+                    title=f"{title_base} (current)")
+            elif self._initial_board is not None:
+                self._board_canvas.show_board(
+                    self._initial_board, title=f"{title_base} (initial)")
+            if self._last_done is not None:
+                self._metrics.set_done(self._last_done)
+        elif mode == "best":
+            snap = self._best_snap
+            if snap is not None:
+                self._board_canvas.show_board(
+                    snap.board, snap.results, snap.grid,
+                    title=f"{title_base} (best)")
+            if self._last_done is not None:
+                self._metrics.set_done(self._last_done)
 
     # ── menu actions ─────────────────────────────────────────────────
 
