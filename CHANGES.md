@@ -62,7 +62,7 @@ a **patch** bump for fixes and small corrections. Newest first.
   lowest routed energy — selecting on the true objective instead of placement
   energy alone. Parallelised by `--jobs` (cycle workers), like `--runs`.
   `--place-runs`/`--runs` remain available as inner loops; `--cycles 1` (default)
-  is unchanged. Phase 3 of `docs/placement-improvements-plan.md` (B1+B2+B3).
+  is unchanged. Phase 3 of `plans/placement-improvements-plan.md` (B1+B2+B3).
 - **New `pipeline.py`** — the shared, picklable `run_cycle` place→route→score unit
   (`CycleResult` / `select_best`), used by the sequential and parallel cycle paths.
   The routing helpers `_route_one_run` / `_route_run_worker` moved here (routing is
@@ -92,7 +92,7 @@ a **patch** bump for fixes and small corrections. Newest first.
   area penalty) instead of regenerating a bounding-box outline — for boards with a
   real mechanical shape. Edge-flagged parts (`Autoroute=edge`) then snap to the
   real board edge. Needs a closed outline; warns and falls back otherwise. Phase 2
-  of `docs/placement-improvements-plan.md`. *(Also fixes the placement SA revert to
+  of `plans/placement-improvements-plan.md`. *(Also fixes the placement SA revert to
   roll back the new containment/edge cache terms.)*
 
 ## 0.26.0
@@ -103,7 +103,7 @@ a **patch** bump for fixes and small corrections. Newest first.
   edge. A new placement-energy term (`--place-edge-weight`, default 2.0) measures
   each flagged part's distance from its target edge; tokens combine with
   `overlap`. Off by default (zero cost when nothing is flagged). Phase 1 of
-  `docs/placement-improvements-plan.md`.
+  `plans/placement-improvements-plan.md`.
 
 ## 0.25.3
 
@@ -195,7 +195,7 @@ a **patch** bump for fixes and small corrections. Newest first.
 - **Tkinter GUI** (`pyautoroute-gui`): open a project, run place/route with live
   board rendering and convergence telemetry (energy graph, acceptance ratio,
   metrics), Run/Stop with cooperative cancel, and Apply-to-project (backup +
-  overwrite the original `.kicad_pcb`). See `docs/gui-plan.md`.
+  overwrite the original `.kicad_pcb`). See `plans/gui-plan.md`.
 
 ## 0.14.0
 
@@ -235,7 +235,7 @@ a **patch** bump for fixes and small corrections. Newest first.
 - **Experimental footprint auto-placement** (`--place`): a simulated-annealing
   pass that arranges footprints (rats-nest + overlap + compactness energy),
   honouring KiCad locks and an `Autoroute=overlap` property, then regenerates
-  Edge.Cuts and routes. See `docs/place-feature-plan.md`.
+  Edge.Cuts and routes. See `plans/place-feature-plan.md`.
 
 ## 0.5.0 – 0.5.3
 

@@ -20,7 +20,7 @@ lets the user **replace the original `.kicad_pcb`** with the result when happy.
 It is additive: the CLI, library, and file formats are unchanged. The GUI is a thin
 front-end over the existing modules (`pcb`, `placement`, `anneal`, `router`,
 `grid`, `rules`, `netlist`, `tune`, `visualize`). This is the planning artifact
-(the analogue of `docs/place-feature-plan.md` / `docs/improvements-plan.md`); a
+(the analogue of `plans/place-feature-plan.md` / `plans/placement-improvements-plan.md`); a
 follow-up PR implements it.
 
 ## Goals
@@ -272,5 +272,5 @@ non-UI logic tests still run.)
       settings↔params mapping, backup/replace logic) and the skipped-unless-display
       widget smoke test.
 
-(Cross-cutting ideas live in `docs/feature-suggestions.md`.)
+(Cross-cutting ideas live in `plans/feature-suggestions.md`.)
 </content>

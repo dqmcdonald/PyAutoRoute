@@ -383,7 +383,7 @@ keep-best gate and decayed blend are the guardrails).
 (after any `--auto`) `pipeline.run_routing`, with a `Reporter`-backed
 `PipelineHooks` mapping progress to its live display and log. The GUI worker calls
 the *same* two functions with an event-posting hooks object, so the place→route
-orchestration exists once for both front-ends (the duplication `gui-plan.md`
+orchestration exists once for both front-ends (the duplication `plans/gui-plan.md`
 flagged is gone). The GUI also exposes **best-of-cycles** and **congestion
 feedback**: when its *Cycles* control is > 1 (place+route mode), the worker drives
 `pipeline.run_cycle` in the same loop the CLI's `_run_cycles` uses — reusing the
@@ -570,7 +570,7 @@ an unbounded search would re-scan the whole board every iteration.
   instead of exploring forever.
 - **Cancellation** = an optional `threading.Event` passed to `anneal`/`placement`;
   when set, the loop stops early and returns the best-so-far. This backs a GUI Stop
-  button (the SA runs on a worker thread; see `docs/gui-plan.md`).
+  button (the SA runs on a worker thread; see `plans/gui-plan.md`).
 
 ## Testing
 

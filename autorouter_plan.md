@@ -4,7 +4,7 @@
 > record* — the plan the project was built from. It is kept for context; the
 > living reference is [`docs/architecture.md`](docs/architecture.md), and a plain
 > explanation of the algorithms is in [`docs/algorithms.md`](docs/algorithms.md).
-> Outstanding ideas live in [`docs/feature-suggestions.md`](docs/feature-suggestions.md);
+> Outstanding ideas live in [`plans/feature-suggestions.md`](plans/feature-suggestions.md);
 > a TODO of items from *this* plan is at the bottom.
 >
 > *(Historical note: the venv paths and "confirm with user" wording below reflect
@@ -255,7 +255,7 @@ described in `docs/architecture.md`. The only deferred items noted in this plan:
       still does not *generate* pours. (Noted future extension, line ~224.)
 - [ ] **Per-net-class clearance masks.** The grid uses one global worst-case
       clearance margin across all net classes — conservative on mixed-rule boards.
-      (Tracked in `docs/feature-suggestions.md`.)
+      (Tracked in `plans/feature-suggestions.md`.)
 
 Everything else here is done. Newer work (placement, GUI, tuning, performance)
 has its own plan docs; see `CHANGES.md` for the version-by-version history.

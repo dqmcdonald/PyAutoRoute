@@ -115,6 +115,9 @@
                         <li>
                                 <a class="variable" href="#BoardSnap.grid">grid</a>
                         </li>
+                        <li>
+                                <a class="variable" href="#BoardSnap.kind">kind</a>
+                        </li>
                 </ul>
 
             </li>
@@ -227,28 +230,29 @@
 </span><span id="L-36"><a href="#L-36"><span class="linenos">36</span></a><span class="sd">    a consistent state, so the main thread can read it safely.</span>
 </span><span id="L-37"><a href="#L-37"><span class="linenos">37</span></a><span class="sd">    &quot;&quot;&quot;</span>
 </span><span id="L-38"><a href="#L-38"><span class="linenos">38</span></a>    <span class="n">board</span><span class="p">:</span> <span class="n">Any</span>
-</span><span id="L-39"><a href="#L-39"><span class="linenos">39</span></a>    <span class="n">results</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>   <span class="c1"># list[RouteResult|None] for in-progress routing</span>
-</span><span id="L-40"><a href="#L-40"><span class="linenos">40</span></a>    <span class="n">grid</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>      <span class="c1"># routing grid, required when results is set</span>
-</span><span id="L-41"><a href="#L-41"><span class="linenos">41</span></a>
+</span><span id="L-39"><a href="#L-39"><span class="linenos">39</span></a>    <span class="n">results</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>        <span class="c1"># list[RouteResult|None] for in-progress routing</span>
+</span><span id="L-40"><a href="#L-40"><span class="linenos">40</span></a>    <span class="n">grid</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>           <span class="c1"># routing grid, required when results is set</span>
+</span><span id="L-41"><a href="#L-41"><span class="linenos">41</span></a>    <span class="n">kind</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;current&quot;</span>      <span class="c1"># &quot;current&quot; | &quot;best&quot;</span>
 </span><span id="L-42"><a href="#L-42"><span class="linenos">42</span></a>
-</span><span id="L-43"><a href="#L-43"><span class="linenos">43</span></a><span class="nd">@dataclass</span>
-</span><span id="L-44"><a href="#L-44"><span class="linenos">44</span></a><span class="k">class</span><span class="w"> </span><span class="nc">Done</span><span class="p">:</span>
-</span><span id="L-45"><a href="#L-45"><span class="linenos">45</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;The pipeline completed successfully.&quot;&quot;&quot;</span>
-</span><span id="L-46"><a href="#L-46"><span class="linenos">46</span></a>    <span class="n">out_path</span><span class="p">:</span> <span class="nb">str</span>
-</span><span id="L-47"><a href="#L-47"><span class="linenos">47</span></a>    <span class="n">total</span><span class="p">:</span> <span class="nb">int</span>
-</span><span id="L-48"><a href="#L-48"><span class="linenos">48</span></a>    <span class="n">routed</span><span class="p">:</span> <span class="nb">int</span>
-</span><span id="L-49"><a href="#L-49"><span class="linenos">49</span></a>    <span class="n">unrouted</span><span class="p">:</span> <span class="nb">int</span>
-</span><span id="L-50"><a href="#L-50"><span class="linenos">50</span></a>    <span class="n">length</span><span class="p">:</span> <span class="nb">float</span>
-</span><span id="L-51"><a href="#L-51"><span class="linenos">51</span></a>    <span class="n">vias</span><span class="p">:</span> <span class="nb">int</span>
-</span><span id="L-52"><a href="#L-52"><span class="linenos">52</span></a>    <span class="n">violations</span><span class="p">:</span> <span class="nb">list</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
-</span><span id="L-53"><a href="#L-53"><span class="linenos">53</span></a>    <span class="n">board</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>
-</span><span id="L-54"><a href="#L-54"><span class="linenos">54</span></a>
+</span><span id="L-43"><a href="#L-43"><span class="linenos">43</span></a>
+</span><span id="L-44"><a href="#L-44"><span class="linenos">44</span></a><span class="nd">@dataclass</span>
+</span><span id="L-45"><a href="#L-45"><span class="linenos">45</span></a><span class="k">class</span><span class="w"> </span><span class="nc">Done</span><span class="p">:</span>
+</span><span id="L-46"><a href="#L-46"><span class="linenos">46</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;The pipeline completed successfully.&quot;&quot;&quot;</span>
+</span><span id="L-47"><a href="#L-47"><span class="linenos">47</span></a>    <span class="n">out_path</span><span class="p">:</span> <span class="nb">str</span>
+</span><span id="L-48"><a href="#L-48"><span class="linenos">48</span></a>    <span class="n">total</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="L-49"><a href="#L-49"><span class="linenos">49</span></a>    <span class="n">routed</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="L-50"><a href="#L-50"><span class="linenos">50</span></a>    <span class="n">unrouted</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="L-51"><a href="#L-51"><span class="linenos">51</span></a>    <span class="n">length</span><span class="p">:</span> <span class="nb">float</span>
+</span><span id="L-52"><a href="#L-52"><span class="linenos">52</span></a>    <span class="n">vias</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="L-53"><a href="#L-53"><span class="linenos">53</span></a>    <span class="n">violations</span><span class="p">:</span> <span class="nb">list</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
+</span><span id="L-54"><a href="#L-54"><span class="linenos">54</span></a>    <span class="n">board</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>
 </span><span id="L-55"><a href="#L-55"><span class="linenos">55</span></a>
-</span><span id="L-56"><a href="#L-56"><span class="linenos">56</span></a><span class="nd">@dataclass</span>
-</span><span id="L-57"><a href="#L-57"><span class="linenos">57</span></a><span class="k">class</span><span class="w"> </span><span class="nc">Error</span><span class="p">:</span>
-</span><span id="L-58"><a href="#L-58"><span class="linenos">58</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;An exception terminated the pipeline.&quot;&quot;&quot;</span>
-</span><span id="L-59"><a href="#L-59"><span class="linenos">59</span></a>    <span class="n">exc</span><span class="p">:</span> <span class="ne">BaseException</span>
-</span><span id="L-60"><a href="#L-60"><span class="linenos">60</span></a>    <span class="n">tb</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+</span><span id="L-56"><a href="#L-56"><span class="linenos">56</span></a>
+</span><span id="L-57"><a href="#L-57"><span class="linenos">57</span></a><span class="nd">@dataclass</span>
+</span><span id="L-58"><a href="#L-58"><span class="linenos">58</span></a><span class="k">class</span><span class="w"> </span><span class="nc">Error</span><span class="p">:</span>
+</span><span id="L-59"><a href="#L-59"><span class="linenos">59</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;An exception terminated the pipeline.&quot;&quot;&quot;</span>
+</span><span id="L-60"><a href="#L-60"><span class="linenos">60</span></a>    <span class="n">exc</span><span class="p">:</span> <span class="ne">BaseException</span>
+</span><span id="L-61"><a href="#L-61"><span class="linenos">61</span></a>    <span class="n">tb</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
 </span></pre></div>
 
 
@@ -489,8 +493,9 @@
 </span><span id="BoardSnap-37"><a href="#BoardSnap-37"><span class="linenos">37</span></a><span class="sd">    a consistent state, so the main thread can read it safely.</span>
 </span><span id="BoardSnap-38"><a href="#BoardSnap-38"><span class="linenos">38</span></a><span class="sd">    &quot;&quot;&quot;</span>
 </span><span id="BoardSnap-39"><a href="#BoardSnap-39"><span class="linenos">39</span></a>    <span class="n">board</span><span class="p">:</span> <span class="n">Any</span>
-</span><span id="BoardSnap-40"><a href="#BoardSnap-40"><span class="linenos">40</span></a>    <span class="n">results</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>   <span class="c1"># list[RouteResult|None] for in-progress routing</span>
-</span><span id="BoardSnap-41"><a href="#BoardSnap-41"><span class="linenos">41</span></a>    <span class="n">grid</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>      <span class="c1"># routing grid, required when results is set</span>
+</span><span id="BoardSnap-40"><a href="#BoardSnap-40"><span class="linenos">40</span></a>    <span class="n">results</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>        <span class="c1"># list[RouteResult|None] for in-progress routing</span>
+</span><span id="BoardSnap-41"><a href="#BoardSnap-41"><span class="linenos">41</span></a>    <span class="n">grid</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>           <span class="c1"># routing grid, required when results is set</span>
+</span><span id="BoardSnap-42"><a href="#BoardSnap-42"><span class="linenos">42</span></a>    <span class="n">kind</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;current&quot;</span>      <span class="c1"># &quot;current&quot; | &quot;best&quot;</span>
 </span></pre></div>
 
 
@@ -504,7 +509,7 @@ a consistent state, so the main thread can read it safely.</p>
                             <div id="BoardSnap.__init__" class="classattr">
                                 <div class="attr function">
             
-        <span class="name">BoardSnap</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">board</span><span class="p">:</span> <span class="n">Any</span>, </span><span class="param"><span class="n">results</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>, </span><span class="param"><span class="n">grid</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span></span>)</span>
+        <span class="name">BoardSnap</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">board</span><span class="p">:</span> <span class="n">Any</span>,</span><span class="param">	<span class="n">results</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">grid</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">kind</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;current&#39;</span></span>)</span>
 
         
     </div>
@@ -548,6 +553,18 @@ a consistent state, so the main thread can read it safely.</p>
     
 
                             </div>
+                            <div id="BoardSnap.kind" class="classattr">
+                                <div class="attr variable">
+            <span class="name">kind</span><span class="annotation">: str</span>        =
+<span class="default_value">&#39;current&#39;</span>
+
+        
+    </div>
+    <a class="headerlink" href="#BoardSnap.kind"></a>
+    
+    
+
+                            </div>
                 </section>
                 <section id="Done">
                             <input id="Done-view-source" class="view-source-toggle-state" type="checkbox" aria-hidden="true" tabindex="-1">
@@ -561,17 +578,17 @@ a consistent state, so the main thread can read it safely.</p>
 
     </div>
     <a class="headerlink" href="#Done"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="Done-44"><a href="#Done-44"><span class="linenos">44</span></a><span class="nd">@dataclass</span>
-</span><span id="Done-45"><a href="#Done-45"><span class="linenos">45</span></a><span class="k">class</span><span class="w"> </span><span class="nc">Done</span><span class="p">:</span>
-</span><span id="Done-46"><a href="#Done-46"><span class="linenos">46</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;The pipeline completed successfully.&quot;&quot;&quot;</span>
-</span><span id="Done-47"><a href="#Done-47"><span class="linenos">47</span></a>    <span class="n">out_path</span><span class="p">:</span> <span class="nb">str</span>
-</span><span id="Done-48"><a href="#Done-48"><span class="linenos">48</span></a>    <span class="n">total</span><span class="p">:</span> <span class="nb">int</span>
-</span><span id="Done-49"><a href="#Done-49"><span class="linenos">49</span></a>    <span class="n">routed</span><span class="p">:</span> <span class="nb">int</span>
-</span><span id="Done-50"><a href="#Done-50"><span class="linenos">50</span></a>    <span class="n">unrouted</span><span class="p">:</span> <span class="nb">int</span>
-</span><span id="Done-51"><a href="#Done-51"><span class="linenos">51</span></a>    <span class="n">length</span><span class="p">:</span> <span class="nb">float</span>
-</span><span id="Done-52"><a href="#Done-52"><span class="linenos">52</span></a>    <span class="n">vias</span><span class="p">:</span> <span class="nb">int</span>
-</span><span id="Done-53"><a href="#Done-53"><span class="linenos">53</span></a>    <span class="n">violations</span><span class="p">:</span> <span class="nb">list</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
-</span><span id="Done-54"><a href="#Done-54"><span class="linenos">54</span></a>    <span class="n">board</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="Done-45"><a href="#Done-45"><span class="linenos">45</span></a><span class="nd">@dataclass</span>
+</span><span id="Done-46"><a href="#Done-46"><span class="linenos">46</span></a><span class="k">class</span><span class="w"> </span><span class="nc">Done</span><span class="p">:</span>
+</span><span id="Done-47"><a href="#Done-47"><span class="linenos">47</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;The pipeline completed successfully.&quot;&quot;&quot;</span>
+</span><span id="Done-48"><a href="#Done-48"><span class="linenos">48</span></a>    <span class="n">out_path</span><span class="p">:</span> <span class="nb">str</span>
+</span><span id="Done-49"><a href="#Done-49"><span class="linenos">49</span></a>    <span class="n">total</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="Done-50"><a href="#Done-50"><span class="linenos">50</span></a>    <span class="n">routed</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="Done-51"><a href="#Done-51"><span class="linenos">51</span></a>    <span class="n">unrouted</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="Done-52"><a href="#Done-52"><span class="linenos">52</span></a>    <span class="n">length</span><span class="p">:</span> <span class="nb">float</span>
+</span><span id="Done-53"><a href="#Done-53"><span class="linenos">53</span></a>    <span class="n">vias</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="Done-54"><a href="#Done-54"><span class="linenos">54</span></a>    <span class="n">violations</span><span class="p">:</span> <span class="nb">list</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
+</span><span id="Done-55"><a href="#Done-55"><span class="linenos">55</span></a>    <span class="n">board</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>
 </span></pre></div>
 
 
@@ -693,11 +710,11 @@ a consistent state, so the main thread can read it safely.</p>
 
     </div>
     <a class="headerlink" href="#Error"></a>
-            <div class="pdoc-code codehilite"><pre><span></span><span id="Error-57"><a href="#Error-57"><span class="linenos">57</span></a><span class="nd">@dataclass</span>
-</span><span id="Error-58"><a href="#Error-58"><span class="linenos">58</span></a><span class="k">class</span><span class="w"> </span><span class="nc">Error</span><span class="p">:</span>
-</span><span id="Error-59"><a href="#Error-59"><span class="linenos">59</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;An exception terminated the pipeline.&quot;&quot;&quot;</span>
-</span><span id="Error-60"><a href="#Error-60"><span class="linenos">60</span></a>    <span class="n">exc</span><span class="p">:</span> <span class="ne">BaseException</span>
-</span><span id="Error-61"><a href="#Error-61"><span class="linenos">61</span></a>    <span class="n">tb</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+            <div class="pdoc-code codehilite"><pre><span></span><span id="Error-58"><a href="#Error-58"><span class="linenos">58</span></a><span class="nd">@dataclass</span>
+</span><span id="Error-59"><a href="#Error-59"><span class="linenos">59</span></a><span class="k">class</span><span class="w"> </span><span class="nc">Error</span><span class="p">:</span>
+</span><span id="Error-60"><a href="#Error-60"><span class="linenos">60</span></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;An exception terminated the pipeline.&quot;&quot;&quot;</span>
+</span><span id="Error-61"><a href="#Error-61"><span class="linenos">61</span></a>    <span class="n">exc</span><span class="p">:</span> <span class="ne">BaseException</span>
+</span><span id="Error-62"><a href="#Error-62"><span class="linenos">62</span></a>    <span class="n">tb</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
 </span></pre></div>
 
 
