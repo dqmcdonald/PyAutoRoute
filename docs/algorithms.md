@@ -135,6 +135,12 @@ layout (to pull everything compact). Locked parts stay put; parts flagged
 finishes it draws a board outline around the result and hands off to routing as
 usual.
 
+Because a placement that *looks* best (short rats-nest, compact) can route worse,
+`--cycles N` runs N independent place→route attempts and keeps the one that
+actually routes best — fewest unrouted connections, then lowest routed energy —
+selecting on the real objective rather than the placement-energy proxy. Cycles are
+independent, so `--jobs` runs them in parallel.
+
 ---
 
 ## How the stages fit together

@@ -5,6 +5,20 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.29.0
+
+- **Best-of-cycles placement (`--cycles N`).** With `--place`, run `N` independent
+  place→route cycles and keep the one that *routes* best — fewest unrouted, then
+  lowest routed energy — selecting on the true objective instead of placement
+  energy alone. Parallelised by `--jobs` (cycle workers), like `--runs`.
+  `--place-runs`/`--runs` remain available as inner loops; `--cycles 1` (default)
+  is unchanged. Phase 3 of `docs/placement-improvements-plan.md` (B1+B2+B3).
+- **New `pipeline.py`** — the shared, picklable `run_cycle` place→route→score unit
+  (`CycleResult` / `select_best`), used by the sequential and parallel cycle paths.
+  The routing helpers `_route_one_run` / `_route_run_worker` moved here (routing is
+  a cycle's second half). Routing the GUI worker through the same unit (removing the
+  CLI/GUI orchestration duplication) is the remaining Phase-3 follow-up.
+
 ## 0.28.0
 
 - **Split the `Autoroute` footprint property into namespaced fields.** The single

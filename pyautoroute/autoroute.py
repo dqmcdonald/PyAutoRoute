@@ -21,6 +21,9 @@ from pathlib import Path
 
 from . import __version__, anneal, geometry, netlist, pcb, placement, router
 from .grid import Grid
+from .pipeline import (
+    CycleHooks, _cycle_worker, _route_run_worker, run_cycle, select_best,
+)
 from .rules import load_rules
 
 
@@ -284,91 +287,6 @@ def _stamp(board, mode: str) -> None:
     pcb.stamp_comment(board, f"PyAutoRoute v{__version__} — {mode} {today}")
 
 
-def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
-                   iters, time_budget, seed, unrouted_weight, anneal_temps,
-                   via_weight, on_route_progress=None, on_anneal_progress=None,
-                   on_snapshot=None, snapshots=0, cancel=None):
-    """Run one independent route (+ optional anneal) and return its outcome.
-
-    This is the shared body of both the sequential and the parallel best-of-N
-    routing paths. It builds a fresh `RoutingState` over `grid` (which it never
-    mutates), greedily routes, then optionally anneals with seed ``seed +
-    run_idx`` — matching the sequential loop's seeding exactly.
-
-    Args:
-        grid: the (read-only) routing grid; each run gets its own `RoutingState`.
-        conns: the connection list.
-        order: the greedy routing order.
-        params: the `RouteParams`.
-        run_idx: zero-based run index; offsets the anneal seed.
-        annealing: whether to run the rip-up/reroute annealer.
-        iters: anneal iteration budget.
-        time_budget: anneal time budget (s).
-        seed: base seed (the anneal seed is ``seed + run_idx``).
-        unrouted_weight: anneal unrouted-connection penalty.
-        anneal_temps: (start, end) anneal temperatures.
-        via_weight: via cost used for the non-annealing energy.
-        on_route_progress: optional greedy-route progress callback.
-        on_anneal_progress: optional anneal progress callback.
-        on_snapshot: optional snapshot callback (single-run only).
-        snapshots: number of snapshots to emit during annealing.
-        cancel: optional cancellation `Event`.
-
-    Returns:
-        A dict ``{energy, results, metrics, summary}`` where ``metrics`` is
-        ``(routed, unrouted, length, vias)`` and ``summary`` is a log line (or
-        ``None``). All values are picklable so the dict can cross a process
-        boundary.
-    """
-    state = router.RoutingState(grid)
-    result = router.route_all(state, conns, order, params,
-                              on_progress=on_route_progress)
-    run_results = result.results
-    run_metrics = (result.routed, result.unrouted,
-                   result.total_length, result.total_vias)
-    summary = None
-
-    if annealing:
-        ap = anneal.AnnealParams(iters=iters, time_budget=time_budget,
-                                 seed=seed + run_idx, snapshots=snapshots,
-                                 unrouted_weight=unrouted_weight,
-                                 t_start=anneal_temps[0], t_end=anneal_temps[1],
-                                 route_params=params)
-        aout = anneal.anneal(state, conns, list(result.results), ap,
-                             on_progress=on_anneal_progress,
-                             on_snapshot=on_snapshot, cancel=cancel)
-        run_results = aout.results
-        run_metrics = (aout.routed, aout.unrouted,
-                       aout.total_length, aout.total_vias)
-        run_energy = aout.best_energy
-        acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
-        summary = (f"anneal: {aout.iterations} iters, "
-                   f"{aout.accepted} accepted ({acc_pct:.0f}%), "
-                   f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
-    else:
-        run_energy = anneal._energy(run_results, via_weight, unrouted_weight)
-
-    return {"energy": run_energy, "results": run_results,
-            "metrics": run_metrics, "summary": summary}
-
-
-def _route_run_worker(payload):
-    """Picklable `ProcessPoolExecutor` entry point for one routing run.
-
-    Unpacks a ``(grid, conns, order, params, run_idx, kwargs)`` tuple and calls
-    `_route_one_run` with all progress callbacks suppressed (per-run live
-    progress does not interleave cleanly across processes).
-
-    Args:
-        payload: the packed argument tuple.
-
-    Returns:
-        The result dict from `_route_one_run`.
-    """
-    grid, conns, order, params, run_idx, kw = payload
-    return _route_one_run(grid, conns, order, params, run_idx, **kw)
-
-
 def _results_to_nodes(board, grid: Grid, results) -> list:
     """Flatten routed results into the KiCad nodes to append to the board.
 
@@ -466,6 +384,44 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
     rep.log("-" * 64)
 
 
+def _place_params_from_args(args, board, rules, rep):
+    """Build `placement.PlaceParams` from the CLI args.
+
+    Resolves the placement-buffer default (from the design rules) and the
+    ``--keep-outline`` fallback — a synthesised or absent Edge.Cuts can't be kept,
+    so the flag is dropped with a note. Shared by the single-pass placement in
+    `run` and the per-cycle placement in `_run_cycles`.
+
+    Args:
+        args: the parsed CLI namespace.
+        board: the parsed board (for the keep-outline Edge.Cuts check).
+        rules: the design rules (for the buffer default).
+        rep: the `Reporter` (for the fallback note).
+
+    Returns:
+        ``(params, keep_outline)`` — the placement params and the resolved
+        keep-outline flag.
+    """
+    if args.place_buffer is None:
+        args.place_buffer = default_place_buffer(rules)
+    keep_outline = bool(getattr(args, "keep_outline", False))
+    if keep_outline and (not board.outline or board.outline_synthesized):
+        keep_outline = False
+        msg = ("--keep-outline ignored: the board has no Edge.Cuts to keep; "
+               "regenerating a bounding outline instead")
+        rep.log(msg)
+        if not args.quiet:
+            print(f"  note: {msg}")
+    pp = placement.PlaceParams(
+        iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
+        exclude=args.exclude_net, overlap_weight=args.place_overlap_weight,
+        compact_weight=args.place_compact_weight, buffer=args.place_buffer,
+        edge_weight=args.place_edge_weight, keep_outline=keep_outline,
+        t_start=args.place_temps[0], t_end=args.place_temps[1],
+        step=args.place_step, rotate_mode=args.place_rotate)
+    return pp, keep_outline
+
+
 def run(args: argparse.Namespace) -> int:
     """Execute the full pipeline: parse -> grid -> route -> (anneal) -> write.
 
@@ -515,19 +471,21 @@ def run(args: argparse.Namespace) -> int:
         init = routing_stats(board, rules)
         print(f"  initial board: {init.summary()}")
 
+    cycles = max(1, getattr(args, "cycles", 1))
+    if cycles > 1 and not args.place:
+        print("  note: --cycles needs --place (it selects placements by how they "
+              "route); ignoring")
+        cycles = 1
+    if cycles > 1 and args.place_only:
+        print("  note: --cycles has no effect with --place-only (no routing); "
+              "ignoring")
+        cycles = 1
+    if cycles > 1:
+        return _run_cycles(args, rep, input_path, out_path, rules, pitch,
+                           board, fill_nets, cycles)
+
     if args.place or args.place_only:
-        if args.place_buffer is None:
-            args.place_buffer = default_place_buffer(rules)
-        # --keep-outline needs a real (non-synthesised) Edge.Cuts to contain the
-        # placement within; otherwise fall back to regenerating a bounding box.
-        keep_outline = bool(getattr(args, "keep_outline", False))
-        if keep_outline and (not board.outline or board.outline_synthesized):
-            keep_outline = False
-            msg = ("--keep-outline ignored: the board has no Edge.Cuts to keep; "
-                   "regenerating a bounding outline instead")
-            rep.log(msg)
-            if not args.quiet:
-                print(f"  note: {msg}")
+        pp, keep_outline = _place_params_from_args(args, board, rules, rep)
         place_runs = max(1, args.place_runs)
         _place_run_idx = [0]
         _place_last_it = [-1]
@@ -553,13 +511,6 @@ def run(args: argparse.Namespace) -> int:
                         elapsed=elapsed, budget=args.place_time or 0.0,
                         overall_best=_place_overall_best[0] if place_runs > 1 else None)
 
-        pp = placement.PlaceParams(
-            iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
-            exclude=args.exclude_net, overlap_weight=args.place_overlap_weight,
-            compact_weight=args.place_compact_weight, buffer=args.place_buffer,
-            edge_weight=args.place_edge_weight, keep_outline=keep_outline,
-            t_start=args.place_temps[0], t_end=args.place_temps[1],
-            step=args.place_step, rotate_mode=args.place_rotate)
         pout = placement.place(board, pp, on_progress=_on_place, runs=place_runs)
         rep.tag = ""
         kept = pcb.apply_placement(board, margin=args.place_margin,
@@ -799,6 +750,130 @@ def run(args: argparse.Namespace) -> int:
 
     _report(rep, out_path, len(conns), routed, unrouted, length, vias,
             violations, excluded)
+    return _finish(rep, args, out_path, routed_board, violations)
+
+
+def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
+                cycles) -> int:
+    """Best-of-cycles: keep the best-*routing* of N independent place+route runs.
+
+    Each cycle re-loads the board and runs one placement + one routing through
+    `pipeline.run_cycle` (seed ``args.seed + k``), so cycles are independent and
+    selected on the true routed objective — fewest unrouted, then lowest energy —
+    rather than on placement energy. Cycles run sequentially with live progress,
+    or across ``--jobs`` worker processes (progress suppressed, one line per
+    finished cycle). The winning cycle's board is written, zone-refilled,
+    self-checked and reported exactly as `run` does.
+
+    Args:
+        args: the parsed CLI namespace.
+        rep: the reporter.
+        input_path: the source board path (re-read each cycle).
+        out_path: the output board path.
+        rules: the design rules.
+        pitch: routing-grid pitch (mm).
+        board: the already-parsed board (for param resolution + exclude reporting).
+        fill_nets: nets with copper pours (for the zone refill).
+        cycles: number of cycles (> 1).
+
+    Returns:
+        Process exit code (0 clean, 2 on a clearance violation).
+    """
+    pp, _keep = _place_params_from_args(args, board, rules, rep)
+    route_params = router.RouteParams(via_cost=args.via_weight,
+                                      search_margin=args.search_margin)
+    route_kw = dict(annealing=bool(args.iters or args.time_budget),
+                    iters=args.iters, time_budget=args.time_budget,
+                    unrouted_weight=args.unrouted_weight,
+                    anneal_temps=args.anneal_temps, via_weight=args.via_weight)
+    base_seed = args.seed
+    jobs = args.jobs if args.jobs and args.jobs > 0 else (os.cpu_count() or 1)
+    jobs = max(1, min(jobs, cycles))
+    parallel = jobs > 1
+
+    def _cycle_line(k, cr):
+        return (f"cycle {k}/{cycles}: routed {cr.routed}/{cr.n_conns}, "
+                f"energy {cr.energy:.1f}, {cr.vias} vias"
+                + (f", {cr.unrouted} unrouted" if cr.unrouted else ""))
+
+    results: list = []
+    if parallel:
+        rep.phase(f"best-of-cycles: {cycles} place+route cycles "
+                  f"across {jobs} workers")
+        payloads = [(str(input_path), rules, pitch, pp, route_params,
+                     route_kw, args.place_margin, base_seed + k)
+                    for k in range(cycles)]
+        try:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
+                futs = [ex.submit(_cycle_worker, p) for p in payloads]
+                for fut in concurrent.futures.as_completed(futs):
+                    cr = fut.result()
+                    results.append(cr)
+                    line = _cycle_line(len(results), cr)
+                    rep.log(line)
+                    if not args.quiet:
+                        print(f"  {line}")
+        except KeyboardInterrupt:
+            rep.log("interrupted — keeping best cycle so far")
+            if not results:
+                raise
+        rep.done()
+    else:
+        for k in range(cycles):
+            rep.tag = f"cycle {k + 1}/{cycles}: "
+            hooks = CycleHooks(
+                phase_cb=lambda n: rep.phase(rep.tag + n),
+                place_progress=(lambda it, total, e, b, t, acc:
+                                rep.placing(it, total, e, b, t, acc)),
+                route_progress=rep.routing,
+                anneal_progress=(lambda it, total, r, u, e, b, t, acc:
+                                 rep.annealing(it, total, r, u, e, b, t, acc)),
+            )
+            cr = run_cycle(input_path, rules, pitch, pp, route_params,
+                           route_kw=route_kw, place_margin=args.place_margin,
+                           seed=base_seed + k, hooks=hooks)
+            rep.done()
+            results.append(cr)
+            line = _cycle_line(k + 1, cr)
+            rep.log(line)
+            if not args.quiet:
+                print(f"  {line}")
+        rep.tag = ""
+
+    best = select_best(results)
+    best_line = (f"best of {cycles} cycles: seed {best.seed} — "
+                 f"routed {best.routed}/{best.n_conns}, energy {best.energy:.1f}, "
+                 f"{best.vias} vias"
+                 + (f", {best.unrouted} unrouted" if best.unrouted else ""))
+    rep.log(best_line)
+    if not args.quiet:
+        print(f"\n  {best_line}")
+
+    sel_board, grid, final_results = best.board, best.grid, best.results
+    excluded = sorted({p.net for p in sel_board.pads if p.net
+                       and netlist.is_excluded(p.net, args.exclude_net)})
+
+    rep.phase("writing placed + routed board")
+    _stamp(sel_board, "placed + routed")
+    pcb.write_board(sel_board, out_path,
+                    new_nodes=_results_to_nodes(sel_board, grid, final_results),
+                    strip_free_vias=True)
+
+    if fill_nets:
+        ok = pcb.try_refill_zones(out_path)
+        if ok:
+            rep.log("zones refilled via kicad-cli")
+            print("  zones:         copper fill refilled (kicad-cli)")
+        else:
+            rep.log("zone refill skipped — kicad-cli not found or failed")
+            print("  note: kicad-cli not available; open in KiCad to refill copper zones")
+
+    routed_board = pcb.load_board(out_path)
+    violations = geometry.clearance_violations(routed_board, rules)
+    rep.done()
+
+    _report(rep, out_path, best.n_conns, best.routed, best.unrouted, best.length,
+            best.vias, violations, excluded)
     return _finish(rep, args, out_path, routed_board, violations)
 
 
@@ -1215,11 +1290,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="route N times with different annealing seeds and keep the "
                         "lowest-energy result (default 1; only varies with "
                         "--iters/--time)")
+    p.add_argument("--cycles", type=int, default=1, metavar="N",
+                   help="with --place: run N independent place+route cycles and "
+                        "keep the one that *routes* best (fewest unrouted, then "
+                        "lowest energy) — selecting on the true objective rather "
+                        "than placement energy. The recommended knob for a better "
+                        "board; parallelised by --jobs. 1 (default) = today's "
+                        "behaviour. Each cycle does one placement and one routing; "
+                        "--place-runs/--runs remain available as inner loops")
     p.add_argument("-j", "--jobs", type=int, default=1, metavar="N",
-                   help="run --runs trials across N worker processes (best-of-N "
-                        "in parallel); 0 uses every CPU (capped at --runs). "
-                        "1 (default) keeps the sequential path with live per-run "
-                        "progress (default 1)")
+                   help="run --runs trials (or --cycles cycles) across N worker "
+                        "processes (best-of-N in parallel); 0 uses every CPU "
+                        "(capped at the trial/cycle count). 1 (default) keeps the "
+                        "sequential path with live per-trial progress (default 1)")
     p.add_argument("--auto", action="store_true",
                    help="probe a few grid/via settings on this board, pick the best, "
                         "and (on a terminal) ask to confirm before routing with them")

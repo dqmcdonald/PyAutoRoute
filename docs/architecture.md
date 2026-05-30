@@ -34,7 +34,8 @@ flowchart TD
   grid["grid.py — 2-layer grid, static occupancy, pad access nodes"] --> router
   netlist["netlist.py — net grouping + MST → two-pin connections"] --> router
   router["router.py — A* maze + RoutingState (dynamic occupancy, rip-up)"] --> anneal
-  anneal["anneal.py — simulated annealing (rip-up & reroute)"] --> autoroute
+  anneal["anneal.py — simulated annealing (rip-up & reroute)"] --> pipeline
+  pipeline["pipeline.py — place→route→score cycle unit (run_cycle, --cycles)"] --> autoroute
   autoroute["autoroute.py — CLI + orchestration + writer + self-check"] --> OUT[".._routed.kicad_pcb"]
   visualize["visualize.py — optional matplotlib debug render"] -.-> autoroute
 ```
@@ -275,6 +276,20 @@ anchor). These become *static* keep-out boxes (an `STRtree`), and
 `overlap_weight` term — so footprints are pushed clear of fixed silkscreen text.
 `overlap_ok` footprints (meant to sit over the board) are exempt.
 
+### `pipeline.py` — place→route→score cycle unit
+The shared **cycle**: `run_cycle` loads a fresh board, places it once (seed `k`),
+finalises the placement into the tree, builds the `Grid`, and routes it via
+`_route_one_run` (greedy + optional anneal) — returning a picklable `CycleResult`
+(board, grid, results, metrics, and a `score = (unrouted, energy)`). It binds no
+`Reporter`/Tk objects; live progress is delivered through an optional `CycleHooks`
+(no-op by default), so the same unit runs inline, in a `ProcessPoolExecutor`
+worker (`_cycle_worker`), and — once the duplication is collapsed — under the GUI
+worker. `select_best` keeps the lowest-scoring cycle (fewest unrouted, then lowest
+energy). The routing helpers `_route_one_run` / `_route_run_worker` live here too
+(routing is a cycle's second half), and `autoroute`'s `--runs` best-of-N imports
+them. This module is what `--cycles N` (best-of-cycles) and the older `--runs`
+best-of-N both compose.
+
 ### `autoroute.py` — CLI & orchestration
 **Settings file.** `--config FILE` is resolved by a throwaway pre-parser that reads
 only `--config`; its `[pyautoroute]` values are coerced to each option's type
@@ -290,13 +305,31 @@ lowest-energy routing (scored by `anneal._energy`); without annealing the greedy
 route is deterministic so N collapses to 1. `--place-runs N` is the placement
 analogue, implemented in `placement.place(runs=N)` (each run restarts from the
 original poses, the best placement is kept). The shared per-run body lives in
-`_route_one_run` (greedy route + optional anneal). With `--jobs`/`-j N` (and
-`runs > 1`) the runs are dispatched across a `ProcessPoolExecutor`: the picklable
-`_route_run_worker` re-invokes `_route_one_run` in each worker (the `Grid` and
-connections pickle directly, so no re-parse), the main process collects futures
-as they resolve and keeps the lowest-energy one — the same selection rule as the
-sequential path. Per-run live progress is suppressed in parallel mode. `--jobs 1`
-(default) keeps the byte-identical sequential loop with full progress.
+`pipeline._route_one_run` (greedy route + optional anneal). With `--jobs`/`-j N`
+(and `runs > 1`) the runs are dispatched across a `ProcessPoolExecutor`: the
+picklable `pipeline._route_run_worker` re-invokes `_route_one_run` in each worker
+(the `Grid` and connections pickle directly, so no re-parse), the main process
+collects futures as they resolve and keeps the lowest-energy one — the same
+selection rule as the sequential path. Per-run live progress is suppressed in
+parallel mode. `--jobs 1` (default) keeps the byte-identical sequential loop with
+full progress.
+
+**Best-of-cycles.** `--runs`/`--place-runs` select by a *proxy* (routing energy on
+one placement; placement energy on one routing). `--cycles N` (with `--place`)
+instead runs N independent **place→route** cycles and keeps the one that *routes*
+best. `_run_cycles` builds the placement/route params once, then for each cycle
+calls `pipeline.run_cycle` — which re-loads the board (so no state leaks), places
+it (one run, seed `seed + k`), finalises the placement into the tree, builds the
+`Grid`, and routes via `_route_one_run` keyed off the same seed — returning a
+picklable `CycleResult`. `select_best` keeps the lowest `CycleResult.score`, a
+lexicographic `(unrouted, energy)` so completing connections dominates. `--jobs`
+parallelises cycles across a `ProcessPoolExecutor` (the picklable `_cycle_worker`)
+exactly as `--runs` parallelises routing; the winner is written/refilled/
+self-checked through the shared tail. `--cycles 1` (default) takes the original
+single-pass path untouched. `run_cycle` binds no `Reporter` or Tk objects (live
+progress goes through an optional `CycleHooks`), so it is the intended single home
+for the GUI worker's place→route path too — collapsing that duplication is the
+remaining Phase-3 follow-up.
 
 Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
 text progress `Reporter` (single-line `\r` updates on a TTY, line-by-line
