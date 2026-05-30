@@ -5,6 +5,16 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.29.1
+
+- **Unified the CLI and GUI place→route orchestration.** Both now run through the
+  shared `pipeline.run_placement` / `pipeline.run_routing` (best-of-`place_runs`
+  then best-of-`runs`, sequential or parallel), driven by a `PipelineHooks` that
+  each front-end maps to its own progress (the CLI's `Reporter` lines; the GUI's
+  `Phase`/`Progress`/`BoardSnap` events). Removes the duplicated orchestration the
+  GUI worker carried (the Phase-3 follow-up); behaviour unchanged. Adds a headless
+  GUI-worker test.
+
 ## 0.29.0
 
 - **Best-of-cycles placement (`--cycles N`).** With `--place`, run `N` independent

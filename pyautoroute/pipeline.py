@@ -481,6 +481,8 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                 raise
     else:
         for k in range(runs):
+            if cancel is not None and cancel.is_set():
+                break
             _call(h.route_run, k, runs)
             _call(h.phase, f"routing {len(conns)} connections")
             partial = [None] * len(conns)
