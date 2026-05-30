@@ -7,7 +7,7 @@ import pathlib
 
 import pytest
 
-from pyautoroute import autoroute, pipeline
+from pyautoroute import autoroute, pcb, pipeline
 from pyautoroute.placement import PlaceParams
 from pyautoroute.router import RouteParams
 from pyautoroute.rules import load_rules
@@ -69,6 +69,42 @@ def test_select_best_prefers_fewest_unrouted_then_energy():
     # all-routed: pure energy tiebreak
     assert pipeline.select_best([_mk(0, 9.0), _mk(0, 8.0)]).energy == 8.0
     assert pipeline.select_best([]) is None
+
+
+def test_run_pipeline_places_and_routes_with_hooks():
+    rules, pitch, pp, rp, kw = _cycle_inputs()
+    board = pcb.load_board(_BOARD)
+    events = []
+    hooks = pipeline.PipelineHooks(
+        phase=lambda n: events.append(("phase", n)),
+        placed=lambda b: events.append(("placed",)),
+        route_run=lambda k, n: events.append(("route_run", k, n)),
+        overall_best=lambda b, g, r, e: events.append(("overall_best", e)),
+    )
+    res = pipeline.run_pipeline(
+        board, rules, pitch, do_place=True, place_only=False,
+        place_params=pp, place_runs=1, route_params=rp, route_kw=kw,
+        seed=1, runs=1, jobs=1, snapshots=0, exclude=[], place_margin=2.0,
+        hooks=hooks)
+    assert not res.placed_only and not res.cancelled
+    assert res.n_conns > 0 and res.routed + res.unrouted == res.n_conns
+    assert res.results is not None and res.grid is not None
+    # the hooks fired at the expected points
+    assert ("placed",) in events
+    assert any(e[0] == "phase" for e in events)
+    assert any(e[0] == "overall_best" for e in events)
+
+
+def test_run_pipeline_place_only_skips_routing():
+    rules, pitch, pp, rp, kw = _cycle_inputs()
+    board = pcb.load_board(_BOARD)
+    res = pipeline.run_pipeline(
+        board, rules, pitch, do_place=False, place_only=True,
+        place_params=pp, place_runs=1, route_params=rp, route_kw=kw,
+        seed=1, runs=1, jobs=1, snapshots=0, exclude=[], place_margin=2.0)
+    assert res.placed_only
+    assert res.grid is None and res.results is None
+    assert res.place_stats is not None             # placement ran
 
 
 def test_cli_cycles_runs_and_writes(tmp_path):
