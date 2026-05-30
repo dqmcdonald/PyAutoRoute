@@ -19,6 +19,7 @@ the write.
 from __future__ import annotations
 
 import math
+import re
 import uuid as _uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -188,6 +189,7 @@ class Footprint:
     x0: float = 0.0
     y0: float = 0.0
     angle0: float = 0.0
+    edge_affinity: str | None = None   # placement: pull to board edge; None | any | left | right | top | bottom
 
     @property
     def moved(self) -> bool:
@@ -473,6 +475,39 @@ def _footprint_overlap_ok(fp_node: SList) -> bool:
     return False
 
 
+_EDGE_SIDES = ("left", "right", "top", "bottom")
+
+
+def _footprint_edge_affinity(fp_node: SList) -> str | None:
+    """Return a footprint's board-edge placement affinity, or ``None``.
+
+    Reads the user-defined ``Autoroute`` property (the same field as
+    `_footprint_overlap_ok`, so intents combine, e.g. ``overlap, edge-top``).
+    The tokens — split on commas/whitespace, case-insensitive — are:
+
+    - ``edge`` → ``"any"`` (pull toward the nearest layout edge);
+    - ``edge-left`` / ``edge-right`` / ``edge-top`` / ``edge-bottom`` → that side.
+
+    Useful for connectors and similar parts that must sit on the board boundary
+    during the optional placement pass.
+
+    Args:
+        fp_node: the ``(footprint ...)`` node.
+
+    Returns:
+        ``"any"``, a side name, or ``None`` if no edge token is present.
+    """
+    for prop in children(fp_node, "property"):
+        vals = atoms_after_head(prop)
+        if len(vals) >= 2 and vals[0].text == "Autoroute":
+            for tok in re.split(r"[,\s]+", vals[1].text.lower().strip()):
+                if tok == "edge":
+                    return "any"
+                if tok.startswith("edge-") and tok[5:] in _EDGE_SIDES:
+                    return tok[5:]
+    return None
+
+
 # --- outline parsing ---------------------------------------------------------
 
 def _parse_outline(tree: SList) -> list[OutlineShape]:
@@ -688,6 +723,7 @@ def load_board(pcb_path: str | Path) -> Board:
             footprints.append(Footprint(
                 ref=ref, x=fx, y=fy, angle=fa,
                 locked=_footprint_locked(fp), overlap_ok=_footprint_overlap_ok(fp),
+                edge_affinity=_footprint_edge_affinity(fp),
                 pads=fp_pads, local_offsets=local_offsets,
                 at_node=at_node, fp_node=fp,
                 x0=fx, y0=fy, angle0=fa,

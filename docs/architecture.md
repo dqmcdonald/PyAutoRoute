@@ -175,9 +175,10 @@ temperature-scaled random step), rotate (`--place-rotate`: `ortho` ±90°/180°,
 acceptance under a geometric `--place-temps` (`t_start → t_end`) schedule and the
 best-seen placement kept. A recent-window **acceptance ratio** is tracked (as in
 `anneal`) and reported via the progress callback; `PlaceResult` also carries the
-energy breakdown (`final_ratsnest`/`final_overlap`/`final_bbox`) at the best
-placement. Energy
-`E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area`:
+energy breakdown (`final_ratsnest`/`final_overlap`/`final_bbox`/`final_edge`) at
+the best placement. Energy
+`E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
++ edge_weight·edge_distance`:
 
 - **ratsnest** — total MST length over pad centroids, reusing `netlist`
   (`build_connections` + `Connection.est_length`). The connection topology is
@@ -195,13 +196,23 @@ placement. Energy
   footprints are immovable obstacles included in the overlap term.
 - **bbox_area** — area of the bounding box of all footprints; compaction emerges
   from this term under cooling, with no separate phase.
+- **edge_distance** — only for footprints that opt in via the `Autoroute`
+  property (`edge`, or `edge-left`/`-right`/`-top`/`-bottom`; parsed into
+  `Footprint.edge_affinity`). Each flagged footprint is penalised by how far its
+  box sits from its target side of the **current layout bounding box** (`any` uses
+  the nearest side), pulling connectors and the like onto the boundary. Measured
+  against the layout bbox, so it stays translation-invariant like the rest;
+  `_flagged` is empty when nothing opts in, so the term is identically zero by
+  default.
 
 **Incremental energy.** The energy is cached and updated per move rather than
 recomputed wholesale: `_rebuild_cache` does the one-time full pass (and runs again
 only at the final report), while `_move_delta` updates just the parts a move can
 change — the lengths of connections incident on the moved footprint(s), those
 footprints' overlap contributions (against neighbours and fixed silk text), and
-the layout bbox from cached per-box bounds. A rejected move restores the disturbed
+the layout bbox (and, when any footprint is flagged, the edge term — both an O(N)
+pass over the cached per-box bounds since they depend on the global layout
+extent). A rejected move restores the disturbed
 cache entries. This turns each iteration from O(P² + N·log N) into roughly
 O(deg + neighbours). Optional **stall detection**
 (`PlaceParams.stall_ratio`/`stall_patience`, off by default) mirrors `anneal`'s.

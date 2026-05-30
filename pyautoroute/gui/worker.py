@@ -182,6 +182,7 @@ class Worker:
                 exclude=cfg.exclude_net or [],
                 overlap_weight=cfg.place_overlap_weight,
                 compact_weight=cfg.place_compact_weight,
+                edge_weight=cfg.place_edge_weight,
                 buffer=buf,
                 t_start=cfg.place_temps[0],
                 t_end=cfg.place_temps[1],

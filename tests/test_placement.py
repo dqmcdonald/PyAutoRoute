@@ -17,7 +17,8 @@ def _pad(net, w=2.0, h=2.0):
                angle=0.0, copper_layers=["F.Cu", "B.Cu"])
 
 
-def _fp(ref, x, y, pads_local, locked=False, overlap_ok=False, angle=0.0):
+def _fp(ref, x, y, pads_local, locked=False, overlap_ok=False, angle=0.0,
+        edge_affinity=None):
     """Build a Footprint at (x, y) from ``pads_local`` = [(px, py, net), ...]."""
     pads, offsets = [], []
     for (px, py, net) in pads_local:
@@ -26,7 +27,7 @@ def _fp(ref, x, y, pads_local, locked=False, overlap_ok=False, angle=0.0):
     fp = Footprint(ref=ref, x=x, y=y, angle=angle, locked=locked,
                    overlap_ok=overlap_ok, pads=pads, local_offsets=offsets,
                    at_node=sexpr.SList(), fp_node=sexpr.SList(),
-                   x0=x, y0=y, angle0=angle)
+                   x0=x, y0=y, angle0=angle, edge_affinity=edge_affinity)
     fp.sync_pads()
     return fp
 
@@ -296,6 +297,82 @@ def test_parse_lock_and_overlap_property():
     assert math.isclose(fps["U1"].local_offsets[0][2], 0.0, abs_tol=1e-9)
     assert fps["U2"].locked and not fps["U2"].overlap_ok       # bare `locked` atom
     assert not fps["U3"].locked and not fps["U3"].overlap_ok
+
+
+def test_parse_edge_affinity_property():
+    def _ap(ref, autoroute):
+        ar = f'  (property "Autoroute" "{autoroute}")' if autoroute is not None else ""
+        return (f' (footprint "f" (at 0 0) (property "Reference" "{ref}")' + ar +
+                f'  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "{ref}")))')
+    text = ('(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
+            + _ap("J1", "edge-left")
+            + _ap("J2", "edge")
+            + _ap("J3", "overlap, edge-top")     # intents combine
+            + _ap("J4", "edge-sideways")         # unknown side -> ignored
+            + _ap("J5", None)                    # no Autoroute property
+            + ')')
+    fps = {fp.ref: fp for fp in _board_from_text(text).footprints}
+    assert fps["J1"].edge_affinity == "left"
+    assert fps["J2"].edge_affinity == "any"
+    assert fps["J3"].edge_affinity == "top" and fps["J3"].overlap_ok
+    assert fps["J4"].edge_affinity is None
+    assert fps["J5"].edge_affinity is None
+
+
+def _hub_and_satellites(flag_ref=None, side=None):
+    """A central hub U0 wired to four satellites U1..U4 around it.
+
+    Each satellite connects to the hub only, so ratsnest alone pulls them toward
+    the centre — a clean baseline for showing the edge term pull a flagged part
+    outward. ``flag_ref`` (if given) gets ``edge_affinity = side``.
+    """
+    hub = _fp("U0", 40, 40,
+              [(0, 0, "n1"), (0, 0, "n2"), (0, 0, "n3"), (0, 0, "n4")],
+              edge_affinity=(side if flag_ref == "U0" else None))
+    coords = {"U1": (50, 40), "U2": (40, 50), "U3": (40, 30), "U4": (30, 40)}
+    sats = [_fp(ref, x, y, [(0, 0, f"n{i}")],
+                edge_affinity=(side if flag_ref == ref else None))
+            for i, (ref, (x, y)) in enumerate(coords.items(), start=1)]
+    return _board([hub] + sats)
+
+
+def _layout_bounds(board):
+    bs = [_body_box(fp).bounds for fp in board.footprints]
+    return (min(b[0] for b in bs), min(b[1] for b in bs),
+            max(b[2] for b in bs), max(b[3] for b in bs))
+
+
+def test_edge_affinity_pulls_flagged_footprint_to_named_side():
+    # U1, normally pulled toward the centre by its connection to the hub, is
+    # flagged edge-left: it should end on the layout's left boundary.
+    board = _hub_and_satellites(flag_ref="U1", side="left")
+    placement.place(board, placement.PlaceParams(iters=5000, seed=1, edge_weight=15.0))
+    minx, miny, maxx, maxy = _layout_bounds(board)
+    u1 = next(fp for fp in board.footprints if fp.ref == "U1")
+    bx0, by0, bx1, by1 = _body_box(u1).bounds
+    assert bx0 - minx < 1.0                 # U1 sits on the left edge
+    assert bx0 - minx == min(bx0 - minx, maxx - bx1, by0 - miny, maxy - by1)
+
+
+def test_edge_affinity_any_reaches_perimeter():
+    # The hub normally sits in the centre (it connects to everything); flagged
+    # `edge` (any side) it should instead end on the layout perimeter.
+    board = _hub_and_satellites(flag_ref="U0", side="any")
+    placement.place(board, placement.PlaceParams(iters=5000, seed=2, edge_weight=15.0))
+    minx, miny, maxx, maxy = _layout_bounds(board)
+    bx0, by0, bx1, by1 = _body_box(board.footprints[0]).bounds   # U0 = the hub
+    dist_to_nearest_side = min(bx0 - minx, maxx - bx1, by0 - miny, maxy - by1)
+    assert dist_to_nearest_side < 1.0
+
+
+def test_edge_affinity_off_by_default_leaves_energy_unchanged():
+    # With nothing flagged, the edge term is zero regardless of edge_weight.
+    from pyautoroute.placement import _Placer, PlaceParams
+    board = _hub_and_satellites()
+    placer = _Placer(board, PlaceParams(edge_weight=100.0))
+    placer._rebuild_cache()
+    assert placer._edge == 0.0
+    assert placer._flagged == {}
 
 
 # --- pcb tree rewrite (round-trip) -------------------------------------------

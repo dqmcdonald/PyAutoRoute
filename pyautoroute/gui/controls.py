@@ -90,7 +90,7 @@ class RunConfig:
         "seed",
         "place_iters", "place_time",
         "place_margin", "place_buffer",
-        "place_overlap_weight", "place_compact_weight",
+        "place_overlap_weight", "place_compact_weight", "place_edge_weight",
         "place_temps", "place_step", "place_rotate",
         "place_runs",
         "snapshots",
@@ -163,6 +163,7 @@ class ControlsPanel(ttk.Frame):
         self._place_step = tk.StringVar(value="20.0")
         self._place_ow = tk.StringVar(value="20.0")
         self._place_cw = tk.StringVar(value="0.02")
+        self._place_ew = tk.StringVar(value="2.0")
         self._snapshots = tk.StringVar(value="0")
         self._auto_probe_time = tk.StringVar(value="3.0")
         self._fix_values = tk.BooleanVar(value=False)
@@ -441,6 +442,7 @@ class ControlsPanel(ttk.Frame):
         _sv("place_step", self._place_step)
         _sv("place_overlap_weight", self._place_ow)
         _sv("place_compact_weight", self._place_cw)
+        _sv("place_edge_weight", self._place_ew)
         _sv("auto_probe_time", self._auto_probe_time)
         if "debug_plot" in d:
             self._debug_plot.set(bool(d["debug_plot"]))
@@ -480,6 +482,9 @@ class ControlsPanel(ttk.Frame):
              "Placement cost per mm² of footprint overlap."),
             ("Place compact wt:", self._place_cw,
              "Placement cost per mm² of bounding-box area (encourages compactness)."),
+            ("Place edge wt:", self._place_ew,
+             "Cost per mm an Autoroute=edge[-side] footprint sits from its board "
+             "edge (pulls connectors out to the boundary)."),
             ("Auto probe time:", self._auto_probe_time,
              "Annealing seconds per probed setting when using Suggest."),
         ]
@@ -573,6 +578,7 @@ class ControlsPanel(ttk.Frame):
             place_buffer=_f(self._place_buffer),
             place_overlap_weight=_f(self._place_ow, 20.0),
             place_compact_weight=_f(self._place_cw, 0.02),
+            place_edge_weight=_f(self._place_ew, 2.0),
             place_temps=[_f(self._place_t_start, 8.0),
                          _f(self._place_t_end, 0.05)],
             place_step=_f(self._place_step, 20.0),
@@ -613,6 +619,7 @@ class ControlsPanel(ttk.Frame):
             place_buffer=cfg.place_buffer,
             place_overlap_weight=cfg.place_overlap_weight or 20.0,
             place_compact_weight=cfg.place_compact_weight or 0.02,
+            place_edge_weight=cfg.place_edge_weight or 2.0,
             place_temps=cfg.place_temps or [8.0, 0.05],
             place_step=cfg.place_step or 20.0,
             place_rotate=cfg.place_rotate or "ortho",
