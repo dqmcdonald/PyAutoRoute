@@ -10,12 +10,17 @@ This is the project's **central roadmap**: the completed-feature plan docs
 performance/tuning docs point here for cross-cutting outstanding work, and link
 back for their own residual TODOs.
 
-> **In progress / recently started** (see `CHANGES.md`):
-> - **Bounded A\* search** (`--search-margin`) — *implemented*, PR #22 /
->   branch `claude/bounded-astar-search` (was the top recommendation below).
-> - **Vectorised A\* overlay** — *implemented*, branch `claude/vectorize-astar-overlay`;
->   the profiling that motivated it suggests the next perf step is caching the
->   static free mask / heuristic field across reroutes.
+> **Recently landed** (see `CHANGES.md`):
+> - **Bounded A\* search** (`--search-margin`) — shipped in 0.25.0.
+> - **Vectorised A\* overlay** — shipped in 0.25.3; the profiling that motivated
+>   it points to caching the static free mask / heuristic field across reroutes as
+>   the next perf step.
+>
+> **In design:**
+> - **Edge-aware placement + place↔route coupling** — see
+>   [`placement-improvements-plan.md`](placement-improvements-plan.md): edge-affinity
+>   for connectors, a `--keep-outline` mode, best-of-cycles selection on the routed
+>   result, and congestion feedback into re-placement.
 
 ## Context
 
