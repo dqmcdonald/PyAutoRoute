@@ -281,13 +281,17 @@ class Worker:
                 self._post(Phase(f"{tag}annealing"))
 
                 last_anneal_prog = [0.0]
+                anneal_t0 = [time.monotonic()]
 
                 def on_anneal(it, total, r, u, energy, best, temp, accept):
                     now = time.monotonic()
                     if now - last_anneal_prog[0] >= _PROGRESS_INTERVAL:
                         last_anneal_prog[0] = now
+                        elapsed = now - anneal_t0[0]
                         self._post(Progress("annealing", it, total, energy,
-                                            best, temp, accept, r, u))
+                                            best, temp, accept, r, u,
+                                            elapsed=elapsed,
+                                            budget=cfg.time_budget or 0.0))
 
                 def on_snap(snap_k, snap_n, snap_results):
                     self._post(BoardSnap(
