@@ -5,6 +5,15 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.34.0
+
+- **Board comparison tool (`pyautoroute-compare`)** — compare 2–3 routed boards from
+  different sources (PyAutoRoute, hand-routed, competing tool) head-to-head. Outputs
+  a columnar report with metrics (completion, wirelength, vias, directness, DRC) and
+  a prose analysis. Reuses existing connectivity analysis (`routing_stats`) with a new
+  optional `exclude` parameter to filter copper-pour nets consistently across boards.
+  Reports which board routes most efficiently and flags DRC violations.
+
 ## 0.33.0
 
 - **GUI: interactive footprint constraints.** Click a footprint in the Initial

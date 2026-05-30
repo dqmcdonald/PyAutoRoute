@@ -402,6 +402,33 @@ These constraints are stored as hidden custom properties on the footprints (`Aut
 `Autoroute-overlap`, and the `locked` field) and are preserved when you re-open the
 board in KiCad or PyAutoRoute.
 
+## Comparing boards (`pyautoroute-compare`)
+
+Compare routed boards from different sources — PyAutoRoute's output, hand-routed
+versions, or competing tools — to see which routes better:
+
+```bash
+pyautoroute-compare ours.kicad_pcb hand.kicad_pcb othertool.kicad_pcb \
+    [--pro design.kicad_pro] \
+    [--label "PyAutoRoute" --label "Hand" --label "Tool X"] \
+    [--exclude-net GND --exclude-net "+5V"]
+```
+
+The tool outputs a columnar report with metrics for each board:
+
+- **Completion** — how many connections are routed (pass/fail for manufacturability)
+- **DRC violations** — clearance failures (boards with violations are flagged)
+- **Wirelength** (mm) — total track length
+- **Directness** — a normalized efficiency score (ideal 1.0; higher means detours)
+- **Vias** — total via count and average per connection
+- **Layers** — track length per copper layer (detects tool differences)
+- **Score** — a weighted ranking metric combining all factors
+
+The report also analyzes the results with prose: which board wins on directness,
+where the biggest differences are, and why (e.g. "PyAutoRoute uses 2.5× vias but
+is 300 mm shorter"). Copper-pour nets (GND, power planes) are automatically excluded
+so the comparison focuses on routed signal nets.
+
 ## Helper script
 
 `./pyautoroute.sh` is an interactive menu of common tasks — install the package,

@@ -502,6 +502,33 @@ matter for fabrication.  Currently one operation:
 `--dry-run` reports what would change without writing.  `-o OUT` writes to a
 separate output path instead of overwriting the input.
 
+### `report.py` — connectivity analysis and routing statistics
+
+`routing_stats(board, rules=None, exclude=None)` analyses an arbitrary routed board
+(PyAutoRoute output, hand-routed, or another tool's) and returns a `RoutingStats`
+summary: routed/total connections, total track length, via count, and DRC violations
+(if rules are provided). Uses union-find over segment endpoints (snapped to a 0.01 mm
+grid) to determine which connections are satisfied end-to-end, handling vias implicitly
+because both the F.Cu and B.Cu segments share net name and endpoint position.
+
+The optional `exclude` parameter filters out nets (e.g. copper-pour nets) so they don't
+count toward completion or length. This is used by the board comparison tool to ensure
+fair metrics across boards.
+
+New field `ideal_length` = Σ`Connection.est_length` (straight-line sum of connection
+distances) enables directness scoring: `directness = length / ideal_length` (1.0 is
+perfectly straight, higher = more detours).
+
+### `compare.py` — routed board comparison tool
+
+`pyautoroute-compare BOARD1 BOARD2 [BOARD3]` compares 2–3 routed boards of the same
+design using unified metrics. Automatically detects copper-pour nets (union across all
+boards) and excludes them, so each metric focuses on signal routing. Produces a
+columnar report ranking boards by score (`unrouted_weight·unrouted + length + via_weight·vias`),
+flags boards with DRC violations, and analyses the results with prose. Calls `routing_stats`
+on each board with the same exclude set and design rules (auto-detected from the first
+board's sibling `.kicad_pro`), then formats the results for comparison.
+
 ### `pyautoroute.sh` — helper menu
 A repo-root Bash script offering a menu of common tasks (install, regenerate API
 docs via the `pdoc` recipe, run the short/long test suite, run the performance

@@ -43,6 +43,7 @@ class RoutingStats:
     unrouted: int        # connections without a path
     length: float        # total track length (mm)
     vias: int            # via count
+    ideal_length: float = 0.0  # sum of est_length over connections (for directness ratio)
     violations: list = field(default_factory=list)  # clearance violations
 
     def summary(self) -> str:
@@ -53,7 +54,7 @@ class RoutingStats:
                 f"{self.length:.1f} mm track, {self.vias} vias{viol}")
 
 
-def routing_stats(board: "Board", rules=None) -> RoutingStats:
+def routing_stats(board: "Board", rules=None, exclude=None) -> RoutingStats:
     """Analyse the board's current routing state.
 
     Uses a union-find over segment endpoints (snapped to a 0.01 mm grid)
@@ -67,6 +68,9 @@ def routing_stats(board: "Board", rules=None) -> RoutingStats:
         board: the board to analyse (segments and pads are read; not mutated).
         rules: optional design rules for DRC; if ``None``, violations list
             is empty.
+        exclude: optional list of net names to exclude from statistics
+            (e.g. copper-pour nets). Filtered from connections, length, and
+            via counts. If ``None``, no exclusions are applied.
 
     Returns:
         A `RoutingStats` with the connection coverage, track metrics and
@@ -74,7 +78,7 @@ def routing_stats(board: "Board", rules=None) -> RoutingStats:
     """
     from . import netlist, geometry
 
-    conns = netlist.build_connections(board)
+    conns = netlist.build_connections(board, exclude=exclude)
 
     # ── union-find over pad and segment-endpoint nodes ──────────────────
     parent: dict = {}
@@ -100,10 +104,18 @@ def routing_stats(board: "Board", rules=None) -> RoutingStats:
         if _find(parent, pad_node[id(c.a)]) == _find(parent, pad_node[id(c.b)])
     )
 
-    # Track length.
+    # Track length (filtered by exclude set if provided).
+    excl_set = set(exclude or [])
     length = sum(
         math.hypot(s.x2 - s.x1, s.y2 - s.y1) for s in board.segments
+        if s.net not in excl_set
     )
+
+    # Via count (filtered by exclude set if provided).
+    via_count = sum(1 for v in board.free_vias if v.net not in excl_set)
+
+    # Ideal length (straight-line sum over all (non-excluded) connections).
+    ideal_length = sum(c.est_length for c in conns)
 
     # DRC.
     violations: list = []
@@ -115,6 +127,7 @@ def routing_stats(board: "Board", rules=None) -> RoutingStats:
         routed=n_routed,
         unrouted=len(conns) - n_routed,
         length=length,
-        vias=len(board.free_vias),
+        ideal_length=ideal_length,
+        vias=via_count,
         violations=violations,
     )
