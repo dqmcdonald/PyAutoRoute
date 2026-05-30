@@ -92,7 +92,10 @@ edits. When placement has run, two helpers prepare the tree first:
 `apply_placement` pushes the moved poses into the pads and replaces `Board.outline`
 with a margin-grown bounding rectangle, and `sync_tree_from_placement` rewrites each
 moved footprint's `(at …)` node (clearing its span so only that line changes) and
-swaps the Edge.Cuts graphics for a single generated `gr_rect`. For a footprint that was **rotated**, `_rotate_pad_nodes` adds the rotation delta
+swaps the Edge.Cuts graphics for a single generated `gr_rect`. Under
+`--keep-outline` both steps leave the existing Edge.Cuts untouched (the placement
+was contained within it); `apply_placement` returns whether it kept the outline so
+the writer stays consistent. For a footprint that was **rotated**, `_rotate_pad_nodes` adds the rotation delta
 to each pad's `(at …)` angle — KiCad stores pad angles *absolutely*, so without
 this a rotated footprint's pads would reload in their old orientation, mis-orienting
 rectangular pads and failing DRC. The symmetric `_rotate_text_nodes` does the same
@@ -203,7 +206,16 @@ the best placement. Energy
   the nearest side), pulling connectors and the like onto the boundary. Measured
   against the layout bbox, so it stays translation-invariant like the rest;
   `_flagged` is empty when nothing opts in, so the term is identically zero by
-  default.
+  default. Under `--keep-outline` the reference is the **kept outline's** bounding
+  box instead, so edge parts snap to the real board edge.
+- **area_outside_outline** — only under `--keep-outline` with a closed Edge.Cuts:
+  `containment_weight ×` (distance from each footprint box to the outline polygon
+  `+` the box's protruding area). The distance gives a far-field gradient that
+  pulls stray parts toward the board; the area term seats them fully inside. Both
+  reach zero when the box is wholly within the outline. This **contains** the
+  placement in the existing board shape rather than regenerating a bounding box;
+  because it (and the keep-outline edge term) depend on absolute position,
+  `place` skips `recenter` in this mode. Zero otherwise.
 
 **Incremental energy.** The energy is cached and updated per move rather than
 recomputed wholesale: `_rebuild_cache` does the one-time full pass (and runs again

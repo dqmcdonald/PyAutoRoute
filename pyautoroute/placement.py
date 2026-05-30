@@ -6,7 +6,7 @@ tracks, this moves footprint positions/rotations to minimise rats-nest length
 while keeping bodies from overlapping and pulling the layout together.
 
 Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
-+ edge_weight·edge_distance``:
++ edge_weight·edge_distance + containment_weight·area_outside_outline``:
 
 - **ratsnest** — total MST length over the pad centroids (reuses
   `pyautoroute.netlist`); shrinks as connected pads are drawn together.
@@ -31,6 +31,13 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
   board boundary. Measured against the layout bbox (not absolute coordinates), so
   it stays translation-invariant like the other terms. Zero when nothing is
   flagged, so the default behaviour is unchanged.
+- **area_outside_outline** — only under ``keep_outline`` (the ``--keep-outline``
+  mode), and only when the board has a closed Edge.Cuts. Penalises the area each
+  footprint box protrudes outside that fixed outline, containing the placement
+  within the *existing* board shape rather than regenerating a bounding box; edge
+  affinity then targets the outline rather than the layout bbox. Zero otherwise.
+  Note ``keep_outline`` makes the energy depend on absolute position (the outline
+  is fixed), so `recenter` is skipped in that mode.
 
 Moves (over the *movable* footprints — locked ones are fixed obstacles): translate
 by a temperature-scaled random step, rotate (``rotate_mode``: ``ortho`` = ±90°/180°,
@@ -214,6 +221,8 @@ class PlaceParams:
     overlap_weight: float = 20.0      # mm-equivalent cost per mm² of body/pad overlap
     compact_weight: float = 0.02      # mm-equivalent cost per mm² of layout bbox
     edge_weight: float = 2.0          # mm-cost per mm an edge-flagged footprint sits from its target edge
+    keep_outline: bool = False        # contain footprints within the board's existing Edge.Cuts
+    containment_weight: float = 50.0  # cost per mm² a footprint protrudes outside the kept outline
     step: float = 20.0                # max translate step (mm) at t_start
     buffer: float = 0.5               # keep-out gap (mm) enforced between footprints
     rotate_mode: str = "ortho"        # "ortho" (+/-90/180), "free" (any angle), "none"
@@ -300,12 +309,27 @@ class _Placer:
         self._overlap = 0.0
         self._bbox = 0.0
         self._edge = 0.0
+        self._containment = 0.0
         self._idx_of_fp: dict[int, int] = {id(fp): i for i, fp in enumerate(self.boxed)}
         # Footprints that opted into edge placement: boxed-index -> side
         # ("any"|"left"|"right"|"top"|"bottom"). Fixed for the run.
         self._flagged: dict[int, str] = {
             i: fp.edge_affinity for i, fp in enumerate(self.boxed) if fp.edge_affinity
         }
+        # --keep-outline: contain footprints within the board's existing Edge.Cuts
+        # (rather than regenerating a bounding box). The polygon and its bounds are
+        # fixed for the run; edge affinity then targets the outline, not the layout
+        # bbox. Falls back to no containment if the board has no closed outline.
+        self._outline_poly = None
+        self._outline_bounds = None
+        if params.keep_outline and board.outline and not board.outline_synthesized:
+            try:
+                from . import geometry
+                self._outline_poly = geometry.outline_to_polygon(board.outline)
+                self._outline_bounds = self._outline_poly.bounds
+            except Exception:                 # no closed outline -> no containment
+                self._outline_poly = None
+                self._outline_bounds = None
 
     def _build_index(self) -> None:
         """Build the fixed connection list and footprint->connection incidence.
@@ -339,6 +363,33 @@ class _Placer:
             self._fixed_text_overlap(self._boxes)
         self._bbox = self._bbox_from_bounds()
         self._edge = self._edge_sum_from_bounds(self._bounds)
+        self._containment = self._containment_sum(self._boxes)
+
+    def _containment_sum(self, boxes) -> float:
+        """Total footprint area protruding outside the kept board outline.
+
+        Zero (and skipped) unless ``--keep-outline`` built a containment polygon
+        (`self._outline_poly`). Penalising the area each box sticks out keeps the
+        placement inside an existing Edge.Cuts instead of regenerating a bounding
+        box. Each box is the buffer-inflated body box, so a small margin to the
+        edge is kept automatically.
+
+        Args:
+            boxes: the per-footprint body boxes (e.g. ``self._boxes``).
+
+        Returns:
+            The summed protruding area (mm²).
+        """
+        poly = self._outline_poly
+        if poly is None:
+            return 0.0
+        return sum(b.difference(poly).area for b in boxes)
+
+    def _containment_touching(self, idxs, boxes) -> float:
+        """Containment-area contribution of just the boxes in ``idxs`` (0 if off)."""
+        if self._outline_poly is None:
+            return 0.0
+        return sum(boxes[i].difference(self._outline_poly).area for i in idxs)
 
     @staticmethod
     def _bbox_area(boxes) -> float:
@@ -371,10 +422,12 @@ class _Placer:
         """Total edge-affinity distance for the flagged footprints.
 
         For each flagged footprint, the distance from its box to its target side
-        of the *layout* bounding box (the extent of all ``bounds``): ``left`` =
-        how far its left edge is inside the layout's left edge, etc.; ``any`` =
-        the distance to the nearest of the four sides. Summing this pulls flagged
-        footprints onto the boundary. ``0`` when nothing is flagged.
+        of the reference rectangle: ``left`` = how far its left edge is inside the
+        reference's left edge, etc.; ``any`` = the distance to the nearest of the
+        four sides. The reference is the kept board outline's bounding box under
+        ``--keep-outline`` (so edge parts snap to the real edge), otherwise the
+        *layout* bounding box (the extent of all ``bounds``). Summing this pulls
+        flagged footprints onto the boundary. ``0`` when nothing is flagged.
 
         Args:
             bounds: per-footprint ``(minx, miny, maxx, maxy)`` tuples, indexed
@@ -385,10 +438,13 @@ class _Placer:
         """
         if not self._flagged or not bounds:
             return 0.0
-        minx = min(b[0] for b in bounds)
-        miny = min(b[1] for b in bounds)
-        maxx = max(b[2] for b in bounds)
-        maxy = max(b[3] for b in bounds)
+        if self._outline_bounds is not None:
+            minx, miny, maxx, maxy = self._outline_bounds
+        else:
+            minx = min(b[0] for b in bounds)
+            miny = min(b[1] for b in bounds)
+            maxx = max(b[2] for b in bounds)
+            maxy = max(b[3] for b in bounds)
         total = 0.0
         for fi, side in self._flagged.items():
             bx0, by0, bx1, by1 = bounds[fi]
@@ -409,7 +465,8 @@ class _Placer:
         """Energy from the current cache (see the module docstring)."""
         return (self._rats + self.p.overlap_weight * self._overlap
                 + self.p.compact_weight * self._bbox
-                + self.p.edge_weight * self._edge)
+                + self.p.edge_weight * self._edge
+                + self.p.containment_weight * self._containment)
 
     def _overlap_touching(self, idxs: set[int], boxes) -> float:
         """Overlap area of every pair/fixed-text touching a footprint in `idxs`.
@@ -564,13 +621,16 @@ class _Placer:
                 seen_conns.add(ci)
         for ci in seen_conns:
             self._rats -= self._conn_len[ci]
-        # Overlap: remove the moved boxes' old contribution, refresh the boxes,
-        # then add their new contribution.
+        # Overlap + containment: remove the moved boxes' old contribution, refresh
+        # the boxes, then add their new contribution. Both are per-box (a box vs
+        # its neighbours / the fixed outline), so only the moved boxes change.
         self._overlap -= self._overlap_touching(idxs, self._boxes)
+        self._containment -= self._containment_touching(idxs, self._boxes)
         for fi in idxs:
             self._boxes[fi] = self._fp_box(self.boxed[fi])
             self._bounds[fi] = self._boxes[fi].bounds
         self._overlap += self._overlap_touching(idxs, self._boxes)
+        self._containment += self._containment_touching(idxs, self._boxes)
         for ci in seen_conns:
             nl = self._conns[ci].est_length
             self._conn_len[ci] = nl
@@ -599,9 +659,12 @@ class _Placer:
     def _energy(self) -> float:
         """Current placement energy (see the module docstring)."""
         rats, overlap, bbox_area = self._energy_components()
-        edge = self._edge_sum_from_bounds([self._fp_box(fp).bounds for fp in self.boxed])
+        boxes = [self._fp_box(fp) for fp in self.boxed]
+        edge = self._edge_sum_from_bounds([b.bounds for b in boxes])
+        containment = self._containment_sum(boxes)
         return (rats + self.p.overlap_weight * overlap
-                + self.p.compact_weight * bbox_area + self.p.edge_weight * edge)
+                + self.p.compact_weight * bbox_area + self.p.edge_weight * edge
+                + self.p.containment_weight * containment)
 
     @staticmethod
     def _snapshot(fps):
@@ -710,6 +773,7 @@ class _Placer:
             # connections incident on the moved footprints.
             touched_conns = {ci for i in idxs for ci in self._fp_conns.get(i, ())}
             cache_save = (self._rats, self._overlap, self._bbox,
+                          self._edge, self._containment,
                           {i: (self._boxes[i], self._bounds[i]) for i in idxs},
                           {ci: self._conn_len[ci] for ci in touched_conns})
             self._move_delta(idxs)
@@ -725,6 +789,7 @@ class _Placer:
             else:
                 self._restore(snap)
                 (self._rats, self._overlap, self._bbox,
+                 self._edge, self._containment,
                  saved_boxes, saved_lens) = cache_save
                 for i, (b, bnd) in saved_boxes.items():
                     self._boxes[i] = b
@@ -830,9 +895,14 @@ def place(board: Board, params: PlaceParams | None = None,
         The `PlaceResult` with the best placement's energy and run statistics.
     """
     params = params or PlaceParams()
+    # keep_outline ties the placement to a fixed outline (absolute coordinates),
+    # so the layout must not be re-centred afterwards — that would shift parts
+    # back out of the outline they were contained within.
+    do_recenter = not params.keep_outline
     if runs <= 1:
         result = _Placer(board, params).run(on_progress, cancel)
-        recenter(board)               # undo translation-invariant drift
+        if do_recenter:
+            recenter(board)           # undo translation-invariant drift
         return result
 
     orig = [(fp, fp.x, fp.y, fp.angle) for fp in board.footprints]
@@ -854,5 +924,6 @@ def place(board: Board, params: PlaceParams | None = None,
     for fp, x, y, a in best_poses:               # leave the board at the best
         fp.x, fp.y, fp.angle = x, y, a
         fp.sync_pads()
-    recenter(board)                              # undo translation-invariant drift
+    if do_recenter:
+        recenter(board)                          # undo translation-invariant drift
     return best

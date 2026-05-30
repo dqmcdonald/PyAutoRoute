@@ -183,6 +183,7 @@ class Worker:
                 overlap_weight=cfg.place_overlap_weight,
                 compact_weight=cfg.place_compact_weight,
                 edge_weight=cfg.place_edge_weight,
+                keep_outline=getattr(cfg, "keep_outline", False),
                 buffer=buf,
                 t_start=cfg.place_temps[0],
                 t_end=cfg.place_temps[1],
@@ -193,8 +194,10 @@ class Worker:
                             on_progress=on_place,
                             runs=place_runs,
                             cancel=self._cancel)
-            pcb.apply_placement(board, margin=cfg.place_margin)
-            pcb.sync_tree_from_placement(board)
+            kept = pcb.apply_placement(
+                board, margin=cfg.place_margin,
+                keep_outline=getattr(cfg, "keep_outline", False))
+            pcb.sync_tree_from_placement(board, keep_outline=kept)
             # Final placement snapshot
             self._post(BoardSnap(_snap_pads(board, cfg.place_margin)))
 

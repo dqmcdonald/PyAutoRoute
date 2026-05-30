@@ -435,6 +435,8 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
                 f"overlap wt {args.place_overlap_weight}, "
                 f"compact wt {args.place_compact_weight}, "
                 f"edge wt {args.place_edge_weight})")
+        if getattr(args, "keep_outline", False):
+            rep.log("keep outline   on  (footprints contained within the existing Edge.Cuts)")
         rep.log(f"place temps    {args.place_temps[0]} -> {args.place_temps[1]}")
         rep.log(f"place step     {args.place_step} mm, rotate {args.place_rotate}")
         if args.place_runs > 1:
@@ -516,6 +518,16 @@ def run(args: argparse.Namespace) -> int:
     if args.place or args.place_only:
         if args.place_buffer is None:
             args.place_buffer = default_place_buffer(rules)
+        # --keep-outline needs a real (non-synthesised) Edge.Cuts to contain the
+        # placement within; otherwise fall back to regenerating a bounding box.
+        keep_outline = bool(getattr(args, "keep_outline", False))
+        if keep_outline and (not board.outline or board.outline_synthesized):
+            keep_outline = False
+            msg = ("--keep-outline ignored: the board has no Edge.Cuts to keep; "
+                   "regenerating a bounding outline instead")
+            rep.log(msg)
+            if not args.quiet:
+                print(f"  note: {msg}")
         place_runs = max(1, args.place_runs)
         _place_run_idx = [0]
         _place_last_it = [-1]
@@ -545,13 +557,14 @@ def run(args: argparse.Namespace) -> int:
             iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
             exclude=args.exclude_net, overlap_weight=args.place_overlap_weight,
             compact_weight=args.place_compact_weight, buffer=args.place_buffer,
-            edge_weight=args.place_edge_weight,
+            edge_weight=args.place_edge_weight, keep_outline=keep_outline,
             t_start=args.place_temps[0], t_end=args.place_temps[1],
             step=args.place_step, rotate_mode=args.place_rotate)
         pout = placement.place(board, pp, on_progress=_on_place, runs=place_runs)
         rep.tag = ""
-        pcb.apply_placement(board, margin=args.place_margin)
-        pcb.sync_tree_from_placement(board)
+        kept = pcb.apply_placement(board, margin=args.place_margin,
+                                   keep_outline=keep_outline)
+        pcb.sync_tree_from_placement(board, keep_outline=kept)
         rep.done()
         if place_runs > 1:
             rep.log(f"best of {place_runs} placement runs: energy {pout.best_energy:.1f}")
@@ -1158,6 +1171,11 @@ def build_parser() -> argparse.ArgumentParser:
                    default=2.0, metavar="MM",
                    help="margin (mm) around the parts for the regenerated outline "
                         "(default %(default)s)")
+    p.add_argument("--keep-outline", action="store_true",
+                   help="during --place, keep the board's existing Edge.Cuts and "
+                        "contain the footprints within it, instead of regenerating "
+                        "a bounding-box outline (needs a closed Edge.Cuts; ignored "
+                        "otherwise). Edge-flagged parts then snap to the real edge.")
     p.add_argument("--place-buffer", type=float, default=None, metavar="MM",
                    help="keep-out gap (mm) enforced between footprints during "
                         "placement, so the routed board stays DRC-clean "
