@@ -196,15 +196,24 @@ visible Reference/Value labels and any standalone board text (`gr_text`, e.g.
 connector pin labels or a title block), so parts aren't dropped on top of existing
 silkscreen annotations. (`Autoroute = overlap` footprints, below, are exempt.)
 
-Two footprint attributes steer it:
+Footprint attributes steer it:
 
 - **Locked footprints stay put.** Lock a footprint in KiCad (it stores `(locked
   yes)` / a bare `locked`) and the placer treats it as a fixed obstacle — useful
-  for connectors, mounting holes, or anything that must keep its position.
+  for mounting holes or anything that must keep an exact position.
 - **`Autoroute = overlap`** — add a footprint **property** named `Autoroute` with a
   value of `overlap` (Footprint Properties → Fields → `+`) and that footprint's
   *body* may overlap others (e.g. an Arduino shield sitting over the board it plugs
   into). Its **pads** are still kept clear of other copper.
+- **`Autoroute = edge`** — keep a footprint on the **board boundary** — for
+  connectors, USB/headers and the like that must reach the edge. Use bare `edge`
+  for the nearest side, or `edge-left` / `edge-right` / `edge-top` / `edge-bottom`
+  to pin a side. Unlike locking (which fixes an absolute position), this lets the
+  part slide *along* the edge while the rest of the layout optimises around it.
+  Tokens combine, e.g. `Autoroute = overlap, edge-top`. The pull strength is
+  `--place-edge-weight` (higher = harder). In the default mode the "edge" is the
+  regenerated outline's boundary; honouring a *fixed* Edge.Cuts is planned next
+  (`docs/placement-improvements-plan.md`).
 
 When `--place` runs and routing follows, the output is named `INPUT_placed_routed`.
 Use `--place-only` to stop after placement and write `INPUT_placed` (no routing) —
@@ -222,11 +231,13 @@ Placement options (all also work with `--place-only`):
 | `--place-buffer MM` | Keep-out gap enforced between footprints (default: derived from the design-rule clearance). |
 | `--place-margin MM` | Margin around the parts for the regenerated outline (default 2). |
 | `--place-overlap-weight W` / `--place-compact-weight W` | Energy weights for overlap area and layout compactness. |
+| `--place-edge-weight W` | Pull strength (cost per mm from the target edge) for footprints flagged `Autoroute=edge[-side]` (default 2.0). Higher pulls edge parts out harder. |
 
 The live placement progress shows the temperature, current/best energy, and the
 recent **acceptance ratio** (`acc=…%`, which falls as the schedule cools); the
 end-of-placement summary reports the acceptance ratio and an energy breakdown
-(ratsnest length, overlap area, bounding-box area).
+(ratsnest length, overlap area, bounding-box area, and — when any footprint is
+flagged `Autoroute=edge` — the total edge distance).
 
 It is experimental: it optimises placement heuristically and does not understand
 mechanical/thermal intent, so review the result. Because it rewrites footprint

@@ -5,7 +5,8 @@ routing, the placement analogue of `pyautoroute.anneal`: where the annealer move
 tracks, this moves footprint positions/rotations to minimise rats-nest length
 while keeping bodies from overlapping and pulling the layout together.
 
-Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area``:
+Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
++ edge_weight·edge_distance``:
 
 - **ratsnest** — total MST length over the pad centroids (reuses
   `pyautoroute.netlist`); shrinks as connected pads are drawn together.
@@ -22,6 +23,14 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
   keep-out boxes, so footprints aren't placed on top of existing silkscreen.
 - **bbox_area** — area of the bounding box of all footprints; compaction emerges
   from this term under cooling, with no separate phase.
+- **edge_distance** — only for footprints that opt in via the ``Autoroute``
+  property (``edge`` for the nearest side, or ``edge-left`` / ``edge-right`` /
+  ``edge-top`` / ``edge-bottom`` for a named one; `pcb.Footprint.edge_affinity`).
+  Each flagged footprint is penalised by how far it sits from its target side of
+  the current layout bounding box, pulling connectors and the like out onto the
+  board boundary. Measured against the layout bbox (not absolute coordinates), so
+  it stays translation-invariant like the other terms. Zero when nothing is
+  flagged, so the default behaviour is unchanged.
 
 Moves (over the *movable* footprints — locked ones are fixed obstacles): translate
 by a temperature-scaled random step, rotate (``rotate_mode``: ``ortho`` = ±90°/180°,
@@ -204,6 +213,7 @@ class PlaceParams:
     t_end: float = 0.05
     overlap_weight: float = 20.0      # mm-equivalent cost per mm² of body/pad overlap
     compact_weight: float = 0.02      # mm-equivalent cost per mm² of layout bbox
+    edge_weight: float = 2.0          # mm-cost per mm an edge-flagged footprint sits from its target edge
     step: float = 20.0                # max translate step (mm) at t_start
     buffer: float = 0.5               # keep-out gap (mm) enforced between footprints
     rotate_mode: str = "ortho"        # "ortho" (+/-90/180), "free" (any angle), "none"
@@ -227,6 +237,7 @@ class PlaceResult:
     final_ratsnest: float = 0.0       # energy breakdown at the best placement
     final_overlap: float = 0.0        # penalised footprint overlap area (mm²)
     final_bbox: float = 0.0           # layout bounding-box area (mm²)
+    final_edge: float = 0.0           # total edge-affinity distance (mm); 0 if none flagged
 
     @property
     def accept_ratio(self) -> float:
@@ -288,7 +299,13 @@ class _Placer:
         self._rats = 0.0
         self._overlap = 0.0
         self._bbox = 0.0
+        self._edge = 0.0
         self._idx_of_fp: dict[int, int] = {id(fp): i for i, fp in enumerate(self.boxed)}
+        # Footprints that opted into edge placement: boxed-index -> side
+        # ("any"|"left"|"right"|"top"|"bottom"). Fixed for the run.
+        self._flagged: dict[int, str] = {
+            i: fp.edge_affinity for i, fp in enumerate(self.boxed) if fp.edge_affinity
+        }
 
     def _build_index(self) -> None:
         """Build the fixed connection list and footprint->connection incidence.
@@ -321,6 +338,7 @@ class _Placer:
         self._overlap = self._overlap_area(self._boxes) + \
             self._fixed_text_overlap(self._boxes)
         self._bbox = self._bbox_from_bounds()
+        self._edge = self._edge_sum_from_bounds(self._bounds)
 
     @staticmethod
     def _bbox_area(boxes) -> float:
@@ -349,10 +367,49 @@ class _Placer:
         maxy = max(b[3] for b in bnds)
         return max(0.0, maxx - minx) * max(0.0, maxy - miny)
 
+    def _edge_sum_from_bounds(self, bounds) -> float:
+        """Total edge-affinity distance for the flagged footprints.
+
+        For each flagged footprint, the distance from its box to its target side
+        of the *layout* bounding box (the extent of all ``bounds``): ``left`` =
+        how far its left edge is inside the layout's left edge, etc.; ``any`` =
+        the distance to the nearest of the four sides. Summing this pulls flagged
+        footprints onto the boundary. ``0`` when nothing is flagged.
+
+        Args:
+            bounds: per-footprint ``(minx, miny, maxx, maxy)`` tuples, indexed
+                like ``self.boxed`` (e.g. ``self._bounds``).
+
+        Returns:
+            The summed distance (mm).
+        """
+        if not self._flagged or not bounds:
+            return 0.0
+        minx = min(b[0] for b in bounds)
+        miny = min(b[1] for b in bounds)
+        maxx = max(b[2] for b in bounds)
+        maxy = max(b[3] for b in bounds)
+        total = 0.0
+        for fi, side in self._flagged.items():
+            bx0, by0, bx1, by1 = bounds[fi]
+            if side == "left":
+                d = bx0 - minx
+            elif side == "right":
+                d = maxx - bx1
+            elif side == "top":
+                d = by0 - miny
+            elif side == "bottom":
+                d = maxy - by1
+            else:                                     # "any" — nearest side
+                d = min(bx0 - minx, maxx - bx1, by0 - miny, maxy - by1)
+            total += d
+        return total
+
     def _cached_energy(self) -> float:
         """Energy from the current cache (see the module docstring)."""
         return (self._rats + self.p.overlap_weight * self._overlap
-                + self.p.compact_weight * self._bbox)
+                + self.p.compact_weight * self._bbox
+                + self.p.edge_weight * self._edge)
 
     def _overlap_touching(self, idxs: set[int], boxes) -> float:
         """Overlap area of every pair/fixed-text touching a footprint in `idxs`.
@@ -518,8 +575,10 @@ class _Placer:
             nl = self._conns[ci].est_length
             self._conn_len[ci] = nl
             self._rats += nl
-        # bbox: cheap O(N) recompute from the cached plain-tuple box bounds.
+        # bbox + edge: cheap O(N) recompute from the cached plain-tuple bounds
+        # (both depend on the global layout extent, which any move can shift).
         self._bbox = self._bbox_from_bounds()
+        self._edge = self._edge_sum_from_bounds(self._bounds)
 
     def _energy_components(self) -> tuple[float, float, float]:
         """Return the ``(ratsnest, overlap_area, bbox_area)`` energy terms."""
@@ -540,7 +599,9 @@ class _Placer:
     def _energy(self) -> float:
         """Current placement energy (see the module docstring)."""
         rats, overlap, bbox_area = self._energy_components()
-        return rats + self.p.overlap_weight * overlap + self.p.compact_weight * bbox_area
+        edge = self._edge_sum_from_bounds([self._fp_box(fp).bounds for fp in self.boxed])
+        return (rats + self.p.overlap_weight * overlap
+                + self.p.compact_weight * bbox_area + self.p.edge_weight * edge)
 
     @staticmethod
     def _snapshot(fps):
@@ -609,7 +670,7 @@ class _Placer:
             self._rebuild_cache()
             E = self._cached_energy()
             return PlaceResult(E, E, 0, 0, 0,
-                               self._rats, self._overlap, self._bbox)
+                               self._rats, self._overlap, self._bbox, self._edge)
 
         self._rebuild_cache()
         E = self._cached_energy()
@@ -694,7 +755,7 @@ class _Placer:
         self._rebuild_cache()
         best_E = self._cached_energy()
         return PlaceResult(start_E, best_E, it, accepted, moved,
-                           self._rats, self._overlap, self._bbox)
+                           self._rats, self._overlap, self._bbox, self._edge)
 
 
 def recenter(board: Board) -> tuple[float, float]:
@@ -746,7 +807,9 @@ def place(board: Board, params: PlaceParams | None = None,
 
     Mutates `board`'s footprint poses (and their pads) in place, leaving them at
     the best placement found. Locked footprints are held fixed; footprints flagged
-    ``Autoroute=overlap`` may overlap others' bodies but not their pads. Call
+    ``Autoroute=overlap`` may overlap others' bodies but not their pads; those
+    flagged ``Autoroute=edge`` (or ``edge-<side>``) are pulled to the board
+    boundary (`edge_weight`). Call
     `pyautoroute.pcb.apply_placement` afterwards to finalise pad coordinates and
     regenerate the board outline before routing.
 

@@ -433,7 +433,8 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
         rep.log(f"placement      on  (margin {args.place_margin} mm, "
                 f"buffer {args.place_buffer} mm, "
                 f"overlap wt {args.place_overlap_weight}, "
-                f"compact wt {args.place_compact_weight})")
+                f"compact wt {args.place_compact_weight}, "
+                f"edge wt {args.place_edge_weight})")
         rep.log(f"place temps    {args.place_temps[0]} -> {args.place_temps[1]}")
         rep.log(f"place step     {args.place_step} mm, rotate {args.place_rotate}")
         if args.place_runs > 1:
@@ -544,6 +545,7 @@ def run(args: argparse.Namespace) -> int:
             iters=args.place_iters, time_budget=args.place_time, seed=args.seed,
             exclude=args.exclude_net, overlap_weight=args.place_overlap_weight,
             compact_weight=args.place_compact_weight, buffer=args.place_buffer,
+            edge_weight=args.place_edge_weight,
             t_start=args.place_temps[0], t_end=args.place_temps[1],
             step=args.place_step, rotate_mode=args.place_rotate)
         pout = placement.place(board, pp, on_progress=_on_place, runs=place_runs)
@@ -561,6 +563,8 @@ def run(args: argparse.Namespace) -> int:
         breakdown = (f"placement: ratsnest {pout.final_ratsnest:.1f} mm, "
                      f"overlap {pout.final_overlap:.1f} mm2, "
                      f"bbox {pout.final_bbox:.0f} mm2")
+        if any(fp.edge_affinity for fp in board.footprints):
+            breakdown += f", edge {pout.final_edge:.1f} mm"
         rep.log(summary)
         rep.log(breakdown)
         if not args.quiet:
@@ -1165,6 +1169,12 @@ def build_parser() -> argparse.ArgumentParser:
                    default=placement.PlaceParams.compact_weight, metavar="W",
                    help="placement cost per mm² of layout bounding box, pulling the "
                         "parts together (default %(default)s)")
+    p.add_argument("--place-edge-weight", type=float,
+                   default=placement.PlaceParams.edge_weight, metavar="W",
+                   help="placement cost per mm a footprint flagged "
+                        "Autoroute=edge[-side] sits from its target board edge; "
+                        "higher pulls edge parts (e.g. connectors) out harder "
+                        "(default %(default)s)")
     p.add_argument("--place-temps", nargs=2, type=float, metavar=("START", "END"),
                    default=(placement.PlaceParams.t_start, placement.PlaceParams.t_end),
                    help="placement annealing start/end temperature for the geometric "

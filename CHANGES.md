@@ -5,6 +5,16 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.26.0
+
+- **Edge-aware placement.** Footprints flagged `Autoroute=edge` (or
+  `edge-left` / `-right` / `-top` / `-bottom`) are pulled to the board boundary
+  during `--place` — for connectors, headers and the like that must reach the
+  edge. A new placement-energy term (`--place-edge-weight`, default 2.0) measures
+  each flagged part's distance from its target edge; tokens combine with
+  `overlap`. Off by default (zero cost when nothing is flagged). Phase 1 of
+  `docs/placement-improvements-plan.md`.
+
 ## 0.25.3
 
 - **Perf: vectorised A\* dynamic-copper overlay.** Each reroute previously
