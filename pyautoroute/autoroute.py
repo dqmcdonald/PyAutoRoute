@@ -22,7 +22,8 @@ from pathlib import Path
 from . import __version__, anneal, geometry, netlist, pcb, placement, router
 from .grid import Grid
 from .pipeline import (
-    CycleHooks, _cycle_worker, _route_run_worker, run_cycle, select_best,
+    CycleHooks, PipelineHooks, _cycle_worker, _route_run_worker, run_cycle,
+    run_placement, run_routing, select_best,
 )
 from .rules import load_rules
 
@@ -490,35 +491,27 @@ def run(args: argparse.Namespace, _print_version: bool = True) -> int:
     if args.place or args.place_only:
         pp, keep_outline = _place_params_from_args(args, board, rules, rep)
         place_runs = max(1, args.place_runs)
-        _place_run_idx = [0]
-        _place_last_it = [-1]
-        _place_run_t0 = [time.monotonic()]
-        _place_overall_best = [float("inf")]
         n_fps = len(board.footprints)
-        run_tag = f"run 1/{place_runs}: " if place_runs > 1 else ""
-        rep.tag = run_tag
-        rep.phase(f"{run_tag}placing {n_fps} footprints (annealing)")
+        _place_t0 = [time.monotonic()]
 
-        def _on_place(it, total, energy, best, temp, accept):
-            if _place_last_it[0] >= 0 and it < _place_last_it[0]:
-                _place_run_idx[0] += 1
-                _place_run_t0[0] = time.monotonic()
-                tag = f"run {_place_run_idx[0] + 1}/{place_runs}: "
-                rep.tag = tag
-                rep.phase(f"{tag}placing {n_fps} footprints (annealing)")
-            _place_last_it[0] = it
-            if best < _place_overall_best[0]:
-                _place_overall_best[0] = best
-            elapsed = time.monotonic() - _place_run_t0[0]
+        def _pl_run(k, n):
+            rep.tag = f"run {k + 1}/{n}: " if n > 1 else ""
+            _place_t0[0] = time.monotonic()
+            if k > 0:
+                rep.phase(f"{rep.tag}placing {n_fps} footprints (annealing)")
+
+        def _pl_progress(it, total, energy, best, temp, accept, ob):
             rep.placing(it, total, energy, best, temp, accept,
-                        elapsed=elapsed, budget=args.place_time or 0.0,
-                        overall_best=_place_overall_best[0] if place_runs > 1 else None)
+                        elapsed=time.monotonic() - _place_t0[0],
+                        budget=args.place_time or 0.0, overall_best=ob)
 
-        pout = placement.place(board, pp, on_progress=_on_place, runs=place_runs)
+        place_hooks = PipelineHooks(
+            phase=lambda name: rep.phase(f"{rep.tag}{name}"),
+            place_run=_pl_run, place_progress=_pl_progress)
+        pout = run_placement(board, place_params=pp, place_runs=place_runs,
+                             seed=args.seed, place_margin=args.place_margin,
+                             hooks=place_hooks)
         rep.tag = ""
-        kept = pcb.apply_placement(board, margin=args.place_margin,
-                                   keep_outline=keep_outline)
-        pcb.sync_tree_from_placement(board, keep_outline=kept)
         rep.done()
         if place_runs > 1:
             rep.log(f"best of {place_runs} placement runs: energy {pout.best_energy:.1f}")
@@ -632,95 +625,55 @@ def run(args: argparse.Namespace, _print_version: bool = True) -> int:
                                 search_margin=args.search_margin)
     order = netlist.greedy_order(conns)
     annealing = bool(args.iters or args.time_budget)
-
-    best_energy = float("inf")
-    final_results = None
-    routed = unrouted = length = vias = 0
+    route_kw = dict(annealing=annealing, iters=args.iters,
+                    time_budget=args.time_budget,
+                    unrouted_weight=args.unrouted_weight,
+                    anneal_temps=args.anneal_temps, via_weight=args.via_weight)
     _anneal_t0 = [0.0]
 
-    def _on_anneal(it, total, r, u, energy, best, temp, accept):
-        elapsed = time.monotonic() - _anneal_t0[0]
-        ob = best_energy if runs > 1 and best_energy < float("inf") else None
-        rep.annealing(it, total, r, u, energy, best, temp, accept,
-                      elapsed=elapsed, budget=args.time_budget or 0.0,
-                      overall_best=ob)
-
-    if parallel:
-        # Best-of-N across worker processes. Each worker runs the shared
-        # `_route_one_run` body (greedy route + optional anneal) with all live
-        # progress suppressed; the main process keeps the lowest-energy result,
-        # matching the sequential selection rule exactly. The grid and
-        # connections are picklable, so workers reuse them rather than re-parse.
-        rep.phase(f"routing {len(conns)} connections — "
-                  f"{runs} runs across {jobs} workers")
-        kw = dict(annealing=annealing, iters=args.iters,
-                  time_budget=args.time_budget, seed=args.seed,
-                  unrouted_weight=args.unrouted_weight,
-                  anneal_temps=args.anneal_temps, via_weight=args.via_weight)
-        payloads = [(grid, conns, order, params, k, kw) for k in range(runs)]
-        done_n = 0
-        try:
-            with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as ex:
-                futs = [ex.submit(_route_run_worker, p) for p in payloads]
-                for fut in concurrent.futures.as_completed(futs):
-                    out = fut.result()
-                    done_n += 1
-                    rep.log(f"run {done_n}/{runs} done: energy {out['energy']:.1f}"
-                            + (f"  ({out['summary']})" if out["summary"] else ""))
-                    if out["energy"] < best_energy:
-                        best_energy = out["energy"]
-                        final_results = out["results"]
-                        routed, unrouted, length, vias = out["metrics"]
-        except KeyboardInterrupt:
-            rep.log("interrupted — keeping best result so far")
-            if final_results is None:
-                raise
+    def _rt_phase(name):
         rep.done()
-    else:
-        for k in range(runs):
-            tag = f"run {k + 1}/{runs}: " if runs > 1 else ""
-            rep.tag = tag
-            rep.phase(f"{tag}routing {len(conns)} connections")
-            state = router.RoutingState(grid)
-            result = router.route_all(state, conns, order, params, on_progress=rep.routing)
-            rep.done()
-            run_results = result.results
-            run_metrics = (result.routed, result.unrouted,
-                           result.total_length, result.total_vias)
+        if name.startswith("annealing"):
+            _anneal_t0[0] = time.monotonic()
+        rep.phase(f"{rep.tag}{name}")
 
-            if annealing:
-                rep.phase(f"{tag}annealing (rip-up & reroute)")
-                _anneal_t0[0] = time.monotonic()
-                ap = anneal.AnnealParams(iters=args.iters, time_budget=args.time_budget,
-                                         seed=args.seed + k, snapshots=snap_n,
-                                         unrouted_weight=args.unrouted_weight,
-                                         t_start=args.anneal_temps[0], t_end=args.anneal_temps[1],
-                                         route_params=params)
-                aout = anneal.anneal(state, conns, list(result.results), ap,
-                                     on_progress=_on_anneal,
-                                     on_snapshot=on_snapshot if snap_n else None)
-                rep.done()
-                run_results = aout.results
-                run_metrics = (aout.routed, aout.unrouted,
-                               aout.total_length, aout.total_vias)
-                run_energy = aout.best_energy
-                acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
-                summary = (f"{tag}anneal: {aout.iterations} iters, "
-                           f"{aout.accepted} accepted ({acc_pct:.0f}%), "
-                           f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
-                rep.log(summary)
-                if not args.quiet:
-                    print(f"\n  {summary}")
-            else:
-                run_energy = anneal._energy(run_results, args.via_weight,
-                                            args.unrouted_weight)
-                if runs > 1:
-                    rep.log(f"{tag}energy {run_energy:.1f}")
+    def _rt_anneal(it, total, r, u, energy, best, temp, accept, ob):
+        rep.annealing(it, total, r, u, energy, best, temp, accept,
+                      elapsed=time.monotonic() - _anneal_t0[0],
+                      budget=args.time_budget or 0.0, overall_best=ob)
 
-            if run_energy < best_energy:
-                best_energy = run_energy
-                final_results = run_results
-                routed, unrouted, length, vias = run_metrics
+    def _rt_run_done(k, n, energy, summary, metrics):
+        if parallel:                                   # completion-ordered logging
+            rep.log(f"run {k + 1}/{n} done: energy {energy:.1f}"
+                    + (f"  ({summary})" if summary else ""))
+        elif summary:                                  # sequential annealing summary
+            line = f"{rep.tag}{summary}"
+            rep.log(line)
+            if not args.quiet:
+                print(f"\n  {line}")
+        elif n > 1:
+            rep.log(f"{rep.tag}energy {energy:.1f}")
+
+    route_hooks = PipelineHooks(
+        phase=_rt_phase,
+        route_run=lambda k, n: setattr(
+            rep, "tag", f"run {k + 1}/{n}: " if n > 1 else ""),
+        route_progress=rep.routing,
+        anneal_progress=_rt_anneal,
+        anneal_snapshot=((lambda b, g, res, k, n: on_snapshot(k, n, res))
+                         if snap_n else None),
+        route_run_done=_rt_run_done)
+
+    res = run_routing(board, rules, pitch, route_params=params, route_kw=route_kw,
+                      seed=args.seed, runs=runs, jobs=jobs, snapshots=snap_n,
+                      exclude=args.exclude_net, grid=grid, conns=conns, order=order,
+                      hooks=route_hooks)
+    rep.done()
+    rep.tag = ""
+    final_results = (res.results if res.results is not None
+                     else [None] * len(conns))
+    routed, unrouted, length, vias = res.routed, res.unrouted, res.length, res.vias
+    best_energy = res.energy
 
     if runs > 1:
         best_line = f"best of {runs} runs: energy {best_energy:.1f}"

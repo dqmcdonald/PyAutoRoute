@@ -35,7 +35,7 @@ flowchart TD
   netlist["netlist.py — net grouping + MST → two-pin connections"] --> router
   router["router.py — A* maze + RoutingState (dynamic occupancy, rip-up)"] --> anneal
   anneal["anneal.py — simulated annealing (rip-up & reroute)"] --> pipeline
-  pipeline["pipeline.py — place→route→score cycle unit (run_cycle, --cycles)"] --> autoroute
+  pipeline["pipeline.py — shared place→route orchestration (run_placement/run_routing, run_cycle)"] --> autoroute
   autoroute["autoroute.py — CLI + orchestration + writer + self-check"] --> OUT[".._routed.kicad_pcb"]
   visualize["visualize.py — optional matplotlib debug render"] -.-> autoroute
 ```
@@ -276,19 +276,28 @@ anchor). These become *static* keep-out boxes (an `STRtree`), and
 `overlap_weight` term — so footprints are pushed clear of fixed silkscreen text.
 `overlap_ok` footprints (meant to sit over the board) are exempt.
 
-### `pipeline.py` — place→route→score cycle unit
-The shared **cycle**: `run_cycle` loads a fresh board, places it once (seed `k`),
-finalises the placement into the tree, builds the `Grid`, and routes it via
-`_route_one_run` (greedy + optional anneal) — returning a picklable `CycleResult`
-(board, grid, results, metrics, and a `score = (unrouted, energy)`). It binds no
-`Reporter`/Tk objects; live progress is delivered through an optional `CycleHooks`
-(no-op by default), so the same unit runs inline, in a `ProcessPoolExecutor`
-worker (`_cycle_worker`), and — once the duplication is collapsed — under the GUI
-worker. `select_best` keeps the lowest-scoring cycle (fewest unrouted, then lowest
-energy). The routing helpers `_route_one_run` / `_route_run_worker` live here too
-(routing is a cycle's second half), and `autoroute`'s `--runs` best-of-N imports
-them. This module is what `--cycles N` (best-of-cycles) and the older `--runs`
-best-of-N both compose.
+### `pipeline.py` — shared place→route orchestration
+The single home for the place→route flow, bound to **no** `Reporter`/Tk objects:
+live progress flows through optional, no-op-by-default hook callbacks, so the same
+code runs on the CLI, in the GUI worker, and in `ProcessPoolExecutor` workers.
+
+- **`run_placement`** (best-of-`place_runs`) and **`run_routing`** (best-of-`runs`,
+  sequential or — when `jobs > 1` — across worker processes) are the two halves of
+  the full pipeline, driven by `PipelineHooks` (phase/run boundaries, placement &
+  anneal progress, route partials, snapshots, per-run + overall-best). Both
+  `autoroute.run` (its non-cycle path) and the GUI worker call these, each
+  supplying hooks that translate progress into their own front-end (the CLI's
+  `Reporter` lines; the GUI's `Phase`/`Progress`/`BoardSnap` events) — this is the
+  dedup that removed the duplicated orchestration. `run()` calls the two
+  separately so it can slot `--auto` (grid/via probing on the placed board)
+  between them; `run_pipeline` composes them for callers that don't.
+- **`run_cycle`** loads a fresh board, places it once (seed `k`), routes it, and
+  returns a picklable `CycleResult` (`score = (unrouted, energy)`); `select_best`
+  keeps the lowest. This is the **cycle** unit `--cycles N` runs (inline or via the
+  picklable `_cycle_worker`) to pick the placement that *routes* best.
+- The routing helpers **`_route_one_run`** / **`_route_run_worker`** live here too
+  (routing is a cycle's/run's second half); `autoroute`'s `--runs` best-of-N and
+  `run_routing`'s parallel path dispatch through them.
 
 ### `autoroute.py` — CLI & orchestration
 **Settings file.** `--config FILE` is resolved by a throwaway pre-parser that reads
@@ -326,10 +335,15 @@ lexicographic `(unrouted, energy)` so completing connections dominates. `--jobs`
 parallelises cycles across a `ProcessPoolExecutor` (the picklable `_cycle_worker`)
 exactly as `--runs` parallelises routing; the winner is written/refilled/
 self-checked through the shared tail. `--cycles 1` (default) takes the original
-single-pass path untouched. `run_cycle` binds no `Reporter` or Tk objects (live
-progress goes through an optional `CycleHooks`), so it is the intended single home
-for the GUI worker's place→route path too — collapsing that duplication is the
-remaining Phase-3 follow-up.
+single-pass path untouched.
+
+**Shared place→route.** `run()`'s own placement and routing(best-of-N, sequential
++ parallel) loops are not hand-rolled — it calls `pipeline.run_placement` then
+(after any `--auto`) `pipeline.run_routing`, with a `Reporter`-backed
+`PipelineHooks` mapping progress to its live display and log. The GUI worker calls
+the *same* two functions with an event-posting hooks object, so the place→route
+orchestration exists once for both front-ends (the duplication `gui-plan.md`
+flagged is gone).
 
 Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
 text progress `Reporter` (single-line `\r` updates on a TTY, line-by-line
