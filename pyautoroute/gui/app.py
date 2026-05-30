@@ -135,6 +135,7 @@ class App:
         self._initial_stats = None
         self._current_snap: BoardSnap | None = None
         self._best_snap: BoardSnap | None = None
+        self._overall_best_snap: BoardSnap | None = None
         self._view_mode = tk.StringVar(value="current")
 
         self._build_menu()
@@ -199,7 +200,8 @@ class App:
         ttk.Label(view_bar, text="View:").pack(side=tk.LEFT, padx=(0, 4))
         for label, value in (("Initial", "initial"),
                               ("Current", "current"),
-                              ("Best", "best")):
+                              ("Best", "best"),
+                              ("Overall best", "overall_best")):
             ttk.Radiobutton(
                 view_bar, text=label, value=value,
                 variable=self._view_mode,
@@ -287,6 +289,8 @@ class App:
         elif isinstance(event, BoardSnap):
             if event.kind == "best":
                 self._best_snap = event
+            elif event.kind == "overall_best":
+                self._overall_best_snap = event
             else:
                 self._current_snap = event
             if self._view_mode.get() == event.kind:
@@ -309,6 +313,7 @@ class App:
         self._last_done = None
         self._current_snap = None
         self._best_snap = None
+        self._overall_best_snap = None
         self._view_mode.set("current")
         self._metrics.reset()
         self._energy_plot.reset()
@@ -335,6 +340,7 @@ class App:
             final_snap = BoardSnap(ev.board, kind="current")
             self._current_snap = final_snap
             self._best_snap = final_snap
+            self._overall_best_snap = final_snap
         if n_viol:
             messagebox.showwarning("Self-check",
                                    f"{n_viol} clearance violation(s) found.\n"
@@ -411,6 +417,7 @@ class App:
             self._last_done = None
             self._current_snap = None
             self._best_snap = None
+            self._overall_best_snap = None
             self._view_mode.set("current")
 
             self._board_canvas.show_board(board, title=Path(path).name)
@@ -470,6 +477,14 @@ class App:
                 self._board_canvas.show_board(
                     snap.board, snap.results, snap.grid,
                     title=f"{title_base} (best)")
+            if self._last_done is not None:
+                self._metrics.set_done(self._last_done)
+        elif mode == "overall_best":
+            snap = self._overall_best_snap
+            if snap is not None:
+                self._board_canvas.show_board(
+                    snap.board, snap.results, snap.grid,
+                    title=f"{title_base} (overall best)")
             if self._last_done is not None:
                 self._metrics.set_done(self._last_done)
 

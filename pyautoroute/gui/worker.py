@@ -176,6 +176,9 @@ class Worker:
                     snap_kind = "best" if new_best else "current"
                     self._post(BoardSnap(_snap_pads(board, cfg.place_margin),
                                         kind=snap_kind))
+                    if new_best:
+                        self._post(BoardSnap(_snap_pads(board, cfg.place_margin),
+                                            kind="overall_best"))
 
             pp = place_mod.PlaceParams(
                 iters=cfg.place_iters,
@@ -339,6 +342,12 @@ class Worker:
                 best_energy = run_energy
                 final_results = run_results
                 routed, unrouted, length, vias = run_metrics
+                self._post(BoardSnap(
+                    dataclasses.replace(board),
+                    results=list(run_results),
+                    grid=grid,
+                    kind="overall_best",
+                ))
 
         if final_results is None:
             self._post(Phase("cancelled before routing completed"))
