@@ -949,23 +949,39 @@ def pad_bounding_outline(pads: list[Pad], margin: float = 2.0) -> list[OutlineSh
     return [OutlineShape("rect", {"start": (x0, y0), "end": (x1, y1)})]
 
 
-def apply_placement(board: Board, margin: float = 2.0) -> None:
+def apply_placement(board: Board, margin: float = 2.0,
+                    keep_outline: bool = False) -> bool:
     """Push the footprints' current poses into the model for routing.
 
     Recomputes every pad's absolute centre/rotation from its footprint pose
-    (`Footprint.sync_pads`) and replaces `Board.outline` with a single rectangle
-    bounding all pads, grown by `margin`. Call after the placement pass and before
-    building the routing grid; the grid and router then see the new layout.
+    (`Footprint.sync_pads`) and, by default, replaces `Board.outline` with a single
+    rectangle bounding all pads (grown by `margin`). Call after the placement pass
+    and before building the routing grid; the grid and router then see the new
+    layout.
+
+    With `keep_outline` and a real (non-synthesised) Edge.Cuts present, the parsed
+    outline is left untouched instead — the placement was contained within it — so
+    routing uses the board's existing shape.
 
     Args:
         board: the board to update in place.
         margin: extra space (mm) added around the pads when sizing the outline.
+        keep_outline: keep the board's existing Edge.Cuts instead of regenerating
+            it (only honoured when a closed, non-synthesised outline exists).
+
+    Returns:
+        True if the existing outline was kept; False if a bounding rectangle was
+        (re)generated (including the `keep_outline` fall-back when there is no
+        real outline to keep).
     """
     for fp in board.footprints:
         fp.sync_pads()
     if not board.pads:
-        return
+        return False
+    if keep_outline and board.outline and not board.outline_synthesized:
+        return True                       # keep the existing Edge.Cuts
     board.outline = pad_bounding_outline(board.pads, margin)
+    return False
 
 
 def ensure_outline(board: Board, margin: float = 2.0) -> bool:
@@ -1073,19 +1089,24 @@ def _rotate_text_nodes(fp_node: SList, delta: float) -> None:
                     break
 
 
-def sync_tree_from_placement(board: Board, edge_width: float = 0.05) -> None:
+def sync_tree_from_placement(board: Board, edge_width: float = 0.05,
+                             keep_outline: bool = False) -> None:
     """Rewrite the board tree to match the placement result, in place.
 
     For each footprint that actually moved, clears its node's source span (so it
     re-serialises from structure rather than verbatim) and replaces the ``(at ...)``
     child with the new pose — children keep their own spans, so the only textual
     diff is the footprint's ``(at)`` line. Replaces every ``Edge.Cuts`` graphic
-    with a single ``gr_rect`` matching `Board.outline` (set by `apply_placement`).
+    with a single ``gr_rect`` matching `Board.outline` (set by `apply_placement`)
+    — unless `keep_outline`, in which case the existing Edge.Cuts is left as-is and
+    only the footprint poses are rewritten.
 
     Args:
         board: the board whose tree is mutated (and is then ready for
             `write_board`).
         edge_width: stroke width (mm) for the regenerated outline rectangle.
+        keep_outline: leave the board's existing Edge.Cuts untouched (pair with
+            `apply_placement(..., keep_outline=True)`).
     """
     for fp in board.footprints:
         if not fp.moved:
@@ -1110,6 +1131,8 @@ def sync_tree_from_placement(board: Board, edge_width: float = 0.05) -> None:
             _rotate_pad_nodes(fp.fp_node, delta)
             _rotate_text_nodes(fp.fp_node, delta)
 
+    if keep_outline:
+        return                            # leave the existing Edge.Cuts untouched
     rect = next((s for s in board.outline if s.kind == "rect"), None)
     if rect is None:
         return

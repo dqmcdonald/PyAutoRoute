@@ -373,6 +373,76 @@ def test_edge_affinity_off_by_default_leaves_energy_unchanged():
     placer._rebuild_cache()
     assert placer._edge == 0.0
     assert placer._flagged == {}
+    assert placer._containment == 0.0            # no keep_outline -> no containment
+    assert placer._outline_poly is None
+
+
+# --- keep-outline (phase 2) --------------------------------------------------
+
+def test_keep_outline_contains_footprints_within_outline():
+    from pyautoroute.geometry import outline_to_polygon
+    # Footprints start OUTSIDE a 40x40 outline; keep_outline should pull them in.
+    fps = [_fp("U1", 60, 60, [(0, 0, "")]),
+           _fp("U2", 70, 5, [(0, 0, "")]),
+           _fp("U3", 5, 70, [(0, 0, "")])]
+    board = _board(fps, size=40)
+    placement.place(board, placement.PlaceParams(
+        iters=5000, seed=1, keep_outline=True))
+    poly = outline_to_polygon(board.outline)
+    for fp in board.footprints:
+        assert _body_box(fp).difference(poly).area < 1.0   # inside the outline
+
+
+def test_keep_outline_edge_affinity_targets_the_outline_edge():
+    from pyautoroute.geometry import outline_to_polygon
+    # U1 (flagged edge-left, but pulled toward the centre by its net) should reach
+    # the *outline's* left edge (x≈0), not merely the left of the cluster.
+    fps = [_fp("U1", 20, 20, [(0, 0, "n1")], edge_affinity="left"),
+           _fp("U2", 25, 20, [(0, 0, "n1")]),
+           _fp("U3", 25, 25, [(0, 0, "n1")])]
+    board = _board(fps, size=40)
+    placement.place(board, placement.PlaceParams(
+        iters=5000, seed=3, keep_outline=True, edge_weight=15.0))
+    minx = outline_to_polygon(board.outline).bounds[0]
+    u1 = next(fp for fp in board.footprints if fp.ref == "U1")
+    assert _body_box(u1).bounds[0] - minx < 2.0
+
+
+def test_apply_placement_keep_outline_keeps_or_falls_back():
+    fps = [_fp("U1", 10, 10, [(0, 0, "")])]
+    board = _board(fps, size=40)                 # a real (non-synthesised) outline
+    before = board.outline
+    assert pcb.apply_placement(board, keep_outline=True) is True
+    assert board.outline is before               # left untouched
+
+    board2 = _board(fps, size=40)
+    board2.outline_synthesized = True            # nothing real to keep
+    assert pcb.apply_placement(board2, keep_outline=True) is False
+    assert board2.outline is not None            # regenerated a bounding box
+
+
+def test_keep_outline_preserves_existing_edge_cuts(tmp_path):
+    text = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
+        ' (gr_line (start 0 0) (end 40 0) (stroke (width 0.05) (type solid))'
+        '  (layer "Edge.Cuts") (uuid "11111111-1111-1111-1111-111111111111"))'
+        ' (footprint "x" (at 10 20 0)'
+        '  (property "Reference" "U1")'
+        '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "A"))))'
+    )
+    board = _board_from_text(text)
+    u1 = next(fp for fp in board.footprints if fp.ref == "U1")
+    u1.x, u1.y = 12.5, 22.5
+    kept = pcb.apply_placement(board, margin=1.0, keep_outline=True)
+    assert kept is True
+    pcb.sync_tree_from_placement(board, keep_outline=kept)
+    out = tmp_path / "kept.kicad_pcb"
+    pcb.write_board(board, out, new_nodes=None, strip_free_vias=False)
+    text_out = out.read_text()
+    assert "gr_line" in text_out                 # original Edge.Cuts preserved
+    assert "gr_rect" not in text_out             # not replaced by a bounding rect
+    r1 = next(fp for fp in pcb.load_board(out).footprints if fp.ref == "U1")
+    assert math.isclose(r1.x, 12.5) and math.isclose(r1.y, 22.5)   # pose still rewritten
 
 
 # --- pcb tree rewrite (round-trip) -------------------------------------------

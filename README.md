@@ -211,9 +211,15 @@ Footprint attributes steer it:
   to pin a side. Unlike locking (which fixes an absolute position), this lets the
   part slide *along* the edge while the rest of the layout optimises around it.
   Tokens combine, e.g. `Autoroute = overlap, edge-top`. The pull strength is
-  `--place-edge-weight` (higher = harder). In the default mode the "edge" is the
-  regenerated outline's boundary; honouring a *fixed* Edge.Cuts is planned next
-  (`docs/placement-improvements-plan.md`).
+  `--place-edge-weight` (higher = harder). By default the "edge" is the
+  regenerated outline's boundary; with `--keep-outline` it is the board's existing
+  Edge.Cuts (below).
+- **`--keep-outline`** — by default `--place` discards the board's `Edge.Cuts` and
+  regenerates a bounding rectangle around the result. Pass `--keep-outline` to
+  instead **keep the existing outline** and contain the footprints within it — for
+  boards with a real mechanical shape (enclosure, mounting holes). Edge-flagged
+  parts then snap to that real edge. Needs a closed `Edge.Cuts`; if none is found
+  it warns and falls back to regenerating one.
 
 When `--place` runs and routing follows, the output is named `INPUT_placed_routed`.
 Use `--place-only` to stop after placement and write `INPUT_placed` (no routing) —
@@ -230,6 +236,7 @@ Placement options (all also work with `--place-only`):
 | `--place-rotate {ortho,free,none}` | Rotation moves: `ortho` (±90/180, default), `free` (any angle), or `none`. |
 | `--place-buffer MM` | Keep-out gap enforced between footprints (default: derived from the design-rule clearance). |
 | `--place-margin MM` | Margin around the parts for the regenerated outline (default 2). |
+| `--keep-outline` | Keep the board's existing `Edge.Cuts` and contain the footprints within it, instead of regenerating a bounding-box outline (needs a closed outline; ignored otherwise). |
 | `--place-overlap-weight W` / `--place-compact-weight W` | Energy weights for overlap area and layout compactness. |
 | `--place-edge-weight W` | Pull strength (cost per mm from the target edge) for footprints flagged `Autoroute=edge[-side]` (default 2.0). Higher pulls edge parts out harder. |
 

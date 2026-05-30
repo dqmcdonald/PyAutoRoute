@@ -96,7 +96,7 @@ class RunConfig:
         "snapshots",
         "debug_plot", "quiet", "log",
         "auto", "auto_yes", "auto_probe_time",
-        "fix_values",
+        "fix_values", "keep_outline",
     )
 
     def __init__(self, **kw):
@@ -167,6 +167,7 @@ class ControlsPanel(ttk.Frame):
         self._snapshots = tk.StringVar(value="0")
         self._auto_probe_time = tk.StringVar(value="3.0")
         self._fix_values = tk.BooleanVar(value=False)
+        self._keep_outline = tk.BooleanVar(value=False)
 
         self._build_ui()
         self._mode.trace_add("write", self._on_mode_change)
@@ -450,6 +451,8 @@ class ControlsPanel(ttk.Frame):
             self._quiet.set(bool(d["quiet"]))
         if "fix_values" in d:
             self._fix_values.set(bool(d["fix_values"]))
+        if "keep_outline" in d:
+            self._keep_outline.set(bool(d["keep_outline"]))
 
     # ── advanced dialog ───────────────────────────────────────────────
 
@@ -503,8 +506,17 @@ class ControlsPanel(ttk.Frame):
                     "Move footprint Value text to the silkscreen layer "
                     "(F.SilkS / B.SilkS) before routing. Off by default.")
 
+        cb_ko = ttk.Checkbutton(f, text="Keep board outline (--place)",
+                                variable=self._keep_outline)
+        cb_ko.grid(row=len(rows) + 1, column=0, columnspan=2, sticky=tk.W,
+                   padx=4, pady=4)
+        add_tooltip(cb_ko,
+                    "During placement, contain footprints within the board's "
+                    "existing Edge.Cuts instead of regenerating a bounding box "
+                    "(needs a closed outline). Edge-flagged parts snap to it.")
+
         ttk.Button(f, text="OK", command=dlg.destroy).grid(
-            row=len(rows) + 1, column=0, columnspan=2, pady=8)
+            row=len(rows) + 2, column=0, columnspan=2, pady=8)
         dlg.transient(self)
         dlg.grab_set()
         self.wait_window(dlg)
@@ -592,6 +604,7 @@ class ControlsPanel(ttk.Frame):
             auto_yes=False,
             auto_probe_time=_f(self._auto_probe_time, 3.0),
             fix_values=self._fix_values.get(),
+            keep_outline=self._keep_outline.get(),
         )
 
     def _to_namespace(self, parser) -> argparse.Namespace:
@@ -632,4 +645,5 @@ class ControlsPanel(ttk.Frame):
             auto_yes=False,
             auto_probe_time=cfg.auto_probe_time or 3.0,
             fix_values=cfg.fix_values or False,
+            keep_outline=cfg.keep_outline or False,
         )

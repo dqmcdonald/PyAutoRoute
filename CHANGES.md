@@ -5,6 +5,16 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.27.0
+
+- **`--keep-outline` placement mode.** During `--place`, keep the board's existing
+  `Edge.Cuts` and contain the footprints within it (a soft distance + protruding-
+  area penalty) instead of regenerating a bounding-box outline — for boards with a
+  real mechanical shape. Edge-flagged parts (`Autoroute=edge`) then snap to the
+  real board edge. Needs a closed outline; warns and falls back otherwise. Phase 2
+  of `docs/placement-improvements-plan.md`. *(Also fixes the placement SA revert to
+  roll back the new containment/edge cache terms.)*
+
 ## 0.26.0
 
 - **Edge-aware placement.** Footprints flagged `Autoroute=edge` (or
