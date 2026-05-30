@@ -486,8 +486,8 @@ class ControlsPanel(ttk.Frame):
             ("Place compact wt:", self._place_cw,
              "Placement cost per mm² of bounding-box area (encourages compactness)."),
             ("Place edge wt:", self._place_ew,
-             "Cost per mm an Autoroute=edge[-side] footprint sits from its board "
-             "edge (pulls connectors out to the boundary)."),
+             "Cost per mm an Autoroute-edge=<side> footprint sits from its board "
+             "edge (pulls connectors out to the boundary and aligns them flat)."),
             ("Auto probe time:", self._auto_probe_time,
              "Annealing seconds per probed setting when using Suggest."),
         ]

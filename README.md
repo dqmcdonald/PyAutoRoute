@@ -194,26 +194,28 @@ already anchor the layout.)
 It also keeps footprints clear of **silkscreen text** — both each footprint's own
 visible Reference/Value labels and any standalone board text (`gr_text`, e.g.
 connector pin labels or a title block), so parts aren't dropped on top of existing
-silkscreen annotations. (`Autoroute = overlap` footprints, below, are exempt.)
+silkscreen annotations. (`Autoroute-overlap = yes` footprints, below, are exempt.)
 
 Footprint attributes steer it:
 
 - **Locked footprints stay put.** Lock a footprint in KiCad (it stores `(locked
   yes)` / a bare `locked`) and the placer treats it as a fixed obstacle — useful
   for mounting holes or anything that must keep an exact position.
-- **`Autoroute = overlap`** — add a footprint **property** named `Autoroute` with a
-  value of `overlap` (Footprint Properties → Fields → `+`) and that footprint's
-  *body* may overlap others (e.g. an Arduino shield sitting over the board it plugs
-  into). Its **pads** are still kept clear of other copper.
-- **`Autoroute = edge`** — keep a footprint on the **board boundary** — for
-  connectors, USB/headers and the like that must reach the edge. Use bare `edge`
-  for the nearest side, or `edge-left` / `edge-right` / `edge-top` / `edge-bottom`
-  to pin a side. Unlike locking (which fixes an absolute position), this lets the
-  part slide *along* the edge while the rest of the layout optimises around it.
-  Tokens combine, e.g. `Autoroute = overlap, edge-top`. The pull strength is
-  `--place-edge-weight` (higher = harder). By default the "edge" is the
-  regenerated outline's boundary; with `--keep-outline` it is the board's existing
-  Edge.Cuts (below).
+- **`Autoroute-overlap = yes`** — add a footprint **property** named
+  `Autoroute-overlap` with a value of `yes` (Footprint Properties → Fields → `+`)
+  and that footprint's *body* may overlap others (e.g. an Arduino shield sitting
+  over the board it plugs into). Its **pads** are still kept clear of other copper.
+- **`Autoroute-edge = <side>`** — keep a footprint on the **board boundary** — for
+  connectors, USB/headers and the like that must reach the edge. Add a property
+  named `Autoroute-edge` with value `any` (nearest side) or `left` / `right` /
+  `top` / `bottom` to pin a side. Unlike locking (which fixes an absolute
+  position), this lets the part slide *along* the edge while the rest of the layout
+  optimises around it, and it is **oriented flat against the edge** (its long axis
+  parallel) so all its pins sit near the boundary rather than rotating to reach the
+  edge with a single pad. The pull/alignment strength is `--place-edge-weight`
+  (higher = harder). The two properties are independent, so a part can carry both.
+  By default the "edge" is the regenerated outline's boundary; with `--keep-outline`
+  it is the board's existing Edge.Cuts (below).
 - **`--keep-outline`** — by default `--place` discards the board's `Edge.Cuts` and
   regenerates a bounding rectangle around the result. Pass `--keep-outline` to
   instead **keep the existing outline** and contain the footprints within it — for
@@ -238,13 +240,13 @@ Placement options (all also work with `--place-only`):
 | `--place-margin MM` | Margin around the parts for the regenerated outline (default 2). |
 | `--keep-outline` | Keep the board's existing `Edge.Cuts` and contain the footprints within it, instead of regenerating a bounding-box outline (needs a closed outline; ignored otherwise). |
 | `--place-overlap-weight W` / `--place-compact-weight W` | Energy weights for overlap area and layout compactness. |
-| `--place-edge-weight W` | Pull strength (cost per mm from the target edge) for footprints flagged `Autoroute=edge[-side]` (default 2.0). Higher pulls edge parts out harder. |
+| `--place-edge-weight W` | Pull/alignment strength (cost per mm from the target edge) for footprints flagged `Autoroute-edge=<side>` (default 2.0). Higher pulls edge parts out harder and aligns them flatter against the edge. |
 
 The live placement progress shows the temperature, current/best energy, and the
 recent **acceptance ratio** (`acc=…%`, which falls as the schedule cools); the
 end-of-placement summary reports the acceptance ratio and an energy breakdown
 (ratsnest length, overlap area, bounding-box area, and — when any footprint is
-flagged `Autoroute=edge` — the total edge distance).
+flagged `Autoroute-edge` — the total edge distance).
 
 It is experimental: it optimises placement heuristically and does not understand
 mechanical/thermal intent, so review the result. Because it rewrites footprint

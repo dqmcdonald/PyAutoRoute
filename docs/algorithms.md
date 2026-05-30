@@ -130,8 +130,10 @@ The experimental `--place` pass runs the *same* simulated-annealing idea one lev
 up: instead of moving wires, it moves the **parts**. Its energy rewards short
 rats-nest connections, penalises parts overlapping, and penalises a sprawling
 layout (to pull everything compact). Locked parts stay put; parts flagged
-`Autoroute=overlap` may sit on top of others (e.g. a shield). When it finishes it
-draws a board outline around the result and hands off to routing as usual.
+`Autoroute-overlap` may sit on top of others (e.g. a shield), and parts flagged
+`Autoroute-edge` are pulled to the boundary and aligned flat against it. When it
+finishes it draws a board outline around the result and hands off to routing as
+usual.
 
 ---
 

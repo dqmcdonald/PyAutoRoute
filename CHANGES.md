@@ -5,6 +5,22 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.28.0
+
+- **Split the `Autoroute` footprint property into namespaced fields.** The single
+  overloaded `Autoroute` value is replaced by `Autoroute-overlap = yes` and
+  `Autoroute-edge = <side>` (`any` / `left` / `right` / `top` / `bottom`), so each
+  intent is its own KiCad property and there's room for future `Autoroute-*` flags.
+  **Breaking:** the old combined `Autoroute = "overlap, edge-top"` form is no longer
+  read — re-tag affected footprints.
+- **Edge-flagged parts now orient flat against their edge.** The edge-affinity term
+  measures to the *far* side of the footprint box (gap + perpendicular depth), so a
+  connector is aligned with its long axis parallel to the boundary — all its pins
+  near the edge — instead of being free to rotate so only one pad reached it.
+  Strength is still `--place-edge-weight`.
+- **Bigger Autoroute markers.** The board-canvas edge arrows/stars and overlap rings
+  are drawn 2× larger so they're easier to spot.
+
 ## 0.27.0
 
 - **`--keep-outline` placement mode.** During `--place`, keep the board's existing

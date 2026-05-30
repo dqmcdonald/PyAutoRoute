@@ -15,7 +15,7 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
   registers as overlapping until its *gap* exceeds ``buffer``; the optimiser then
   keeps footprints at least ``buffer`` apart, leaving room for routing clearance
   (this is the fix for placements packing so tightly that the routed board failed
-  DRC). A pair where either footprint opted in via the ``Autoroute=overlap``
+  DRC). A pair where either footprint opted in via the ``Autoroute-overlap``
   property (`pcb.Footprint.overlap_ok`) contributes only its *pad-vs-pad* overlap
   (also buffer-inflated), not body overlap — the shield-over-board case. Each
   footprint box also covers its visible silkscreen text, and standalone
@@ -23,14 +23,17 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
   keep-out boxes, so footprints aren't placed on top of existing silkscreen.
 - **bbox_area** — area of the bounding box of all footprints; compaction emerges
   from this term under cooling, with no separate phase.
-- **edge_distance** — only for footprints that opt in via the ``Autoroute``
-  property (``edge`` for the nearest side, or ``edge-left`` / ``edge-right`` /
-  ``edge-top`` / ``edge-bottom`` for a named one; `pcb.Footprint.edge_affinity`).
-  Each flagged footprint is penalised by how far it sits from its target side of
-  the current layout bounding box, pulling connectors and the like out onto the
-  board boundary. Measured against the layout bbox (not absolute coordinates), so
-  it stays translation-invariant like the other terms. Zero when nothing is
-  flagged, so the default behaviour is unchanged.
+- **edge_distance** — only for footprints that opt in via the ``Autoroute-edge``
+  property (``any`` for the nearest side, or ``left`` / ``right`` / ``top`` /
+  ``bottom`` for a named one; `pcb.Footprint.edge_affinity`). Each flagged
+  footprint is penalised by the distance from its target side of the current
+  layout bounding box to the *far* side of its box — i.e. the gap to the edge
+  plus the box's depth perpendicular to it — so the term both pulls connectors
+  and the like onto the board boundary **and** orients them to lie flat against
+  it (long axis parallel) rather than rotating to reach the edge with a single
+  pad. Measured against the layout bbox (not absolute coordinates), so it stays
+  translation-invariant like the other terms. Zero when nothing is flagged, so
+  the default behaviour is unchanged.
 - **area_outside_outline** — only under ``keep_outline`` (the ``--keep-outline``
   mode), and only when the board has a closed Edge.Cuts. Penalises the area each
   footprint box protrudes outside that fixed outline, containing the placement
@@ -421,13 +424,17 @@ class _Placer:
     def _edge_sum_from_bounds(self, bounds) -> float:
         """Total edge-affinity distance for the flagged footprints.
 
-        For each flagged footprint, the distance from its box to its target side
-        of the reference rectangle: ``left`` = how far its left edge is inside the
-        reference's left edge, etc.; ``any`` = the distance to the nearest of the
-        four sides. The reference is the kept board outline's bounding box under
-        ``--keep-outline`` (so edge parts snap to the real edge), otherwise the
-        *layout* bounding box (the extent of all ``bounds``). Summing this pulls
-        flagged footprints onto the boundary. ``0`` when nothing is flagged.
+        For each flagged footprint, the distance from the reference's target side
+        to the box's *far* side: ``left`` = how far the box's right edge is from
+        the reference's left edge, etc.; ``any`` = the smallest such distance over
+        the four sides. Using the far side means the distance is *gap to the edge
+        + the box's depth perpendicular to it*, so minimising it both pulls the
+        part onto the boundary **and** orients it to lie flat against the edge
+        (long axis parallel) rather than poking inward — otherwise a connector
+        could rotate so only one pad reached the edge. The reference is the kept
+        board outline's bounding box under ``--keep-outline`` (so edge parts snap
+        to the real edge), otherwise the *layout* bounding box (the extent of all
+        ``bounds``). ``0`` when nothing is flagged.
 
         Args:
             bounds: per-footprint ``(minx, miny, maxx, maxy)`` tuples, indexed
@@ -449,15 +456,15 @@ class _Placer:
         for fi, side in self._flagged.items():
             bx0, by0, bx1, by1 = bounds[fi]
             if side == "left":
-                d = bx0 - minx
+                d = bx1 - minx
             elif side == "right":
-                d = maxx - bx1
+                d = maxx - bx0
             elif side == "top":
-                d = by0 - miny
+                d = by1 - miny
             elif side == "bottom":
-                d = maxy - by1
+                d = maxy - by0
             else:                                     # "any" — nearest side
-                d = min(bx0 - minx, maxx - bx1, by0 - miny, maxy - by1)
+                d = min(bx1 - minx, maxx - bx0, by1 - miny, maxy - by0)
             total += d
         return total
 
@@ -872,9 +879,9 @@ def place(board: Board, params: PlaceParams | None = None,
 
     Mutates `board`'s footprint poses (and their pads) in place, leaving them at
     the best placement found. Locked footprints are held fixed; footprints flagged
-    ``Autoroute=overlap`` may overlap others' bodies but not their pads; those
-    flagged ``Autoroute=edge`` (or ``edge-<side>``) are pulled to the board
-    boundary (`edge_weight`). Call
+    ``Autoroute-overlap`` may overlap others' bodies but not their pads; those
+    flagged ``Autoroute-edge=<side>`` are pulled to the board boundary and oriented
+    flat against it (`edge_weight`). Call
     `pyautoroute.pcb.apply_placement` afterwards to finalise pad coordinates and
     regenerate the board outline before routing.
 
