@@ -64,6 +64,7 @@
                     <li><a href="pyautoroute/gui.html">gui</a></li>
                     <li><a href="pyautoroute/netlist.html">netlist</a></li>
                     <li><a href="pyautoroute/pcb.html">pcb</a></li>
+                    <li><a href="pyautoroute/pipeline.html">pipeline</a></li>
                     <li><a href="pyautoroute/placement.html">placement</a></li>
                     <li><a href="pyautoroute/report.html">report</a></li>
                     <li><a href="pyautoroute/router.html">router</a></li>
@@ -97,7 +98,10 @@ reference, where each function and method documents its parameters.</p>
 
 <p>Developer-facing notes on how the autorouter is put together: the data flow, each
 module's job, the algorithms, and the non-obvious invariants that make the output
-DRC-clean. For user-facing usage see the top-level <code>README.md</code>.</p>
+DRC-clean. For user-facing usage see the top-level <code>README.md</code>. For a friendly,
+jargon-light explanation of <em>what each algorithm does</em> (and why), read
+<a href="algorithms.md"><code>algorithms.md</code></a> first — this document is the precise reference
+behind it.</p>
 
 <h2 id="api-documentation">API documentation</h2>
 
@@ -119,14 +123,15 @@ pdoc<span class="w"> </span>pyautoroute<span class="w"> </span>-o<span class="w"
   sexpr["sexpr.py — tokenizer / serializer (round-trip safe)"] --&gt; pcb
   pcb["pcb.py — board model: layers, pads(abs+rot), footprints, nets, copper, outline"] --&gt; netlist
   pcb --&gt; placement
-  placement["placement.py — optional SA footprint placement (--place);&lt;br/&gt;honours locks + Autoroute=overlap, regenerates Edge.Cuts"] -.-&gt; autoroute
+  placement["placement.py — optional SA footprint placement (--place);&lt;br/&gt;honours locks + Autoroute-overlap, regenerates Edge.Cuts"] -.-&gt; autoroute
   pcb --&gt; geometry
   rules["rules.py — per-netclass clearance/width/via + net→class + board mins"] --&gt; geometry
   geometry["geometry.py — pad polys, outline assembly, clearance buffer, self-check"] --&gt; grid
   grid["grid.py — 2-layer grid, static occupancy, pad access nodes"] --&gt; router
   netlist["netlist.py — net grouping + MST → two-pin connections"] --&gt; router
   router["router.py — A* maze + RoutingState (dynamic occupancy, rip-up)"] --&gt; anneal
-  anneal["anneal.py — simulated annealing (rip-up &amp; reroute)"] --&gt; autoroute
+  anneal["anneal.py — simulated annealing (rip-up &amp; reroute)"] --&gt; pipeline
+  pipeline["pipeline.py — shared place→route orchestration (run_placement/run_routing, run_cycle)"] --&gt; autoroute
   autoroute["autoroute.py — CLI + orchestration + writer + self-check"] --&gt; OUT[".._routed.kicad_pcb"]
   visualize["visualize.py — optional matplotlib debug render"] -.-&gt; autoroute
 </div></pre>
@@ -178,7 +183,7 @@ style.</li>
 </ul>
 
 <p>A <strong><code>Footprint</code></strong> records each footprint's origin/rotation, its lock state (a bare
-<code>locked</code> atom or <code>(locked yes)</code>), the <code>Autoroute=overlap</code> property flag, and each
+<code>locked</code> atom or <code>(locked yes)</code>), the <code>Autoroute-overlap</code> property flag, and each
 pad's <em>local</em> offset/angle. This is what the optional placement pass moves:
 <code>Footprint.sync_pads</code> recomputes the pads' absolute coordinates from a new pose,
 and <code>Board.footprints</code> defaults to empty so callers that build a <code>Board</code> directly
@@ -191,7 +196,10 @@ edits. When placement has run, two helpers prepare the tree first:
 <code>apply_placement</code> pushes the moved poses into the pads and replaces <code>Board.outline</code>
 with a margin-grown bounding rectangle, and <code>sync_tree_from_placement</code> rewrites each
 moved footprint's <code>(at …)</code> node (clearing its span so only that line changes) and
-swaps the Edge.Cuts graphics for a single generated <code>gr_rect</code>. For a footprint that was <strong>rotated</strong>, <code>_rotate_pad_nodes</code> adds the rotation delta
+swaps the Edge.Cuts graphics for a single generated <code>gr_rect</code>. Under
+<code>--keep-outline</code> both steps leave the existing Edge.Cuts untouched (the placement
+was contained within it); <code>apply_placement</code> returns whether it kept the outline so
+the writer stays consistent. For a footprint that was <strong>rotated</strong>, <code>_rotate_pad_nodes</code> adds the rotation delta
 to each pad's <code>(at …)</code> angle — KiCad stores pad angles <em>absolutely</em>, so without
 this a rotated footprint's pads would reload in their old orientation, mis-orienting
 rectangular pads and failing DRC. The symmetric <code>_rotate_text_nodes</code> does the same
@@ -246,6 +254,17 @@ the centre lie inside the pad, so the stub stays within the pad's own copper and
 introduces no clearance violation — but the track now ends exactly on the pad
 anchor, so KiCad keeps it attached when the footprint is moved. A stub shorter
 than <code>_STUB_EPS</code> (the centre already lands on a node) is dropped.</li>
+<li><strong><code>CongestionField</code> / <code>congestion_frame</code> / <code>congestion_heatmap</code></strong> — the read-only
+signal behind <code>--place-feedback</code>. <code>congestion_heatmap</code> rasters one cycle's routed
+results onto a fixed coarse <code>CongestionField</code> (cell side a small multiple of the
+routing pitch): a unit per track node (more per via) marks where copper is dense,
+and a strong mark along the straight line between the endpoints of every
+<em>unrouted</em> connection marks where it couldn't run. The counts are Gaussian-blurred
+(so placement sees a gradient) and normalised to <code>[0, 1]</code>. <code>congestion_frame</code>
+fixes the field geometry once from the board's pad extent so successive cycles —
+whose per-cycle routing grids differ as footprints move — accumulate onto one
+raster; <code>CongestionField.blended</code> exponentially decays history into it. Routing
+itself is untouched: the field is only <em>read</em> off <code>RouteResult</code>s.</li>
 </ul>
 
 <h3 id="netlistpy-rats-nest"><code>netlist.py</code> — rats-nest</h3>
@@ -284,9 +303,14 @@ temperature-scaled random step), rotate (<code>--place-rotate</code>: <code>orth
 acceptance under a geometric <code>--place-temps</code> (<code>t_start → t_end</code>) schedule and the
 best-seen placement kept. A recent-window <strong>acceptance ratio</strong> is tracked (as in
 <code>anneal</code>) and reported via the progress callback; <code>PlaceResult</code> also carries the
-energy breakdown (<code>final_ratsnest</code>/<code>final_overlap</code>/<code>final_bbox</code>) at the best
-placement. Energy
-<code>E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area</code>:</p>
+energy breakdown (<code>final_ratsnest</code>/<code>final_overlap</code>/<code>final_bbox</code>/<code>final_edge</code>) at
+the best placement. Energy
+`E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area</p>
+
+<ul>
+<li>edge_weight·edge_distance + containment_weight·area_outside_outline</li>
+<li>congestion_weight·Σ field(centroid)`:</li>
+</ul>
 
 <ul>
 <li><strong>ratsnest</strong> — total MST length over pad centroids, reusing <code>netlist</code>
@@ -300,11 +324,41 @@ below).</li>
 the buffer; the optimiser then keeps footprints at least <code>buffer</code> apart, leaving
 room for routing clearance (the default is derived from the design-rule
 clearance). A pair where either footprint
-is <code>overlap_ok</code> (the <code>Autoroute=overlap</code> property) contributes only its
+is <code>overlap_ok</code> (the <code>Autoroute-overlap</code> property) contributes only its
 <em>pad-vs-pad</em> overlap, not body overlap — the shield-over-board case. <strong>Locked</strong>
 footprints are immovable obstacles included in the overlap term.</li>
 <li><strong>bbox_area</strong> — area of the bounding box of all footprints; compaction emerges
 from this term under cooling, with no separate phase.</li>
+<li><strong>edge_distance</strong> — only for footprints that opt in via the <code>Autoroute-edge</code>
+property (<code>any</code>, or <code>left</code>/<code>right</code>/<code>top</code>/<code>bottom</code>; parsed into
+<code>Footprint.edge_affinity</code>). Each flagged footprint is penalised by the distance
+from its target side of the <strong>current layout bounding box</strong> to the <strong>far</strong> side
+of its box (<code>any</code> uses the nearest side). Measuring to the far side folds in the
+box's depth perpendicular to the edge, so the term both pulls connectors and the
+like onto the boundary <strong>and</strong> orients them to lie flat against it (long axis
+parallel) — otherwise a part could rotate so only one pad reached the edge.
+Measured against the layout bbox, so it stays translation-invariant like the
+rest; <code>_flagged</code> is empty when nothing opts in, so the term is identically zero
+by default. Under <code>--keep-outline</code> the reference is the <strong>kept outline's</strong>
+bounding box instead, so edge parts snap to the real board edge.</li>
+<li><strong>area_outside_outline</strong> — only under <code>--keep-outline</code> with a closed Edge.Cuts:
+<code>containment_weight ×</code> (distance from each footprint box to the outline polygon
+<code>+</code> the box's protruding area). The distance gives a far-field gradient that
+pulls stray parts toward the board; the area term seats them fully inside. Both
+reach zero when the box is wholly within the outline. This <strong>contains</strong> the
+placement in the existing board shape rather than regenerating a bounding box;
+because it (and the keep-outline edge term) depend on absolute position,
+<code>place</code> skips <code>recenter</code> in this mode. Zero otherwise.</li>
+<li><strong>Σ field(centroid)</strong> — only under <strong>congestion feedback</strong> (<code>--place-feedback</code>),
+when a <code>router.CongestionField</code> from a previous cycle's routing is supplied
+(<code>PlaceParams.congestion_field</code>/<code>congestion_weight</code>). Each footprint's body-box
+centre is sampled in the coarse field (high where routing struggled — dense
+copper, vias, and the regions of unrouted nets) and the values summed, so
+minimising the term spreads parts <strong>out of</strong> the hot cells. The field is in
+absolute board coordinates (it anchors the layout to/away from real cells), so
+like <code>--keep-outline</code> it makes the energy position-dependent and <code>place</code> skips
+<code>recenter</code>. Zero (and skipped) when no field is supplied. See <strong>Congestion
+feedback</strong> under <code>autoroute.py</code> for how the field is built and accumulated.</li>
 </ul>
 
 <p><strong>Incremental energy.</strong> The energy is cached and updated per move rather than
@@ -312,7 +366,10 @@ recomputed wholesale: <code>_rebuild_cache</code> does the one-time full pass (a
 only at the final report), while <code>_move_delta</code> updates just the parts a move can
 change — the lengths of connections incident on the moved footprint(s), those
 footprints' overlap contributions (against neighbours and fixed silk text), and
-the layout bbox from cached per-box bounds. A rejected move restores the disturbed
+the layout bbox (and, when any footprint is flagged, the edge term, and under
+feedback the congestion sum — each an O(N) pass over the cached per-box bounds
+since they depend on the global layout extent / each centroid's field cell). A
+rejected move restores the disturbed
 cache entries. This turns each iteration from O(P² + N·log N) into roughly
 O(deg + neighbours). Optional <strong>stall detection</strong>
 (<code>PlaceParams.stall_ratio</code>/<code>stall_patience</code>, off by default) mirrors <code>anneal</code>'s.</p>
@@ -363,6 +420,34 @@ anchor). These become <em>static</em> keep-out boxes (an <code>STRtree</code>), 
 <code>overlap_weight</code> term — so footprints are pushed clear of fixed silkscreen text.
 <code>overlap_ok</code> footprints (meant to sit over the board) are exempt.</p>
 
+<h3 id="pipelinepy-shared-placeroute-orchestration"><code>pipeline.py</code> — shared place→route orchestration</h3>
+
+<p>The single home for the place→route flow, bound to <strong>no</strong> <code>Reporter</code>/Tk objects:
+live progress flows through optional, no-op-by-default hook callbacks, so the same
+code runs on the CLI, in the GUI worker, and in <code>ProcessPoolExecutor</code> workers.</p>
+
+<ul>
+<li><strong><code>run_placement</code></strong> (best-of-<code>place_runs</code>) and <strong><code>run_routing</code></strong> (best-of-<code>runs</code>,
+sequential or — when <code>jobs &gt; 1</code> — across worker processes) are the two halves of
+the full pipeline, driven by <code>PipelineHooks</code> (phase/run boundaries, placement &amp;
+anneal progress, route partials, snapshots, per-run + overall-best). Both
+<code>autoroute.run</code> (its non-cycle path) and the GUI worker call these, each
+supplying hooks that translate progress into their own front-end (the CLI's
+<code>Reporter</code> lines; the GUI's <code>Phase</code>/<code>Progress</code>/<code>BoardSnap</code> events) — this is the
+dedup that removed the duplicated orchestration. <code>run()</code> calls the two
+separately so it can slot <code>--auto</code> (grid/via probing on the placed board)
+between them; <code>run_pipeline</code> composes them for callers that don't.</li>
+<li><strong><code>run_cycle</code></strong> loads a fresh board, places it once (seed <code>k</code>, honouring any
+congestion field in the <code>PlaceParams</code>), routes it, and returns a picklable
+<code>CycleResult</code> (<code>score = (unrouted, energy)</code>, carrying <code>conns</code> so feedback can find
+the unrouted endpoints); <code>select_best</code> keeps the lowest. This is the <strong>cycle</strong>
+unit <code>--cycles N</code> runs (inline or via the picklable <code>_cycle_worker</code>) to pick the
+placement that <em>routes</em> best — and the unit <code>--place-feedback</code> chains.</li>
+<li>The routing helpers <strong><code>_route_one_run</code></strong> / <strong><code>_route_run_worker</code></strong> live here too
+(routing is a cycle's/run's second half); <code>autoroute</code>'s <code>--runs</code> best-of-N and
+<code>run_routing</code>'s parallel path dispatch through them.</li>
+</ul>
+
 <h3 id="autoroutepy-cli-orchestration"><code>autoroute.py</code> — CLI &amp; orchestration</h3>
 
 <p><strong>Settings file.</strong> <code>--config FILE</code> is resolved by a throwaway pre-parser that reads
@@ -378,7 +463,56 @@ run, fresh <code>RoutingState</code> over the one deterministic <code>Grid</code
 lowest-energy routing (scored by <code>anneal._energy</code>); without annealing the greedy
 route is deterministic so N collapses to 1. <code>--place-runs N</code> is the placement
 analogue, implemented in <code>placement.place(runs=N)</code> (each run restarts from the
-original poses, the best placement is kept).</p>
+original poses, the best placement is kept). The shared per-run body lives in
+<code>pipeline._route_one_run</code> (greedy route + optional anneal). With <code>--jobs</code>/<code>-j N</code>
+(and <code>runs &gt; 1</code>) the runs are dispatched across a <code>ProcessPoolExecutor</code>: the
+picklable <code>pipeline._route_run_worker</code> re-invokes <code>_route_one_run</code> in each worker
+(the <code>Grid</code> and connections pickle directly, so no re-parse), the main process
+collects futures as they resolve and keeps the lowest-energy one — the same
+selection rule as the sequential path. Per-run live progress is suppressed in
+parallel mode. <code>--jobs 1</code> (default) keeps the byte-identical sequential loop with
+full progress.</p>
+
+<p><strong>Best-of-cycles.</strong> <code>--runs</code>/<code>--place-runs</code> select by a <em>proxy</em> (routing energy on
+one placement; placement energy on one routing). <code>--cycles N</code> (with <code>--place</code>)
+instead runs N independent <strong>place→route</strong> cycles and keeps the one that <em>routes</em>
+best. <code>_run_cycles</code> builds the placement/route params once, then for each cycle
+calls <code>pipeline.run_cycle</code> — which re-loads the board (so no state leaks), places
+it (one run, seed <code>seed + k</code>), finalises the placement into the tree, builds the
+<code>Grid</code>, and routes via <code>_route_one_run</code> keyed off the same seed — returning a
+picklable <code>CycleResult</code>. <code>select_best</code> keeps the lowest <code>CycleResult.score</code>, a
+lexicographic <code>(unrouted, energy)</code> so completing connections dominates. <code>--jobs</code>
+parallelises cycles across a <code>ProcessPoolExecutor</code> (the picklable <code>_cycle_worker</code>)
+exactly as <code>--runs</code> parallelises routing; the winner is written/refilled/
+self-checked through the shared tail. <code>--cycles 1</code> (default) takes the original
+single-pass path untouched.</p>
+
+<p><strong>Congestion feedback.</strong> <code>--place-feedback</code> (with <code>--cycles N</code>) turns the
+independent cycles into a <em>learning</em> loop (PathFinder-style): each cycle re-places
+under a congestion field accumulated from the previous cycles' routing, so parts
+spread out of the cells where routing struggled. <code>_run_cycles</code> fixes a board-wide
+<code>router.congestion_frame</code> once, runs the cycles <strong>sequentially</strong> (feedback couples
+each to the last, so it can't go across workers — it forces <code>--jobs 1</code>), and after
+each cycle folds <code>router.congestion_heatmap(cr.conns, cr.results, cr.grid, frame)</code>
+into the running field via <code>CongestionField.blended</code> (history weight <code>_FEEDBACK_DECAY</code>).
+The next cycle places with <code>replace(pp, congestion_field=field, congestion_weight=…)</code>;
+cycle 0 has no field. The <strong>fresh re-placement</strong> strategy (each cycle re-places from
+scratch under the field, not perturbing the best-so-far) keeps every cycle an
+independent attempt with the field as the only memory carried forward — and because
+<code>select_best</code> still keeps the lowest <strong>routed</strong> score, feedback can only help or be
+discarded. Opt-in and experimental (coupled place/route loops can oscillate; the
+keep-best gate and decayed blend are the guardrails).</p>
+
+<p><strong>Shared place→route.</strong> <code>run()</code>'s own placement and routing(best-of-N, sequential</p>
+
+<ul>
+<li>parallel) loops are not hand-rolled — it calls <code>pipeline.run_placement</code> then
+(after any <code>--auto</code>) <code>pipeline.run_routing</code>, with a <code>Reporter</code>-backed
+<code>PipelineHooks</code> mapping progress to its live display and log. The GUI worker calls
+the <em>same</em> two functions with an event-posting hooks object, so the place→route
+orchestration exists once for both front-ends (the duplication <code>gui-plan.md</code>
+flagged is gone).</li>
+</ul>
 
 <p>Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
 text progress <code>Reporter</code> (single-line <code>\r</code> updates on a TTY, line-by-line
@@ -459,9 +593,10 @@ separate output path instead of overwriting the input.</p>
 <h3 id="pyautoroutesh-helper-menu"><code>pyautoroute.sh</code> — helper menu</h3>
 
 <p>A repo-root Bash script offering a menu of common tasks (install, regenerate API
-docs via the <code>pdoc</code> recipe, run the short/long test suite, route a test board,
-write a settings file, clean generated outputs). Each action echoes the command it
-runs; the interpreter is overridable with <code>PYTHON=</code>.</p>
+docs via the <code>pdoc</code> recipe, run the short/long test suite, run the performance
+benchmarks in <code>tests/perf/</code> standalone, route a test board, write a settings file,
+clean generated outputs). Each action echoes the command it runs; the interpreter
+is overridable with <code>PYTHON=</code>.</p>
 
 <h2 id="coordinate-system-the-pad-angle-gotcha">Coordinate system &amp; the pad-angle gotcha</h2>
 
@@ -543,6 +678,18 @@ routed are dropped and reported, never drawn with violations.</p>
 <p>State includes the incoming direction so bend penalties can be applied; diagonal
 moves are forbidden from cutting a blocked corner.</p>
 
+<p><strong>Bounded search (<code>RouteParams.search_margin</code>, the <code>--search-margin</code> flag).</strong> By
+default A* searches the whole grid. When a margin (mm) is given, the per-net
+<code>free</code> mask is additionally masked to a box around the source/target nodes grown
+by that margin, so the frontier cannot leave the box. If the bounded search
+fails, the box widens and the search retries, ultimately falling back to the full
+grid — so a route is still found whenever one exists. The trade-off is a small
+loss of optimality (a bounded route may be slightly longer than the global
+minimum). Because the bound is applied purely through the <code>free</code> mask, both the
+pure-Python loop and the Cython core honour it without any signature change. The
+biggest win is the annealing rip-up/reroute loop, where each reroute is local but
+an unbounded search would re-scan the whole board every iteration.</p>
+
 <h2 id="simulated-annealing-details">Simulated annealing details</h2>
 
 <ul>
@@ -570,7 +717,8 @@ button (the SA runs on a worker thread; see <code>docs/gui-plan.md</code>).</li>
 <li><code>test_pcb</code> — pad absolute position/rotation, both net formats, writer no-op byte-identity, free-via stripping, segment append.</li>
 <li><code>test_rules</code>, <code>test_geometry</code>, <code>test_grid</code>, <code>test_netlist</code>, <code>test_router</code> — per-module behaviour (occupancy semantics, via crossing, diagonal preference, exact rip-up).</li>
 <li><code>test_anneal</code> — best energy never worsens; routing stays clean after annealing.</li>
-<li><code>test_placement</code> — placement energy never worsens; locked footprints stay put; bodies separate while <code>Autoroute=overlap</code> parts may overlap (pads kept apart); lock/property parsing and the footprint-<code>(at)</code> + Edge.Cuts tree rewrite round-trip; silkscreen text extents returned by <code>_fp_silk_text_extents</code> and included in <code>_fp_box</code>.</li>
+<li><code>test_placement</code> — placement energy never worsens; locked footprints stay put; bodies separate while <code>Autoroute-overlap</code> parts may overlap (pads kept apart); lock/property parsing, edge-affinity parallel-alignment, and the footprint-<code>(at)</code> + Edge.Cuts tree rewrite round-trip; silkscreen text extents returned by <code>_fp_silk_text_extents</code> and included in <code>_fp_box</code>.</li>
+<li><code>test_congestion</code> — the congestion-feedback path: <code>CongestionField</code> sampling/blend, <code>congestion_frame</code>/<code>congestion_heatmap</code> (unrouted region marked, normalised), the placement congestion term spreading footprints out of hot cells (and deterministic / a no-op when off), and the <code>--place-feedback</code> CLI loop.</li>
 <li><code>test_endtoend</code> — routes a synthetic board with a <strong><code>gr_line</code> outline</strong> (generality) and <code>--exclude-net</code>, asserting zero clearance violations via the self-check.</li>
 <li><code>test_boards</code> — parametrized over every board in <code>TestProjects/</code> (ids <code>Test1</code>..<code>Test5</code>; hidden stray files like <code>.kicad_pcb.kicad_pcb</code> are skipped): parse, round-trip, writer no-op, outline/pads-inside, and a routing self-check. Routing the large boards (&gt;30 pads) is skipped by default and enabled with <code>pytest --slow</code> (defined in <code>conftest.py</code>).</li>
 </ul>
@@ -586,7 +734,7 @@ integration tests and validated end-to-end with <code>kicad-cli pcb drc</code>.<
 <li><strong>Custom pads</strong> are approximated by their bounding box.</li>
 <li><strong>Conservative clearance for mixed net-class boards.</strong> The single global inflation margin uses the maximum track/clearance across classes; exact per-net masks would route denser mixed-rule boards.</li>
 <li><strong>Hole-to-hole</strong> is approximated by copper clearance rather than checked explicitly.</li>
-<li><strong>Performance.</strong> A* is unbounded in search area, so a few long nets dominate runtime. Bounding the search region (a slack box around the connection) is the highest-value next optimisation.</li>
+<li><strong>Performance.</strong> A* searches the whole grid by default, so a few long nets dominate runtime. The optional <code>--search-margin</code> bounds each search to a slack box around the connection (see <em>A* cost model</em> above); enabling it by default once tuned remains future work.</li>
 </ul>
 </div>
 

@@ -17,6 +17,7 @@ import os
 import textwrap
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from . import __version__, anneal, geometry, netlist, pcb, placement, router
@@ -26,6 +27,11 @@ from .pipeline import (
     run_placement, run_routing, select_best,
 )
 from .rules import load_rules
+
+# Congestion-feedback history weight (--place-feedback): the accumulated field is
+# blended `decay·history + (1-decay)·latest` each cycle, so signal builds up over
+# cycles without one cycle's routing dominating the next placement.
+_FEEDBACK_DECAY = 0.5
 
 
 class Reporter:
@@ -484,6 +490,10 @@ def run(args: argparse.Namespace, _print_version: bool = True) -> int:
         print("  note: --cycles has no effect with --place-only (no routing); "
               "ignoring")
         cycles = 1
+    if getattr(args, "place_feedback", False) and cycles <= 1:
+        print("  note: --place-feedback needs --cycles > 1 (it learns from each "
+              "cycle's routing); ignoring")
+        args.place_feedback = False
     if cycles > 1:
         return _run_cycles(args, rep, input_path, out_path, rules, pitch,
                            board, fill_nets, cycles)
@@ -745,7 +755,10 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
     base_seed = args.seed
     jobs = args.jobs if args.jobs and args.jobs > 0 else (os.cpu_count() or 1)
     jobs = max(1, min(jobs, cycles))
-    parallel = jobs > 1
+    # Congestion feedback couples each cycle to the previous one's routing, so it
+    # cannot run across independent workers — it forces the sequential path.
+    feedback = bool(getattr(args, "place_feedback", False))
+    parallel = jobs > 1 and not feedback
 
     def _cycle_line(k, cr):
         return (f"cycle {k}/{cycles}: routed {cr.routed}/{cr.n_conns}, "
@@ -775,6 +788,19 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                 raise
         rep.done()
     else:
+        if feedback:
+            if args.jobs and args.jobs != 1:
+                print("  note: --place-feedback couples each cycle to the last, "
+                      "so cycles run sequentially (--jobs ignored)")
+            rep.phase(f"best-of-cycles: {cycles} place+route cycles with "
+                      f"congestion feedback (weight {args.congestion_weight:g})")
+        # Congestion feedback (--place-feedback): a fixed board-wide field frame is
+        # built once, then each cycle (after cycle 0) re-places under the field
+        # accumulated from the previous cycles' routing, decayed so signal builds
+        # without one cycle dominating. The best-routing cycle is still selected,
+        # so feedback can only help or be discarded.
+        frame = router.congestion_frame(board, pitch) if feedback else None
+        field = None
         for k in range(cycles):
             rep.tag = f"cycle {k + 1}/{cycles}: "
             hooks = CycleHooks(
@@ -785,7 +811,11 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                 anneal_progress=(lambda it, total, r, u, e, b, t, acc:
                                  rep.annealing(it, total, r, u, e, b, t, acc)),
             )
-            cr = run_cycle(input_path, rules, pitch, pp, route_params,
+            pp_k = pp
+            if feedback and field is not None:
+                pp_k = replace(pp, congestion_field=field,
+                               congestion_weight=args.congestion_weight)
+            cr = run_cycle(input_path, rules, pitch, pp_k, route_params,
                            route_kw=route_kw, place_margin=args.place_margin,
                            seed=base_seed + k, hooks=hooks)
             rep.done()
@@ -794,6 +824,11 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
             rep.log(line)
             if not args.quiet:
                 print(f"  {line}")
+            if feedback and k + 1 < cycles:
+                new_field = router.congestion_heatmap(cr.conns, cr.results,
+                                                      cr.grid, frame)
+                field = (new_field if field is None
+                         else field.blended(new_field, _FEEDBACK_DECAY))
         rep.tag = ""
 
     best = select_best(results)
@@ -1322,6 +1357,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "board; parallelised by --jobs. 1 (default) = today's "
                         "behaviour. Each cycle does one placement and one routing; "
                         "--place-runs/--runs remain available as inner loops")
+    p.add_argument("--place-feedback", action="store_true",
+                   help="with --cycles > 1: feed each cycle's routing back into "
+                        "the next placement as a congestion field, spreading "
+                        "footprints out of the cells where routing struggled "
+                        "(PathFinder-style). Cycles then run sequentially "
+                        "(feedback is inherent); the best-routing cycle is still "
+                        "kept, so feedback can only help. Opt-in and experimental")
+    p.add_argument("--congestion-weight", type=float, default=5.0, metavar="W",
+                   help="with --place-feedback: mm-cost per unit congestion at a "
+                        "footprint centroid; higher spreads parts harder out of "
+                        "the routed hot zones (default %(default)s)")
     p.add_argument("-j", "--jobs", type=int, default=1, metavar="N",
                    help="run --runs trials (or --cycles cycles) across N worker "
                         "processes (best-of-N in parallel); 0 uses every CPU "

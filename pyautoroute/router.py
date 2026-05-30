@@ -115,6 +115,186 @@ class BoardRouting:
     total_vias: int
 
 
+# --- congestion feedback ------------------------------------------------------
+#
+# A coarse, board-wide "where did routing struggle?" heatmap, fed back into the
+# next cycle's placement (`--place-feedback`) to spread footprints out of the hot
+# zones. It is intentionally low-resolution (a small multiple of the routing
+# pitch) and lives in a *fixed* board frame so successive cycles — whose
+# per-cycle routing grids differ as footprints move — accumulate onto one common
+# raster. Routing itself is untouched: the field is read off the routed results.
+
+
+@dataclass
+class CongestionField:
+    """A coarse heatmap of routing difficulty over a fixed board frame.
+
+    The board area is rasterised into ``ny × nx`` cells of side ``cell`` mm with
+    origin ``(minx, miny)``; ``values`` (normalised to ``[0, 1]``) is high where
+    routing was hard — dense copper, vias, and the regions of connections left
+    unrouted. Placement samples it at footprint centroids and is pushed toward
+    cooler cells (`pyautoroute.placement`).
+
+    Attributes:
+        minx: frame origin x (mm).
+        miny: frame origin y (mm).
+        cell: cell side (mm).
+        nx: cell columns.
+        ny: cell rows.
+        values: ``(ny, nx)`` float array in ``[0, 1]``; 0 outside is implied
+            (`value_at` returns 0 beyond the frame).
+    """
+    minx: float
+    miny: float
+    cell: float
+    nx: int
+    ny: int
+    values: np.ndarray
+
+    def value_at(self, x: float, y: float) -> float:
+        """Sample the field at board coordinate ``(x, y)``.
+
+        Args:
+            x: board x (mm).
+            y: board y (mm).
+
+        Returns:
+            The cell value (``[0, 1]``), or ``0.0`` outside the frame — a
+            footprint pushed off the field feels no congestion (the placement's
+            compaction/rats-nest terms keep it from drifting away).
+        """
+        c = int((x - self.minx) / self.cell)
+        r = int((y - self.miny) / self.cell)
+        if 0 <= c < self.nx and 0 <= r < self.ny:
+            return float(self.values[r, c])
+        return 0.0
+
+    def blended(self, other: "CongestionField", decay: float) -> "CongestionField":
+        """Exponentially blend an earlier field with a new one on the same frame.
+
+        ``decay`` weights the *accumulated* history: ``decay·self + (1-decay)·other``.
+        Higher ``decay`` remembers longer (signal accumulates), lower reacts faster
+        to the latest cycle. The blend is renormalised so the result stays in
+        ``[0, 1]`` and one runaway cycle can't dominate.
+
+        Args:
+            other: the new field (must share this field's frame).
+            decay: history weight in ``[0, 1]``.
+
+        Returns:
+            A new `CongestionField` on the same frame.
+        """
+        v = decay * self.values + (1.0 - decay) * other.values
+        peak = float(v.max())
+        if peak > 0:
+            v = v / peak
+        return CongestionField(self.minx, self.miny, self.cell, self.nx, self.ny, v)
+
+
+def congestion_frame(board, pitch: float, *, cell_mult: int = 4,
+                     margin: float = 5.0) -> CongestionField:
+    """Build an empty `CongestionField` framing a board's pad extent.
+
+    The frame is fixed once (from the freshly loaded board) and reused for every
+    feedback cycle, so each cycle's `congestion_heatmap` rasters onto the same
+    cells regardless of how that cycle's placement (and thus its routing grid)
+    shifted.
+
+    Args:
+        board: the board whose pads define the extent.
+        pitch: the routing-grid pitch (mm); the cell side is ``cell_mult × pitch``.
+        cell_mult: coarse cell side as a multiple of ``pitch`` (default 4).
+        margin: extra border (mm) added on every side so parts that spread
+            outward still land on the field.
+
+    Returns:
+        A zero-valued `CongestionField`; ``nx``/``ny`` are at least 1.
+    """
+    xs = [p.cx for p in board.pads]
+    ys = [p.cy for p in board.pads]
+    if not xs:
+        return CongestionField(0.0, 0.0, max(pitch * cell_mult, 1e-6), 1, 1,
+                               np.zeros((1, 1)))
+    cell = max(pitch * cell_mult, 1e-6)
+    minx, miny = min(xs) - margin, min(ys) - margin
+    maxx, maxy = max(xs) + margin, max(ys) + margin
+    nx = max(1, int(math.ceil((maxx - minx) / cell)))
+    ny = max(1, int(math.ceil((maxy - miny) / cell)))
+    return CongestionField(minx, miny, cell, nx, ny, np.zeros((ny, nx)))
+
+
+# relative cell weights for the heatmap (normalised away afterwards, so only
+# their ratios matter): an unrouted connection is the strongest signal, a via
+# next, an ordinary track node the baseline.
+_W_TRACK = 1.0
+_W_VIA = 3.0
+_W_UNROUTED = 10.0
+
+
+def congestion_heatmap(conns, results, grid: Grid, frame: CongestionField, *,
+                       blur: float = 1.0) -> CongestionField:
+    """Derive a `CongestionField` from one cycle's routed results.
+
+    Accumulates, onto ``frame``'s cells, the copper density of every routed path
+    (a unit per track node, more per via) plus a strong mark along the straight
+    line between the endpoints of every *unrouted* connection — the two things a
+    spread-out placement could relieve. The raw counts are smoothed with a light
+    Gaussian blur (so the placement sees a gradient, not a step) and normalised to
+    ``[0, 1]``. Routing state is only read, never changed.
+
+    Args:
+        conns: the connection list (parallel to ``results``); supplies the
+            endpoints of unrouted connections.
+        results: per-connection `RouteResult` (``None`` where unrouted).
+        grid: the routing grid the ``results`` were produced on (maps path nodes
+            to board coordinates); may differ frame from ``frame``.
+        frame: the fixed `CongestionField` whose geometry (origin/cell/size) the
+            heatmap is rasterised onto. Its values are ignored.
+        blur: Gaussian-blur sigma in cells (0 disables); softens the field.
+
+    Returns:
+        A new `CongestionField` on ``frame``'s geometry, normalised to ``[0, 1]``.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    acc = np.zeros((frame.ny, frame.nx))
+
+    def _bump(x: float, y: float, w: float) -> None:
+        c = int((x - frame.minx) / frame.cell)
+        r = int((y - frame.miny) / frame.cell)
+        if 0 <= c < frame.nx and 0 <= r < frame.ny:
+            acc[r, c] += w
+
+    for res in results:
+        if res is None:
+            continue
+        prev_layer = None
+        for (layer, col, row) in res.path:
+            x, y = grid.node_xy(col, row)
+            _bump(x, y, _W_TRACK)
+            if prev_layer is not None and layer != prev_layer:
+                _bump(x, y, _W_VIA)            # a via at this node
+            prev_layer = layer
+
+    for res, conn in zip(results, conns):
+        if res is not None:
+            continue
+        ax, ay = conn.a.cx, conn.a.cy
+        bx, by = conn.b.cx, conn.b.cy
+        steps = max(1, int(math.hypot(bx - ax, by - ay) / frame.cell))
+        for s in range(steps + 1):
+            t = s / steps
+            _bump(ax + t * (bx - ax), ay + t * (by - ay), _W_UNROUTED)
+
+    if blur > 0 and acc.any():
+        acc = gaussian_filter(acc, sigma=blur)
+    peak = float(acc.max())
+    if peak > 0:
+        acc = acc / peak
+    return CongestionField(frame.minx, frame.miny, frame.cell,
+                           frame.nx, frame.ny, acc)
+
+
 # --- incremental occupancy ----------------------------------------------------
 
 class RoutingState:

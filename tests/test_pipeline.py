@@ -54,7 +54,7 @@ def test_run_cycle_is_deterministic_for_a_seed():
 
 def _mk(unrouted, energy, seed=0):
     return pipeline.CycleResult(
-        seed=seed, board=None, grid=None, n_conns=10, results=[],
+        seed=seed, board=None, grid=None, n_conns=10, conns=[], results=[],
         routed=10 - unrouted, unrouted=unrouted, length=0.0, vias=0,
         energy=energy, summary=None)
 

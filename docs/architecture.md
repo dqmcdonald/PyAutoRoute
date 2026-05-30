@@ -145,6 +145,17 @@ and `pad_access_nodes` (grid nodes inside a pad polygon, the A* start/goal set).
   introduces no clearance violation — but the track now ends exactly on the pad
   anchor, so KiCad keeps it attached when the footprint is moved. A stub shorter
   than `_STUB_EPS` (the centre already lands on a node) is dropped.
+- **`CongestionField` / `congestion_frame` / `congestion_heatmap`** — the read-only
+  signal behind `--place-feedback`. `congestion_heatmap` rasters one cycle's routed
+  results onto a fixed coarse `CongestionField` (cell side a small multiple of the
+  routing pitch): a unit per track node (more per via) marks where copper is dense,
+  and a strong mark along the straight line between the endpoints of every
+  *unrouted* connection marks where it couldn't run. The counts are Gaussian-blurred
+  (so placement sees a gradient) and normalised to `[0, 1]`. `congestion_frame`
+  fixes the field geometry once from the board's pad extent so successive cycles —
+  whose per-cycle routing grids differ as footprints move — accumulate onto one
+  raster; `CongestionField.blended` exponentially decays history into it. Routing
+  itself is untouched: the field is only *read* off `RouteResult`s.
 
 ### `netlist.py` — rats-nest
 Groups pads by net, drops `--exclude-net` matches, and reduces each multi-pad net
@@ -182,7 +193,8 @@ best-seen placement kept. A recent-window **acceptance ratio** is tracked (as in
 energy breakdown (`final_ratsnest`/`final_overlap`/`final_bbox`/`final_edge`) at
 the best placement. Energy
 `E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
-+ edge_weight·edge_distance`:
++ edge_weight·edge_distance + containment_weight·area_outside_outline
++ congestion_weight·Σ field(centroid)`:
 
 - **ratsnest** — total MST length over pad centroids, reusing `netlist`
   (`build_connections` + `Connection.est_length`). The connection topology is
@@ -220,15 +232,26 @@ the best placement. Energy
   placement in the existing board shape rather than regenerating a bounding box;
   because it (and the keep-outline edge term) depend on absolute position,
   `place` skips `recenter` in this mode. Zero otherwise.
+- **Σ field(centroid)** — only under **congestion feedback** (`--place-feedback`),
+  when a `router.CongestionField` from a previous cycle's routing is supplied
+  (`PlaceParams.congestion_field`/`congestion_weight`). Each footprint's body-box
+  centre is sampled in the coarse field (high where routing struggled — dense
+  copper, vias, and the regions of unrouted nets) and the values summed, so
+  minimising the term spreads parts **out of** the hot cells. The field is in
+  absolute board coordinates (it anchors the layout to/away from real cells), so
+  like `--keep-outline` it makes the energy position-dependent and `place` skips
+  `recenter`. Zero (and skipped) when no field is supplied. See **Congestion
+  feedback** under `autoroute.py` for how the field is built and accumulated.
 
 **Incremental energy.** The energy is cached and updated per move rather than
 recomputed wholesale: `_rebuild_cache` does the one-time full pass (and runs again
 only at the final report), while `_move_delta` updates just the parts a move can
 change — the lengths of connections incident on the moved footprint(s), those
 footprints' overlap contributions (against neighbours and fixed silk text), and
-the layout bbox (and, when any footprint is flagged, the edge term — both an O(N)
-pass over the cached per-box bounds since they depend on the global layout
-extent). A rejected move restores the disturbed
+the layout bbox (and, when any footprint is flagged, the edge term, and under
+feedback the congestion sum — each an O(N) pass over the cached per-box bounds
+since they depend on the global layout extent / each centroid's field cell). A
+rejected move restores the disturbed
 cache entries. This turns each iteration from O(P² + N·log N) into roughly
 O(deg + neighbours). Optional **stall detection**
 (`PlaceParams.stall_ratio`/`stall_patience`, off by default) mirrors `anneal`'s.
@@ -291,10 +314,12 @@ code runs on the CLI, in the GUI worker, and in `ProcessPoolExecutor` workers.
   dedup that removed the duplicated orchestration. `run()` calls the two
   separately so it can slot `--auto` (grid/via probing on the placed board)
   between them; `run_pipeline` composes them for callers that don't.
-- **`run_cycle`** loads a fresh board, places it once (seed `k`), routes it, and
-  returns a picklable `CycleResult` (`score = (unrouted, energy)`); `select_best`
-  keeps the lowest. This is the **cycle** unit `--cycles N` runs (inline or via the
-  picklable `_cycle_worker`) to pick the placement that *routes* best.
+- **`run_cycle`** loads a fresh board, places it once (seed `k`, honouring any
+  congestion field in the `PlaceParams`), routes it, and returns a picklable
+  `CycleResult` (`score = (unrouted, energy)`, carrying `conns` so feedback can find
+  the unrouted endpoints); `select_best` keeps the lowest. This is the **cycle**
+  unit `--cycles N` runs (inline or via the picklable `_cycle_worker`) to pick the
+  placement that *routes* best — and the unit `--place-feedback` chains.
 - The routing helpers **`_route_one_run`** / **`_route_run_worker`** live here too
   (routing is a cycle's/run's second half); `autoroute`'s `--runs` best-of-N and
   `run_routing`'s parallel path dispatch through them.
@@ -336,6 +361,22 @@ parallelises cycles across a `ProcessPoolExecutor` (the picklable `_cycle_worker
 exactly as `--runs` parallelises routing; the winner is written/refilled/
 self-checked through the shared tail. `--cycles 1` (default) takes the original
 single-pass path untouched.
+
+**Congestion feedback.** `--place-feedback` (with `--cycles N`) turns the
+independent cycles into a *learning* loop (PathFinder-style): each cycle re-places
+under a congestion field accumulated from the previous cycles' routing, so parts
+spread out of the cells where routing struggled. `_run_cycles` fixes a board-wide
+`router.congestion_frame` once, runs the cycles **sequentially** (feedback couples
+each to the last, so it can't go across workers — it forces `--jobs 1`), and after
+each cycle folds `router.congestion_heatmap(cr.conns, cr.results, cr.grid, frame)`
+into the running field via `CongestionField.blended` (history weight `_FEEDBACK_DECAY`).
+The next cycle places with `replace(pp, congestion_field=field, congestion_weight=…)`;
+cycle 0 has no field. The **fresh re-placement** strategy (each cycle re-places from
+scratch under the field, not perturbing the best-so-far) keeps every cycle an
+independent attempt with the field as the only memory carried forward — and because
+`select_best` still keeps the lowest **routed** score, feedback can only help or be
+discarded. Opt-in and experimental (coupled place/route loops can oscillate; the
+keep-best gate and decayed blend are the guardrails).
 
 **Shared place→route.** `run()`'s own placement and routing(best-of-N, sequential
 + parallel) loops are not hand-rolled — it calls `pipeline.run_placement` then
@@ -531,6 +572,7 @@ an unbounded search would re-scan the whole board every iteration.
 - `test_rules`, `test_geometry`, `test_grid`, `test_netlist`, `test_router` — per-module behaviour (occupancy semantics, via crossing, diagonal preference, exact rip-up).
 - `test_anneal` — best energy never worsens; routing stays clean after annealing.
 - `test_placement` — placement energy never worsens; locked footprints stay put; bodies separate while `Autoroute-overlap` parts may overlap (pads kept apart); lock/property parsing, edge-affinity parallel-alignment, and the footprint-`(at)` + Edge.Cuts tree rewrite round-trip; silkscreen text extents returned by `_fp_silk_text_extents` and included in `_fp_box`.
+- `test_congestion` — the congestion-feedback path: `CongestionField` sampling/blend, `congestion_frame`/`congestion_heatmap` (unrouted region marked, normalised), the placement congestion term spreading footprints out of hot cells (and deterministic / a no-op when off), and the `--place-feedback` CLI loop.
 - `test_endtoend` — routes a synthetic board with a **`gr_line` outline** (generality) and `--exclude-net`, asserting zero clearance violations via the self-check.
 - `test_boards` — parametrized over every board in `TestProjects/` (ids `Test1`..`Test5`; hidden stray files like `.kicad_pcb.kicad_pcb` are skipped): parse, round-trip, writer no-op, outline/pads-inside, and a routing self-check. Routing the large boards (>30 pads) is skipped by default and enabled with `pytest --slow` (defined in `conftest.py`).
 

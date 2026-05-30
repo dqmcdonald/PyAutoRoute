@@ -130,6 +130,9 @@ class CycleResult:
         grid: the routing grid built over `board` (node ↔ coordinate mapping,
             needed to flatten `results` into KiCad nodes).
         n_conns: number of connections routed (the rats-nest size).
+        conns: the connection list (parallel to `results`); carried so congestion
+            feedback (``--place-feedback``) can find the endpoints of the
+            connections left unrouted.
         results: per-connection `router.RouteResult` (or ``None`` for unrouted).
         routed: connections completed.
         unrouted: connections left open.
@@ -144,6 +147,7 @@ class CycleResult:
     board: object
     grid: object
     n_conns: int
+    conns: list
     results: list
     routed: int
     unrouted: int
@@ -216,9 +220,9 @@ def run_cycle(input_path, rules, pitch: float, place_params, route_params, *,
                          cancel=cancel, **route_kw)
     routed, unrouted, length, vias = out["metrics"]
     return CycleResult(seed=seed, board=board, grid=grid, n_conns=len(conns),
-                       results=out["results"], routed=routed, unrouted=unrouted,
-                       length=length, vias=vias, energy=out["energy"],
-                       summary=out["summary"])
+                       conns=conns, results=out["results"], routed=routed,
+                       unrouted=unrouted, length=length, vias=vias,
+                       energy=out["energy"], summary=out["summary"])
 
 
 def _cycle_worker(payload):

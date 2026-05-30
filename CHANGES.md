@@ -5,6 +5,21 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.30.0
+
+- **Congestion-aware re-placement feedback (`--place-feedback`).** With
+  `--cycles N`, each cycle now learns from the previous one's routing
+  (PathFinder-style): a coarse board-wide **congestion field** is built from the
+  routed result — high where routing struggled (dense copper, vias, and the
+  regions of unrouted nets) — and the next cycle re-places under it, spreading
+  footprints **out of** the hot zones. The field accumulates (decayed) across
+  cycles; cycles run sequentially while feedback is on. Each cycle still re-places
+  from scratch and the best **routed** cycle is kept, so feedback can only help or
+  be discarded. New `router.CongestionField` / `congestion_frame` /
+  `congestion_heatmap` (routing untouched — the field is read off the results) and
+  a `PlaceParams.congestion_field` / `congestion_weight` placement term.
+  `--congestion-weight` tunes the spread strength. Opt-in and experimental.
+
 ## 0.29.1
 
 - **Unified the CLI and GUI place→route orchestration.** Both now run through the
