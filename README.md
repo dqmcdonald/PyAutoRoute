@@ -22,7 +22,7 @@ Anything it cannot route is **left unrouted and reported** — never drawn as a 
 ## Requirements
 
 - Python ≥ 3.10 with **numpy**, **scipy**, **shapely ≥ 2.0**.
-- **matplotlib** — optional, only for `--debug-plot`.
+- **matplotlib** — optional, only for the GUI (`pip install pyautoroute[gui]`).
 - **KiCad** — optional, only if you want to run `kicad-cli pcb drc` to independently verify the output. Not needed to route.
 
 ## Install
@@ -96,7 +96,6 @@ The original file is never modified — a routed copy is written alongside it.
 | `--write-config [FILE]` | Write the effective settings to an INI file and exit. Bare `--write-config` writes `<input>.ini` beside the board — the same file auto-loaded on the next run. |
 | `--log [FILE]` | Write a verbose log of the input parameters and routing/annealing progress. Bare `--log` writes `<output>.log`; `--log FILE` uses the given path. |
 | `--fix-values` | Move footprint **Value** text to the silkscreen layer before routing. KiCad libraries often default to `F.Fab`/`B.Fab` for Value text; this flag moves it to `F.SilkS`/`B.SilkS` so it appears on the physical silkscreen. The fix is applied in-memory and written to the output file. Off by default. Also available as a standalone `pyautoroute-fix --values` command and in the GUI's Advanced settings. |
-| `--debug-plot` | Also write a `.png` render of the routed board. |
 | `--quiet` | Suppress the live progress display (final summary only). |
 | `--version` | Print the version and exit. (The version is also printed on startup and written to the `--log` header.) |
 
@@ -158,8 +157,8 @@ pyautoroute MyBoard.kicad_pcb --place --cycles 6 --place-feedback --iters 4000
 # Quick greedy route with the derived grid:
 pyautoroute MyBoard.kicad_pcb
 
-# Finer grid + a 2-minute optimisation pass + a debug image:
-pyautoroute MyBoard.kicad_pcb --grid 0.2 --time 120 --debug-plot
+# Finer grid + a 2-minute optimisation pass:
+pyautoroute MyBoard.kicad_pcb --grid 0.2 --time 120
 
 # Route everything except power nets, to a named output:
 pyautoroute MyBoard.kicad_pcb --exclude-net GND --exclude-net "/VBUS*" -o routed.kicad_pcb
@@ -170,10 +169,10 @@ pyautoroute MyBoard.kicad_pcb --iters 5000 --snapshots 10 --log
 
 # Experimental: place the footprints first (30 s budget), then route:
 # -> MyBoard_placed_routed.kicad_pcb
-pyautoroute MyBoard.kicad_pcb --place --place-time 30 --time 60 --debug-plot
+pyautoroute MyBoard.kicad_pcb --place --place-time 30 --time 60
 
 # Place only, no routing: -> MyBoard_placed.kicad_pcb
-pyautoroute MyBoard.kicad_pcb --place-only --place-time 30 --debug-plot
+pyautoroute MyBoard.kicad_pcb --place-only --place-time 30
 ```
 
 ### Settings file

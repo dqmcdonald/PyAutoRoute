@@ -93,8 +93,9 @@ class RunConfig:
         "place_overlap_weight", "place_compact_weight", "place_edge_weight",
         "place_temps", "place_step", "place_rotate",
         "place_runs",
+        "cycles", "place_feedback", "congestion_weight",
         "snapshots",
-        "debug_plot", "quiet", "log",
+        "quiet", "log",
         "auto", "auto_yes", "auto_probe_time",
         "fix_values", "keep_outline",
     )
@@ -148,9 +149,12 @@ class ControlsPanel(ttk.Frame):
         self._place_rotate = tk.StringVar(value="ortho")
         self._place_margin = tk.StringVar(value="2.0")
         self._place_buffer = tk.StringVar(value="")
+        # Best-of-cycles + congestion feedback (place+route outer loop)
+        self._cycles = tk.StringVar(value="1")
+        self._place_feedback = tk.BooleanVar(value=False)
+        self._congestion_weight = tk.StringVar(value="5.0")
         # Output
         self._log = tk.BooleanVar(value=False)
-        self._debug_plot = tk.BooleanVar(value=False)
         self._quiet = tk.BooleanVar(value=False)
         # Advanced (stored as strings for easy edit)
         self._seed = tk.StringVar(value="0")
@@ -262,6 +266,24 @@ class ControlsPanel(ttk.Frame):
         _row(pf, 5, "Rotation:", rot_cb,
              "Placement rotation moves: ortho (±90/180°), free (any angle), "
              "or none.")
+        cyc_e = _entry(pf, self._cycles, width=6)
+        _row(pf, 6, "Cycles:", cyc_e,
+             "Run N independent place+route cycles and keep the one that *routes* "
+             "best (fewest unrouted, then lowest energy) — selecting on the true "
+             "objective. 1 = single pass. The recommended knob for a better board.")
+        self._feedback_cb = ttk.Checkbutton(
+            pf, text="Congestion feedback", variable=self._place_feedback)
+        self._feedback_cb.grid(row=7, column=0, columnspan=2, sticky=tk.W,
+                               padx=4, pady=2)
+        add_tooltip(self._feedback_cb,
+                    "With Cycles > 1: feed each cycle's routing back into the next "
+                    "placement, spreading footprints out of the cells where routing "
+                    "struggled (PathFinder-style). Cycles then run sequentially.")
+        cw_e = _entry(pf, self._congestion_weight, width=8)
+        _row(pf, 8, "Congestion wt:", cw_e,
+             "With Congestion feedback: how hard to spread parts out of the routed "
+             "hot zones (cost per unit congestion at a footprint centroid; "
+             "default 5.0).")
 
         # Output section
         of = _section(p, "Output")
@@ -269,13 +291,9 @@ class ControlsPanel(ttk.Frame):
                                   variable=self._log)
         cb_log.grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=4)
         add_tooltip(cb_log, "Write a verbose log (<output>.log).")
-        cb_plt = ttk.Checkbutton(of, text="Debug PNG plot",
-                                  variable=self._debug_plot)
-        cb_plt.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=4)
-        add_tooltip(cb_plt, "Save a PNG render of the routed board.")
         cb_q = ttk.Checkbutton(of, text="Quiet (no progress)",
                                 variable=self._quiet)
-        cb_q.grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=4)
+        cb_q.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=4)
         add_tooltip(cb_q, "Suppress live progress output.")
 
         # Button row
@@ -421,6 +439,10 @@ class ControlsPanel(ttk.Frame):
         if "exclude_net" in d and d["exclude_net"]:
             self._exclude_net.set(", ".join(d["exclude_net"]))
         _sv("place_runs", self._place_runs)
+        _sv("cycles", self._cycles)
+        _sv("congestion_weight", self._congestion_weight)
+        if "place_feedback" in d:
+            self._place_feedback.set(bool(d["place_feedback"]))
         _sv("place_margin", self._place_margin)
         _sv("place_buffer", self._place_buffer)
         if "place_rotate" in d and d["place_rotate"]:
@@ -445,8 +467,6 @@ class ControlsPanel(ttk.Frame):
         _sv("place_compact_weight", self._place_cw)
         _sv("place_edge_weight", self._place_ew)
         _sv("auto_probe_time", self._auto_probe_time)
-        if "debug_plot" in d:
-            self._debug_plot.set(bool(d["debug_plot"]))
         if "quiet" in d:
             self._quiet.set(bool(d["quiet"]))
         if "fix_values" in d:
@@ -541,6 +561,11 @@ class ControlsPanel(ttk.Frame):
         cfg = self.get_run_config()
         self._on_run(cfg)
 
+    def exclude_nets(self) -> list[str]:
+        """The current exclude-net patterns (comma/space-split), for display use."""
+        raw = self._exclude_net.get().strip()
+        return [x.strip() for x in raw.split(",") if x.strip()] if raw else []
+
     def get_run_config(self) -> RunConfig:
         def _f(var, default=None):
             s = var.get().strip()
@@ -565,8 +590,7 @@ class ControlsPanel(ttk.Frame):
         bv = _f(self._budget_val)
         pbk = self._place_budget_kind.get()
         pbv = _f(self._place_budget_val)
-        excl_raw = self._exclude_net.get().strip()
-        excl = [x.strip() for x in excl_raw.split(",") if x.strip()] if excl_raw else []
+        excl = self.exclude_nets()
 
         return RunConfig(
             input=self._full_input_path(),
@@ -596,8 +620,10 @@ class ControlsPanel(ttk.Frame):
             place_step=_f(self._place_step, 20.0),
             place_rotate=self._place_rotate.get() or "ortho",
             place_runs=_i(self._place_runs, 1),
+            cycles=_i(self._cycles, 1),
+            place_feedback=self._place_feedback.get(),
+            congestion_weight=_f(self._congestion_weight, 5.0),
             snapshots=0,
-            debug_plot=self._debug_plot.get(),
             quiet=self._quiet.get(),
             log=None,
             auto=False,
@@ -637,8 +663,10 @@ class ControlsPanel(ttk.Frame):
             place_step=cfg.place_step or 20.0,
             place_rotate=cfg.place_rotate or "ortho",
             place_runs=cfg.place_runs or 1,
+            cycles=cfg.cycles or 1,
+            place_feedback=cfg.place_feedback or False,
+            congestion_weight=cfg.congestion_weight or 5.0,
             snapshots=0,
-            debug_plot=cfg.debug_plot,
             quiet=cfg.quiet,
             log=None,
             auto=False,

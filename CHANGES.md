@@ -5,6 +5,31 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.32.0
+
+- **GUI: rats-nest overlay.** A "Rats-nest" toggle in the board view bar overlays
+  the unrouted connections as thin dashed airwires — the *full* rats-nest before
+  routing (so you can judge a placement and see what needs routing) and only the
+  *remaining* unrouted connections once routing has run (the overlay shrinks as
+  the board completes). `visualize.draw_board` gains a `rats_nest` parameter; the
+  airwires are computed from `netlist.build_connections` with the same net
+  exclusions the router uses.
+- **Removed `--debug-plot`** (and the `visualize.render` PNG writer / the `viz`
+  optional-dependency). The interactive GUI superseded the static PNG dump;
+  matplotlib is now a GUI-only dependency.
+
+## 0.31.0
+
+- **GUI: best-of-cycles + congestion feedback.** The graphical front-end now
+  exposes the `--cycles` outer loop and `--place-feedback` / `--congestion-weight`
+  that previously existed only on the CLI: a *Cycles* entry, a *Congestion
+  feedback* checkbox, and a *Congestion wt* entry in the Placement panel (and they
+  round-trip through the settings file). When Cycles > 1 in place+route mode the
+  worker drives the shared `pipeline.run_cycle` in the same loop the CLI uses —
+  per-cycle progress streams to the canvas/metrics, and the best-routing cycle is
+  kept. No new orchestration: the worker reuses `run_cycle` and the Phase-4
+  congestion helpers.
+
 ## 0.30.0
 
 - **Congestion-aware re-placement feedback (`--place-feedback`).** With
