@@ -3,7 +3,7 @@ writer.
 
 Parsing covers what the router needs: the copper layer stack, every pad with its
 absolute position/rotation/shape, the per-footprint grouping (origin, lock state,
-the ``Autoroute`` overlap flag, and each pad's local offset, used by the optional
+the ``Autoroute-overlap`` flag, and each pad's local offset, used by the optional
 placement pass), the net-reference style (name-only as in KiCad 10, or a numbered
 net table as in KiCad 6-9), existing tracks/vias/zones to treat as obstacles, the
 free (dangling) vias to strip, and the Edge.Cuts outline shapes.
@@ -19,7 +19,6 @@ the write.
 from __future__ import annotations
 
 import math
-import re
 import uuid as _uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -457,21 +456,21 @@ def _footprint_locked(fp_node: SList) -> bool:
 def _footprint_overlap_ok(fp_node: SList) -> bool:
     """Return whether a footprint opts in to body overlap during placement.
 
-    Reads the user-defined ``Autoroute`` property: a value containing ``overlap``
-    (case-insensitive) means the footprint's body may overlap others — e.g. an
-    Arduino shield sitting over the board it plugs into. Its pads are still kept
-    clear of other copper.
+    Reads the user-defined ``Autoroute-overlap`` property: a truthy value
+    (``yes`` / ``true`` / ``1`` / ``overlap``, case-insensitive) means the
+    footprint's body may overlap others — e.g. an Arduino shield sitting over the
+    board it plugs into. Its pads are still kept clear of other copper.
 
     Args:
         fp_node: the ``(footprint ...)`` node.
 
     Returns:
-        True if the ``Autoroute`` property requests overlap.
+        True if the ``Autoroute-overlap`` property is set truthy.
     """
     for prop in children(fp_node, "property"):
         vals = atoms_after_head(prop)
-        if len(vals) >= 2 and vals[0].text == "Autoroute":
-            return "overlap" in vals[1].text.lower()
+        if len(vals) >= 2 and vals[0].text == "Autoroute-overlap":
+            return vals[1].text.strip().lower() in ("yes", "true", "1", "overlap")
     return False
 
 
@@ -481,30 +480,32 @@ _EDGE_SIDES = ("left", "right", "top", "bottom")
 def _footprint_edge_affinity(fp_node: SList) -> str | None:
     """Return a footprint's board-edge placement affinity, or ``None``.
 
-    Reads the user-defined ``Autoroute`` property (the same field as
-    `_footprint_overlap_ok`, so intents combine, e.g. ``overlap, edge-top``).
-    The tokens — split on commas/whitespace, case-insensitive — are:
+    Reads the user-defined ``Autoroute-edge`` property. Its value (case-insensitive)
+    is the target side:
 
-    - ``edge`` → ``"any"`` (pull toward the nearest layout edge);
-    - ``edge-left`` / ``edge-right`` / ``edge-top`` / ``edge-bottom`` → that side.
+    - ``left`` / ``right`` / ``top`` / ``bottom`` → that side;
+    - ``any`` (also an empty / ``yes`` / ``true`` value) → the nearest board edge.
 
-    Useful for connectors and similar parts that must sit on the board boundary
-    during the optional placement pass.
+    A flagged footprint is pulled to the boundary *and* oriented to lie flat
+    against it during the optional placement pass — useful for connectors and
+    similar parts that must sit on the board edge. An unrecognised value is
+    ignored (returns ``None``).
 
     Args:
         fp_node: the ``(footprint ...)`` node.
 
     Returns:
-        ``"any"``, a side name, or ``None`` if no edge token is present.
+        ``"any"``, a side name, or ``None`` if the property is absent or invalid.
     """
     for prop in children(fp_node, "property"):
         vals = atoms_after_head(prop)
-        if len(vals) >= 2 and vals[0].text == "Autoroute":
-            for tok in re.split(r"[,\s]+", vals[1].text.lower().strip()):
-                if tok == "edge":
-                    return "any"
-                if tok.startswith("edge-") and tok[5:] in _EDGE_SIDES:
-                    return tok[5:]
+        if len(vals) >= 2 and vals[0].text == "Autoroute-edge":
+            val = vals[1].text.strip().lower()
+            if val in _EDGE_SIDES:
+                return val
+            if val in ("", "any", "yes", "true"):
+                return "any"
+            return None
     return None
 
 

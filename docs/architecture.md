@@ -27,7 +27,7 @@ flowchart TD
   sexpr["sexpr.py — tokenizer / serializer (round-trip safe)"] --> pcb
   pcb["pcb.py — board model: layers, pads(abs+rot), footprints, nets, copper, outline"] --> netlist
   pcb --> placement
-  placement["placement.py — optional SA footprint placement (--place);<br/>honours locks + Autoroute=overlap, regenerates Edge.Cuts"] -.-> autoroute
+  placement["placement.py — optional SA footprint placement (--place);<br/>honours locks + Autoroute-overlap, regenerates Edge.Cuts"] -.-> autoroute
   pcb --> geometry
   rules["rules.py — per-netclass clearance/width/via + net→class + board mins"] --> geometry
   geometry["geometry.py — pad polys, outline assembly, clearance buffer, self-check"] --> grid
@@ -79,7 +79,7 @@ conventions are handled transparently:
   style.
 
 A **`Footprint`** records each footprint's origin/rotation, its lock state (a bare
-`locked` atom or `(locked yes)`), the `Autoroute=overlap` property flag, and each
+`locked` atom or `(locked yes)`), the `Autoroute-overlap` property flag, and each
 pad's *local* offset/angle. This is what the optional placement pass moves:
 `Footprint.sync_pads` recomputes the pads' absolute coordinates from a new pose,
 and `Board.footprints` defaults to empty so callers that build a `Board` directly
@@ -194,20 +194,23 @@ the best placement. Energy
   the buffer; the optimiser then keeps footprints at least `buffer` apart, leaving
   room for routing clearance (the default is derived from the design-rule
   clearance). A pair where either footprint
-  is `overlap_ok` (the `Autoroute=overlap` property) contributes only its
+  is `overlap_ok` (the `Autoroute-overlap` property) contributes only its
   *pad-vs-pad* overlap, not body overlap — the shield-over-board case. **Locked**
   footprints are immovable obstacles included in the overlap term.
 - **bbox_area** — area of the bounding box of all footprints; compaction emerges
   from this term under cooling, with no separate phase.
-- **edge_distance** — only for footprints that opt in via the `Autoroute`
-  property (`edge`, or `edge-left`/`-right`/`-top`/`-bottom`; parsed into
-  `Footprint.edge_affinity`). Each flagged footprint is penalised by how far its
-  box sits from its target side of the **current layout bounding box** (`any` uses
-  the nearest side), pulling connectors and the like onto the boundary. Measured
-  against the layout bbox, so it stays translation-invariant like the rest;
-  `_flagged` is empty when nothing opts in, so the term is identically zero by
-  default. Under `--keep-outline` the reference is the **kept outline's** bounding
-  box instead, so edge parts snap to the real board edge.
+- **edge_distance** — only for footprints that opt in via the `Autoroute-edge`
+  property (`any`, or `left`/`right`/`top`/`bottom`; parsed into
+  `Footprint.edge_affinity`). Each flagged footprint is penalised by the distance
+  from its target side of the **current layout bounding box** to the **far** side
+  of its box (`any` uses the nearest side). Measuring to the far side folds in the
+  box's depth perpendicular to the edge, so the term both pulls connectors and the
+  like onto the boundary **and** orients them to lie flat against it (long axis
+  parallel) — otherwise a part could rotate so only one pad reached the edge.
+  Measured against the layout bbox, so it stays translation-invariant like the
+  rest; `_flagged` is empty when nothing opts in, so the term is identically zero
+  by default. Under `--keep-outline` the reference is the **kept outline's**
+  bounding box instead, so edge parts snap to the real board edge.
 - **area_outside_outline** — only under `--keep-outline` with a closed Edge.Cuts:
   `containment_weight ×` (distance from each footprint box to the outline polygon
   `+` the box's protruding area). The distance gives a far-field gradient that
@@ -480,7 +483,7 @@ an unbounded search would re-scan the whole board every iteration.
 - `test_pcb` — pad absolute position/rotation, both net formats, writer no-op byte-identity, free-via stripping, segment append.
 - `test_rules`, `test_geometry`, `test_grid`, `test_netlist`, `test_router` — per-module behaviour (occupancy semantics, via crossing, diagonal preference, exact rip-up).
 - `test_anneal` — best energy never worsens; routing stays clean after annealing.
-- `test_placement` — placement energy never worsens; locked footprints stay put; bodies separate while `Autoroute=overlap` parts may overlap (pads kept apart); lock/property parsing and the footprint-`(at)` + Edge.Cuts tree rewrite round-trip; silkscreen text extents returned by `_fp_silk_text_extents` and included in `_fp_box`.
+- `test_placement` — placement energy never worsens; locked footprints stay put; bodies separate while `Autoroute-overlap` parts may overlap (pads kept apart); lock/property parsing, edge-affinity parallel-alignment, and the footprint-`(at)` + Edge.Cuts tree rewrite round-trip; silkscreen text extents returned by `_fp_silk_text_extents` and included in `_fp_box`.
 - `test_endtoend` — routes a synthetic board with a **`gr_line` outline** (generality) and `--exclude-net`, asserting zero clearance violations via the self-check.
 - `test_boards` — parametrized over every board in `TestProjects/` (ids `Test1`..`Test5`; hidden stray files like `.kicad_pcb.kicad_pcb` are skipped): parse, round-trip, writer no-op, outline/pads-inside, and a routing self-check. Routing the large boards (>30 pads) is skipped by default and enabled with `pytest --slow` (defined in `conftest.py`).
 

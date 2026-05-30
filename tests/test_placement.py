@@ -280,7 +280,7 @@ def test_parse_lock_and_overlap_property():
         '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
         ' (footprint "x" (at 10 20 90) (locked yes)'
         '  (property "Reference" "U1")'
-        '  (property "Autoroute" "overlap")'
+        '  (property "Autoroute-overlap" "yes")'
         '  (pad "1" smd rect (at 1 0 90) (size 1 1) (layers "F.Cu") (net "A")))'
         ' (footprint "y" locked (at 5 5)'
         '  (property "Reference" "U2")'
@@ -300,16 +300,21 @@ def test_parse_lock_and_overlap_property():
 
 
 def test_parse_edge_affinity_property():
-    def _ap(ref, autoroute):
-        ar = f'  (property "Autoroute" "{autoroute}")' if autoroute is not None else ""
-        return (f' (footprint "f" (at 0 0) (property "Reference" "{ref}")' + ar +
+    def _ap(ref, edge=None, overlap=None):
+        props = ""
+        if edge is not None:
+            props += f'  (property "Autoroute-edge" "{edge}")'
+        if overlap is not None:
+            props += f'  (property "Autoroute-overlap" "{overlap}")'
+        return (f' (footprint "f" (at 0 0) (property "Reference" "{ref}")' + props +
                 f'  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "{ref}")))')
     text = ('(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
-            + _ap("J1", "edge-left")
-            + _ap("J2", "edge")
-            + _ap("J3", "overlap, edge-top")     # intents combine
-            + _ap("J4", "edge-sideways")         # unknown side -> ignored
-            + _ap("J5", None)                    # no Autoroute property
+            + _ap("J1", edge="left")
+            + _ap("J2", edge="any")
+            + _ap("J3", edge="top", overlap="yes")   # the two props are independent
+            + _ap("J4", edge="sideways")             # unknown side -> ignored
+            + _ap("J5")                              # no Autoroute property
+            + _ap("J6", edge="")                     # empty value -> any
             + ')')
     fps = {fp.ref: fp for fp in _board_from_text(text).footprints}
     assert fps["J1"].edge_affinity == "left"
@@ -317,6 +322,7 @@ def test_parse_edge_affinity_property():
     assert fps["J3"].edge_affinity == "top" and fps["J3"].overlap_ok
     assert fps["J4"].edge_affinity is None
     assert fps["J5"].edge_affinity is None
+    assert fps["J6"].edge_affinity == "any"
 
 
 def _hub_and_satellites(flag_ref=None, side=None):
@@ -375,6 +381,31 @@ def test_edge_affinity_off_by_default_leaves_energy_unchanged():
     assert placer._flagged == {}
     assert placer._containment == 0.0            # no keep_outline -> no containment
     assert placer._outline_poly is None
+
+
+def test_edge_affinity_prefers_parallel_orientation():
+    # An elongated 1x4 header flagged edge-left should cost less in the edge term
+    # when its long axis lies parallel to the left edge (pads stacked along y, so
+    # the box is thin in x) than perpendicular to it (pads in a row along x). The
+    # far-side metric folds the box's perpendicular depth into the distance, so the
+    # annealer is pushed to orient the connector flat against the edge rather than
+    # rotating it so only one pad reaches the edge.
+    from pyautoroute.placement import _Placer, PlaceParams
+    row = [(0, 0, "n1"), (2.54, 0, "n2"), (5.08, 0, "n3"), (7.62, 0, "n4")]
+    conn = _fp("J1", 40, 40, row, edge_affinity="left")
+    anchor = _fp("U1", 10, 40, [(0, 0, "n1")])   # anchors the layout's left edge
+    board = _board([conn, anchor])
+    placer = _Placer(board, PlaceParams())
+
+    def edge_cost_at(angle):
+        conn.angle = angle
+        conn.sync_pads()
+        placer._rebuild_cache()
+        return placer._edge
+
+    perpendicular = edge_cost_at(0.0)    # row along x -> pokes inward from the edge
+    parallel = edge_cost_at(90.0)        # row along y -> flat against the edge
+    assert parallel < perpendicular
 
 
 # --- keep-outline (phase 2) --------------------------------------------------
@@ -617,7 +648,7 @@ def test_overlap_ok_exempt_from_board_silk_text():
         ' (gr_text "LABEL" (at 40 40 0) (layer "F.SilkS")'
         '  (effects (font (size 3 3))))'
         ' (footprint "Lib:SH" (layer "F.Cu") (at 40 40 0)'
-        '  (property "Autoroute" "overlap" (at 0 0 0) (layer "F.Fab"))'
+        '  (property "Autoroute-overlap" "yes" (at 0 0 0) (layer "F.Fab"))'
         '  (pad "1" smd rect (at -1 0) (size 1 1) (layers "F.Cu") (net "A"))))'
     )
     board = _board_from_text(text)

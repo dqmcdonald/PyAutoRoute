@@ -1157,7 +1157,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--grid", type=float, help="grid pitch in mm (default derived from rules)")
     p.add_argument("--place", action="store_true",
                    help="experimental: place footprints (simulated annealing) before "
-                        "routing — honours locked footprints and the Autoroute=overlap "
+                        "routing — honours locked footprints and the Autoroute-overlap "
                         "property, and regenerates the Edge.Cuts outline")
     p.add_argument("--place-only", action="store_true",
                    help="place the footprints and write the placed board "
@@ -1190,9 +1190,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--place-edge-weight", type=float,
                    default=placement.PlaceParams.edge_weight, metavar="W",
                    help="placement cost per mm a footprint flagged "
-                        "Autoroute=edge[-side] sits from its target board edge; "
-                        "higher pulls edge parts (e.g. connectors) out harder "
-                        "(default %(default)s)")
+                        "Autoroute-edge=<side> sits from its target board edge; "
+                        "higher pulls edge parts (e.g. connectors) out harder and "
+                        "aligns them flat against the edge (default %(default)s)")
     p.add_argument("--place-temps", nargs=2, type=float, metavar=("START", "END"),
                    default=(placement.PlaceParams.t_start, placement.PlaceParams.t_end),
                    help="placement annealing start/end temperature for the geometric "
