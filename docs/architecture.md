@@ -103,6 +103,19 @@ rectangular pads and failing DRC. The symmetric `_rotate_text_nodes` does the sa
 for `fp_text` and `property` `(at …)` angles so silkscreen labels also rotate with
 the footprint in the written file.
 
+**Interactive GUI constraint editing** — the module provides helpers for the GUI to
+interactively set footprint constraints:
+- `footprint_at(board, x, y)` — hit-test returning the smallest-area footprint
+  whose bounding box contains (x, y).
+- `set_footprint_edge(fp, side)` — set edge affinity (`"left"`, `"right"`, `"top"`,
+  `"bottom"`, or `None`) and update the `Autoroute-edge` custom property.
+- `set_footprint_overlap(fp, on)` — set overlap permission and update the
+  `Autoroute-overlap` custom property.
+- `set_footprint_locked(fp, locked)` — set lock state and update the `locked` flag.
+
+These helpers properly span-invalidate the tree (clearing the span on mutated nodes)
+so that only the changed properties are re-serialized, leaving the rest byte-identical.
+
 ### `geometry.py` — shapes & self-check
 shapely geometry for pads (rect / roundrect / circle / oval / trapezoid; custom
 falls back to bounding box), tracks, vias, and the board outline (stitching
@@ -432,6 +445,32 @@ board; passing `rats_nest` (a list of `(x1, y1, x2, y2)` airwire segments) overl
 the unrouted connections as thin dashed lines beneath the copper — the GUI's
 "Rats-nest" view toggle (`gui.app` computes the segments via `netlist.build_connections`,
 filtering to the connections whose `results[i]` is `None`).
+
+**Constraint markers** — in the GUI's Initial view, `draw_board` also renders
+per-footprint constraint visualizations via `_draw_autoroute_markers()`:
+- **Edge affinity** — coloured arrows (left, right, top, bottom) anchored to each
+  constrained footprint's centroid.
+- **Lock** — red square outline (`mfc="none"`) at each locked footprint.
+- **Legend** — a small text legend in the upper right (only when markers are present)
+  showing which constraint types are active. The legend uses `matplotlib.lines.Line2D`
+  proxy artists for clean styling.
+
+### `gui/` — interactive GUI (optional)
+The interactive graphical front-end (launched as `pyautoroute BOARD.kicad_pcb`
+when matplotlib is installed) allows real-time board inspection and footprint
+constraint editing. Main components:
+
+- **`app.py`** — main window orchestration, event routing, and constraint
+  state management. Wires the click handler from the canvas to `_on_footprint_pick()`,
+  which shows a context menu for editing edge affinity, lock, and overlap constraints.
+  Handles dirty-state tracking and prompts on Run/Open when unsaved edits exist.
+  `_save_constraints()` serialises changed constraints back to the `.kicad_pcb` file
+  with a timestamped backup.
+- **`canvas.py`** — matplotlib embedding, board rendering, and click forwarding.
+  Exposes `_on_pick(board_x, board_y, mpl_event)` callback for footprint selection.
+- **`controls.py`** — left panel (board input, pipeline options, placement/routing
+  toggles, settings I/O). Hosts the "Save Constraints" button, disabled until
+  constraint edits are made.
 
 ### `tune.py` — parameter sweep & scoring
 Scores a routing with a single objective

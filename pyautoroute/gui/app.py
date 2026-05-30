@@ -138,6 +138,7 @@ class App:
         self._overall_best_snap: BoardSnap | None = None
         self._view_mode = tk.StringVar(value="current")
         self._show_rats = tk.BooleanVar(value=False)   # rats-nest overlay toggle
+        self._constraints_dirty: bool = False
 
         self._build_menu()
         self._build_layout()
@@ -188,6 +189,7 @@ class App:
             on_apply=self._apply_to_project,
             on_suggest=self._suggest,
             on_open=self._open_board,
+            on_save_constraints=self._save_constraints,
         )
         pw.add(self._controls, weight=0)
 
@@ -230,6 +232,9 @@ class App:
         self._status_var = tk.StringVar(value="Ready")
         ttk.Label(status_bar, textvariable=self._status_var,
                   anchor=tk.W).pack(side=tk.LEFT, padx=6, pady=2)
+
+        # Wire canvas click handler for footprint selection
+        self._board_canvas._on_pick = self._on_footprint_pick
 
     # ── queue drain ───────────────────────────────────────────────────
 
@@ -312,6 +317,13 @@ class App:
     def _start_run(self, cfg) -> None:
         if self._worker and not self._worker.join(0):
             return  # already running
+        if self._constraints_dirty:
+            save = messagebox.askyesno("Unsaved constraints",
+                "Save constraint edits before running?\n"
+                "(If not, the run reloads the source file and edits will be lost.)",
+                default="yes")
+            if save:
+                self._save_constraints()
         self._cancel.clear()
         self._worker = Worker(self._queue, self._cancel)
         self._controls.set_running(True)
@@ -413,6 +425,12 @@ class App:
     # ── board open ────────────────────────────────────────────────────
 
     def _open_board(self, path: str) -> None:
+        if self._constraints_dirty:
+            save = messagebox.askyesno("Unsaved constraints",
+                "Save constraint edits before opening a different board?",
+                default="yes")
+            if save:
+                self._save_constraints()
         try:
             from pyautoroute import pcb
             from pyautoroute.report import routing_stats
@@ -528,6 +546,112 @@ class App:
                              title=f"{title_base} (overall best)")
             if self._last_done is not None:
                 self._metrics.set_done(self._last_done)
+
+    # ── footprint constraints ─────────────────────────────────────────
+
+    def _on_footprint_pick(self, bx: float, by: float, event) -> None:
+        """Handle footprint selection: show context menu for editing constraints."""
+        if self._view_mode.get() != "initial":
+            self._status_var.set("⚠ Switch to Initial view to edit constraints")
+            return
+        if self._initial_board is None:
+            return
+        from pyautoroute import pcb
+        fp = pcb.footprint_at(self._initial_board, bx, by)
+        if fp is None:
+            return
+
+        menu = tk.Menu(self._root, tearoff=0, font=("Helvetica", 10))
+        menu.add_command(label=f"  {fp.ref}  ", state=tk.DISABLED)
+        menu.add_separator()
+
+        # Edge affinity submenu with shared variable
+        edge_var = tk.StringVar(value=fp.edge_affinity or "")
+        edge_menu = tk.Menu(menu, tearoff=0)
+        edge_menu.add_radiobutton(
+            label="None", value="",
+            variable=edge_var,
+            command=lambda: self._set_edge(fp, None))
+        for side in ("left", "right", "top", "bottom"):
+            edge_menu.add_radiobutton(
+                label=side.capitalize(), value=side,
+                variable=edge_var,
+                command=lambda s=side: self._set_edge(fp, s))
+        menu.add_cascade(label="Edge", menu=edge_menu)
+
+        # Lock checkbutton
+        lock_var = tk.BooleanVar(value=fp.locked)
+        menu.add_checkbutton(
+            label="Lock",
+            onvalue=True, offvalue=False,
+            variable=lock_var,
+            command=lambda: self._set_lock(fp, lock_var.get()))
+
+        # Overlap OK checkbutton
+        overlap_var = tk.BooleanVar(value=fp.overlap_ok)
+        menu.add_checkbutton(
+            label="Overlap OK",
+            onvalue=True, offvalue=False,
+            variable=overlap_var,
+            command=lambda: self._set_overlap(fp, overlap_var.get()))
+
+        # Post menu at click position
+        try:
+            menu.tk_popup(event.guiEvent.x_root, event.guiEvent.y_root)
+        finally:
+            menu.grab_release()
+
+    def _set_edge(self, fp, side: str | None) -> None:
+        """Set edge affinity constraint on a footprint."""
+        from pyautoroute import pcb
+        pcb.set_footprint_edge(fp, side)
+        self._on_view_change()
+        self._mark_dirty()
+
+    def _set_lock(self, fp, locked: bool) -> None:
+        """Set lock constraint on a footprint."""
+        from pyautoroute import pcb
+        pcb.set_footprint_locked(fp, locked)
+        self._on_view_change()
+        self._mark_dirty()
+
+    def _set_overlap(self, fp, on: bool) -> None:
+        """Set overlap OK constraint on a footprint."""
+        from pyautoroute import pcb
+        pcb.set_footprint_overlap(fp, on)
+        self._on_view_change()
+        self._mark_dirty()
+
+    def _mark_dirty(self) -> None:
+        """Mark constraints as unsaved and update UI."""
+        self._constraints_dirty = True
+        self._controls.set_save_constraints_enabled(True)
+        self._status_var.set("● unsaved constraints — click Save Constraints to write")
+
+    def _save_constraints(self) -> None:
+        """Save per-footprint constraint properties back to the .kicad_pcb file."""
+        if self._initial_board is None:
+            return
+        inp_path = self._controls._full_input_path()
+        if not inp_path:
+            return
+        if not messagebox.askyesno("Save constraints",
+                f"Save constraints to {Path(inp_path).name}?"):
+            return
+        try:
+            from pyautoroute import pcb
+            # Create timestamped backup
+            p = Path(inp_path)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            bak_path = str(p.with_stem(f"{p.stem}.bak_{ts}"))
+            shutil.copy2(inp_path, bak_path)
+            # Write board with updated constraints
+            pcb.write_board(self._initial_board, inp_path, new_nodes=None)
+            self._constraints_dirty = False
+            self._controls.set_save_constraints_enabled(False)
+            self._status_var.set(f"✓ Saved constraints to {p.name}")
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc))
 
     # ── menu actions ─────────────────────────────────────────────────
 

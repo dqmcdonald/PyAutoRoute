@@ -29,6 +29,8 @@ class BoardCanvas(ttk.Frame):
         self._mpl = FigureCanvasTkAgg(self._fig, master=self)
         self._mpl.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self._has_board = False
+        self._on_pick = None  # callback(board_x, board_y, mpl_event) for footprint clicks
+        self._mpl.mpl_connect("button_press_event", self._on_click)
 
     def show_board(self, board, results=None, grid=None,
                    title: str | None = None, rats_nest=None) -> None:
@@ -48,3 +50,10 @@ class BoardCanvas(ttk.Frame):
                       color="#999", fontsize=12)
         self._has_board = False
         self._mpl.draw_idle()
+
+    def _on_click(self, event) -> None:
+        """Handle matplotlib click events: forward to _on_pick callback if set."""
+        if event.inaxes is not self._ax or event.xdata is None:
+            return
+        if self._on_pick is not None:
+            self._on_pick(event.xdata, event.ydata, event)

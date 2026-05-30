@@ -122,6 +122,7 @@ class ControlsPanel(ttk.Frame):
                  on_run: Callable, on_stop: Callable,
                  on_apply: Callable, on_suggest: Callable,
                  on_open: Callable | None = None,
+                 on_save_constraints: Callable | None = None,
                  **kw):
         super().__init__(parent, **kw)
         self._on_run = on_run
@@ -129,6 +130,7 @@ class ControlsPanel(ttk.Frame):
         self._on_apply = on_apply
         self._on_suggest = on_suggest
         self._on_open = on_open
+        self._on_save_constraints = on_save_constraints
 
         # ── vars ──
         self._input_path = tk.StringVar()
@@ -317,6 +319,12 @@ class ControlsPanel(ttk.Frame):
         add_tooltip(self._apply_btn,
                     "Back up the original .kicad_pcb and replace it with the "
                     "routed result. Requires a completed run.")
+        self._save_constraints_btn = ttk.Button(af, text="Save Constraints",
+                                                 command=self._on_save_constraints,
+                                                 state=tk.DISABLED)
+        self._save_constraints_btn.pack(side=tk.LEFT, padx=2)
+        add_tooltip(self._save_constraints_btn,
+                    "Write per-footprint constraint properties back to the .kicad_pcb.")
 
         sf2 = ttk.Frame(p)
         sf2.pack(fill=tk.X, padx=6, pady=2)
@@ -549,6 +557,10 @@ class ControlsPanel(ttk.Frame):
 
     def set_apply_enabled(self, enabled: bool) -> None:
         self._apply_btn.configure(
+            state=tk.NORMAL if enabled else tk.DISABLED)
+
+    def set_save_constraints_enabled(self, enabled: bool) -> None:
+        self._save_constraints_btn.configure(
             state=tk.NORMAL if enabled else tk.DISABLED)
 
     # ── collect config ────────────────────────────────────────────────

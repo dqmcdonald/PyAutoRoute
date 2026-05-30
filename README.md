@@ -377,6 +377,31 @@ pyautoroute-fix --values BOARD.kicad_pcb --dry-run  # report only, no write
 | `-o OUT` | Write fixed board to `OUT` instead of overwriting the input. |
 | `--dry-run` | Print what would change and exit without writing. |
 
+## Setting footprint constraints in the GUI
+
+The interactive GUI (launched with `pyautoroute` on a `.kicad_pcb` file, or via
+the terminal command `python -m pyautoroute.gui.app`) allows you to interactively
+set per-footprint placement constraints:
+
+1. **Click a footprint** in the Initial board view (the view selector at the bottom
+   of the canvas lets you switch between Initial, Current, Best, and Overall Best).
+2. **Context menu appears** with:
+   - **Edge** — attach the footprint to a board edge (left, right, top, bottom, or
+     none). Edge constraints are visualized with colored arrows on the canvas.
+   - **Lock** — freeze a footprint's position; it won't move during placement
+     optimization. Locked footprints are visualized with red square markers.
+   - **Overlap OK** — allow this footprint to overlap with others (normally forbidden).
+3. **Save Constraints** button (next to "Apply to Project") writes the changes to
+   the `.kicad_pcb` file with a timestamped backup.
+
+Constraint changes are **live** — when you set a constraint, the canvas updates
+immediately to show the edge arrows or lock markers. Before running the optimization
+or opening a different board, you're prompted to save unsaved constraints.
+
+These constraints are stored as hidden custom properties on the footprints (`Autoroute-edge`,
+`Autoroute-overlap`, and the `locked` field) and are preserved when you re-open the
+board in KiCad or PyAutoRoute.
+
 ## Helper script
 
 `./pyautoroute.sh` is an interactive menu of common tasks — install the package,

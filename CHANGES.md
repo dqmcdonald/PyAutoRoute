@@ -5,6 +5,16 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.33.0
+
+- **GUI: interactive footprint constraints.** Click a footprint in the Initial
+  board view to set per-footprint placement constraints (edge affinity, lock,
+  overlap OK) via context menu. Constraint changes show live on the canvas
+  (lock markers and edge arrows), and the "Save Constraints" button writes
+  changes back to the `.kicad_pcb` file. Adds `pcb.footprint_at()` for hit-testing,
+  `pcb.set_footprint_edge/locked/overlap()` helpers, and lock-marker visualization
+  in `visualize._draw_autoroute_markers`.
+
 ## 0.32.0
 
 - **GUI: rats-nest overlay.** A "Rats-nest" toggle in the board view bar overlays
