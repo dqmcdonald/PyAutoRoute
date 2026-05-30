@@ -29,7 +29,7 @@ _OVERLAP_COLOR = "#aa00cc"  # purple — overlap-ok ring
 # "top" = smaller Y → negative dy; "bottom" = larger Y → positive dy.
 _EDGE_DIR = {"left": (-1.0, 0.0), "right": (1.0, 0.0),
              "top": (0.0, -1.0), "bottom": (0.0, 1.0)}
-_ARROW_MM = 2.0   # arrow length in mm
+_ARROW_MM = 4.0   # arrow length in mm
 
 # Silkscreen text layers (both old and new KiCad naming).
 _SILK_LAYERS = {"F.SilkS", "B.SilkS", "F.Silkscreen", "B.Silkscreen"}
@@ -254,7 +254,7 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
                     "", xy=(fp.x + dx * _ARROW_MM, fp.y + dy * _ARROW_MM),
                     xytext=(fp.x, fp.y),
                     arrowprops=dict(arrowstyle="-|>", color=_EDGE_COLOR,
-                                    lw=1.5, mutation_scale=10),
+                                    lw=3.0, mutation_scale=20),
                     zorder=6,
                 )
         if fp.overlap_ok:
@@ -263,10 +263,10 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
 
     if any_xs:
         ax.plot(any_xs, any_ys, "*", color=_EDGE_COLOR,
-                ms=9, zorder=6, alpha=0.9, linestyle="none")
+                ms=18, zorder=6, alpha=0.9, linestyle="none")
     if ol_xs:
         ax.plot(ol_xs, ol_ys, "o", mfc="none", mec=_OVERLAP_COLOR,
-                ms=10, mew=1.5, zorder=6, alpha=0.9, linestyle="none")
+                ms=20, mew=3.0, zorder=6, alpha=0.9, linestyle="none")
 
 
 def draw_board(ax, board: Board, *, results=None, grid=None,
