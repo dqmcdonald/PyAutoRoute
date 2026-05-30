@@ -197,6 +197,46 @@ class Worker:
             anneal_snapshot=anneal_snapshot, anneal_best=anneal_best,
             overall_best=overall_best)
 
+    def _ground_plane_nodes(self, cfg, board, rules, out_path):
+        """Build ground plane zone nodes if configured.
+
+        Returns a list of zone nodes (possibly empty). Posts warnings to the queue.
+
+        Args:
+            cfg: the run configuration (must have ground_plane, ground_net, etc).
+            board: the board (already routed).
+            rules: the design rules.
+            out_path: the output path (for refill check).
+
+        Returns:
+            A list of zone SList nodes.
+        """
+        if not getattr(cfg, "ground_plane", False):
+            return []
+
+        try:
+            from pyautoroute import groundplane, pcb
+        except ImportError:
+            self._post(Phase("⚠ ground-plane: not available"))
+            return []
+
+        nodes = []
+        margin = (cfg.ground_plane_margin
+                  if cfg.ground_plane_margin is not None
+                  else rules.default_class.clearance)
+        layers = (["F.Cu", "B.Cu"] if cfg.ground_plane_layer == "both"
+                  else [cfg.ground_plane_layer])
+
+        for layer in layers:
+            gp_nodes, gp_warns = groundplane.build(
+                board, rules, net=cfg.ground_net, layer=layer, margin=margin,
+                stitch_pitch=cfg.stitch_vias)
+            nodes.extend(gp_nodes)
+            for w in gp_warns:
+                self._post(Phase(f"  ⚠ ground-plane: {w}"))
+
+        return nodes
+
     def _place_params(self, cfg, rules):
         """Build the `placement.PlaceParams` from the run config.
 
@@ -389,10 +429,11 @@ class Worker:
         pcb.stamp_comment(board,
             f"PyAutoRoute v{__version__} — {_mode} "
             f"{datetime.date.today().isoformat()}")
-        pcb.write_board(board, out_path,
-                        new_nodes=_results_to_nodes(board, grid, final_results),
+        new_nodes = _results_to_nodes(board, grid, final_results)
+        new_nodes.extend(self._ground_plane_nodes(cfg, board, rules, out_path))
+        pcb.write_board(board, out_path, new_nodes=new_nodes,
                         strip_free_vias=True)
-        if fill_nets:
+        if fill_nets or getattr(cfg, "ground_plane", False):
             pcb.try_refill_zones(out_path)
         routed_board = pcb.load_board(out_path)
         violations = geometry.clearance_violations(routed_board, rules)
@@ -485,11 +526,11 @@ class Worker:
         pcb.stamp_comment(best.board,
             f"PyAutoRoute v{__version__} — placed + routed "
             f"{datetime.date.today().isoformat()}")
-        pcb.write_board(best.board, out_path,
-                        new_nodes=_results_to_nodes(best.board, best.grid,
-                                                    best.results),
+        new_nodes = _results_to_nodes(best.board, best.grid, best.results)
+        new_nodes.extend(self._ground_plane_nodes(cfg, best.board, rules, out_path))
+        pcb.write_board(best.board, out_path, new_nodes=new_nodes,
                         strip_free_vias=True)
-        if fill_nets:
+        if fill_nets or getattr(cfg, "ground_plane", False):
             pcb.try_refill_zones(out_path)
         routed_board = pcb.load_board(out_path)
         violations = geometry.clearance_violations(routed_board, rules)

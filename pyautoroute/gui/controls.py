@@ -98,6 +98,8 @@ class RunConfig:
         "quiet", "log",
         "auto", "auto_yes", "auto_probe_time",
         "fix_values", "keep_outline",
+        "ground_plane", "ground_net", "ground_plane_layer",
+        "ground_plane_margin", "stitch_vias",
     )
 
     def __init__(self, **kw):
@@ -174,6 +176,12 @@ class ControlsPanel(ttk.Frame):
         self._auto_probe_time = tk.StringVar(value="3.0")
         self._fix_values = tk.BooleanVar(value=False)
         self._keep_outline = tk.BooleanVar(value=False)
+        # Ground plane
+        self._ground_plane = tk.BooleanVar(value=False)
+        self._ground_net = tk.StringVar(value="")
+        self._ground_plane_layer = tk.StringVar(value="B.Cu")
+        self._ground_plane_margin = tk.StringVar(value="")
+        self._stitch_vias = tk.StringVar(value="")
 
         self._build_ui()
         self._mode.trace_add("write", self._on_mode_change)
@@ -481,6 +489,13 @@ class ControlsPanel(ttk.Frame):
             self._fix_values.set(bool(d["fix_values"]))
         if "keep_outline" in d:
             self._keep_outline.set(bool(d["keep_outline"]))
+        if "ground_plane" in d:
+            self._ground_plane.set(bool(d["ground_plane"]))
+        _sv("ground_net", self._ground_net)
+        if "ground_plane_layer" in d and d["ground_plane_layer"]:
+            self._ground_plane_layer.set(d["ground_plane_layer"])
+        _sv("ground_plane_margin", self._ground_plane_margin)
+        _sv("stitch_vias", self._stitch_vias)
 
     # ── advanced dialog ───────────────────────────────────────────────
 
@@ -543,8 +558,56 @@ class ControlsPanel(ttk.Frame):
                     "existing Edge.Cuts instead of regenerating a bounding box "
                     "(needs a closed outline). Edge-flagged parts snap to it.")
 
+        cb_gp = ttk.Checkbutton(f, text="Ground plane",
+                                variable=self._ground_plane)
+        cb_gp.grid(row=len(rows) + 2, column=0, columnspan=2, sticky=tk.W,
+                   padx=4, pady=4)
+        add_tooltip(cb_gp,
+                    "After routing, emit a GND copper pour zone boundary. "
+                    "KiCad computes the fill. Includes connecting vias for "
+                    "isolated islands and optional stitching vias.")
+
+        gp_inner = ttk.Frame(f)
+        gp_inner.grid(row=len(rows) + 3, column=0, columnspan=2, sticky=tk.EW,
+                      padx=20, pady=(0, 4))
+        gp_inner.columnconfigure(1, weight=1)
+
+        ttk.Label(gp_inner, text="Ground net:").grid(row=0, column=0,
+                                                      sticky=tk.W, padx=4, pady=2)
+        e_gnet = ttk.Entry(gp_inner, textvariable=self._ground_net, width=12)
+        e_gnet.grid(row=0, column=1, sticky=tk.EW, padx=4, pady=2)
+        add_tooltip(e_gnet, "Net name (e.g. GND). Leave empty to auto-detect.")
+
+        ttk.Label(gp_inner, text="Pour layer:").grid(row=1, column=0,
+                                                      sticky=tk.W, padx=4, pady=2)
+        layer_f = ttk.Frame(gp_inner)
+        layer_f.grid(row=1, column=1, sticky=tk.EW, padx=4, pady=2)
+        ttk.Radiobutton(layer_f, text="B.Cu", variable=self._ground_plane_layer,
+                        value="B.Cu").pack(side=tk.LEFT)
+        ttk.Radiobutton(layer_f, text="F.Cu", variable=self._ground_plane_layer,
+                        value="F.Cu").pack(side=tk.LEFT, padx=8)
+        ttk.Radiobutton(layer_f, text="both", variable=self._ground_plane_layer,
+                        value="both").pack(side=tk.LEFT)
+        add_tooltip(layer_f, "Layer(s) for the ground pour.")
+
+        ttk.Label(gp_inner, text="Margin (mm):").grid(row=2, column=0,
+                                                       sticky=tk.W, padx=4, pady=2)
+        e_margin = ttk.Entry(gp_inner, textvariable=self._ground_plane_margin, width=12)
+        e_margin.grid(row=2, column=1, sticky=tk.EW, padx=4, pady=2)
+        add_tooltip(e_margin,
+                    "Inset distance from board outline. Leave empty to use "
+                    "the board's default clearance.")
+
+        ttk.Label(gp_inner, text="Stitch vias (mm):").grid(row=3, column=0,
+                                                           sticky=tk.W, padx=4, pady=2)
+        e_stitch = ttk.Entry(gp_inner, textvariable=self._stitch_vias, width=12)
+        e_stitch.grid(row=3, column=1, sticky=tk.EW, padx=4, pady=2)
+        add_tooltip(e_stitch,
+                    "Optional pitch for a regular grid of stitching vias. "
+                    "Leave empty to disable.")
+
         ttk.Button(f, text="OK", command=dlg.destroy).grid(
-            row=len(rows) + 2, column=0, columnspan=2, pady=8)
+            row=len(rows) + 4, column=0, columnspan=2, pady=8)
         dlg.transient(self)
         dlg.grab_set()
         self.wait_window(dlg)
@@ -643,6 +706,11 @@ class ControlsPanel(ttk.Frame):
             auto_probe_time=_f(self._auto_probe_time, 3.0),
             fix_values=self._fix_values.get(),
             keep_outline=self._keep_outline.get(),
+            ground_plane=self._ground_plane.get(),
+            ground_net=self._ground_net.get() or None,
+            ground_plane_layer=self._ground_plane_layer.get(),
+            ground_plane_margin=_f(self._ground_plane_margin),
+            stitch_vias=_f(self._stitch_vias),
         )
 
     def _to_namespace(self, parser) -> argparse.Namespace:
@@ -686,4 +754,9 @@ class ControlsPanel(ttk.Frame):
             auto_probe_time=cfg.auto_probe_time or 3.0,
             fix_values=cfg.fix_values or False,
             keep_outline=cfg.keep_outline or False,
+            ground_plane=cfg.ground_plane or False,
+            ground_net=cfg.ground_net,
+            ground_plane_layer=cfg.ground_plane_layer or "B.Cu",
+            ground_plane_margin=cfg.ground_plane_margin,
+            stitch_vias=cfg.stitch_vias,
         )

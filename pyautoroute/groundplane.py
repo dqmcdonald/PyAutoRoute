@@ -67,7 +67,7 @@ def build(board: Board, rules: DesignRules, *,
 
     # ── Pour polygon (outline inset by margin) ────────────────────────────────
     if margin is None:
-        margin = rules.default_clearance or 0.5
+        margin = rules.default_class.clearance
     try:
         outline_poly = geometry.outline_to_polygon(board.outline)
     except Exception as e:
@@ -87,7 +87,7 @@ def build(board: Board, rules: DesignRules, *,
     pts = list(inset_poly.exterior.coords)[:-1]
 
     # ── Build zone node ───────────────────────────────────────────────────────
-    clearance = rules.clearance_for_net(gnd_net) if rules else (rules.default_clearance or 0.5)
+    clearance = rules.clearance_for(gnd_net)
     min_thickness = 0.25
     zone_node = pcb.make_zone_node(
         board, layer, gnd_net, pts,

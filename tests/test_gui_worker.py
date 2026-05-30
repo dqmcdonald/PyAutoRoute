@@ -39,7 +39,9 @@ _DEFAULTS = dict(
     place_temps=(PlaceParams.t_start, PlaceParams.t_end),
     place_step=PlaceParams.step, place_rotate=PlaceParams.rotate_mode,
     place_runs=1, cycles=1, place_feedback=False, congestion_weight=5.0,
-    snapshots=0, fix_values=False, keep_outline=False)
+    snapshots=0, fix_values=False, keep_outline=False,
+    ground_plane=False, ground_net=None, ground_plane_layer="B.Cu",
+    ground_plane_margin=None, stitch_vias=None)
 
 
 def _copy_board(tmp_path):
@@ -123,3 +125,18 @@ def test_worker_cycles_with_feedback_clean(tmp_path):
     assert len(done) == 1
     assert done[0].routed > 0 and done[0].violations == []
     assert any(isinstance(e, Phase) and "best of" in e.name for e in events)
+
+
+def test_worker_ground_plane_clean(tmp_path):
+    # ground plane generation after routing
+    board = _copy_board(tmp_path)
+    events = _drive(_cfg(board, ground_plane=True, ground_plane_layer="B.Cu"))
+    _no_error(events)
+    done = [e for e in events if isinstance(e, Done)]
+    assert len(done) == 1
+    assert done[0].routed > 0
+    # the output board should have a zone node (ground plane)
+    # we reload it to verify the zone was written
+    from pyautoroute import pcb
+    routed_board = pcb.load_board(board.with_stem(board.stem + "_routed"))
+    assert any(z['net'] == "GND" for z in routed_board.zones)

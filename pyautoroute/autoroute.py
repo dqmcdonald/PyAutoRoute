@@ -745,7 +745,7 @@ def run(args: argparse.Namespace, _print_version: bool = True) -> int:
     new_nodes = _results_to_nodes(board, grid, final_results)
     if args.ground_plane:
         from . import groundplane
-        margin = args.ground_plane_margin or rules.default_clearance
+        margin = args.ground_plane_margin or rules.default_class.clearance
         layers = ["F.Cu", "B.Cu"] if args.ground_plane_layer == "both" else [args.ground_plane_layer]
         for layer in layers:
             gp_nodes, gp_warns = groundplane.build(
