@@ -47,10 +47,10 @@ comma/space separated), so one property can carry several intents:
 |---|---|
 | `overlap` | (existing) body may overlap others — e.g. a shield |
 | `edge` | pull toward the **nearest** boundary edge |
-| `edge:left` / `edge:right` / `edge:top` / `edge:bottom` | pull toward a **named** side |
+| `edge-left` / `edge-right` / `edge-top` / `edge-bottom` | pull toward a **named** side |
 
-So a left-hand connector is `Autoroute=edge:left`; a shield that also hugs the top
-is `Autoroute=overlap, edge:top`. Backward compatible: bare `overlap` is unchanged.
+So a left-hand connector is `Autoroute=edge-left`; a shield that also hugs the top
+is `Autoroute=overlap, edge-top`. Backward compatible: bare `overlap` is unchanged.
 
 **Model change** (pcb.py): add `Footprint.edge_affinity: str | None`
 (`None | "any" | "left" | "right" | "top" | "bottom"`), parsed alongside
@@ -86,7 +86,7 @@ depends on the mode:
   boundary (or, for a named side, to that side of the outline's bounding box).
 - **default (bbox regen):** distance to the relevant side of the **current layout
   bounding box** — already cached as `self._bbox` bounds (placement.py:336). This
-  is *not* circular: an `edge:left` part minimises `(fp.minx − layout.minx)`,
+  is *not* circular: an `edge-left` part minimises `(fp.minx − layout.minx)`,
   i.e. it is rewarded for being the left-most part = "on the left edge". `edge`
   (any) minimises the distance to the nearest of the four sides, pulling it
   outward onto the perimeter.
@@ -104,7 +104,7 @@ GUI Advanced panel and the tuner's sweep space.
 
 Connectors usually also want to **face outward** (opening toward the edge). That
 needs a per-footprint "outward axis", which is ambiguous to infer. Deferred; if
-pursued, encode it explicitly (e.g. `edge:left` implies the footprint's local +X
+pursued, encode it explicitly (e.g. `edge-left` implies the footprint's local +X
 faces left) and add a rotation-alignment term.
 
 ### A5. Files & tests (Part A)
@@ -186,11 +186,14 @@ the previous routed result (PathFinder-style):
   that pushes footprints **out of** hot zones, spreading the layout exactly where
   routing struggled. The field is blended/decayed across cycles so it accumulates
   signal without oscillating.
-- **Strategy.** Cycle 0: plain placement. Cycles ≥ 1: either (a) fresh placement
-  with the accumulated congestion term (more exploration), or (b) perturb the
-  best-so-far placement under the congestion term (coordinate-descent feel). Start
-  with (a) for the first few cycles, then refine the best with (b). Always keep
-  the best by **routed** score, so feedback can only help or be discarded.
+- **Strategy (decided): fresh re-placement.** Cycle 0 is plain placement; each
+  later cycle runs a **fresh** placement (its own seed) under the accumulated
+  congestion term — not a perturbation of the previous best. This keeps every
+  cycle an independent, exploratory attempt (consistent with best-of-cycles in
+  B1), with the congestion field as the only memory carried forward. The best
+  result is always kept by **routed** score, so feedback can only help or be
+  discarded. (Perturb-the-best was considered and rejected: it risks locking into
+  one basin, which is exactly what cycles are meant to avoid.)
 - **Guardrails.** Feedback is opt-in (`--place-feedback`), bounded blend factor,
   and measured before any thought of enabling by default — coupled loops can
   destabilise, so the keep-best gate is essential.
@@ -236,5 +239,11 @@ Each phase is independently shippable (docs + minor version bump + `CHANGES.md`)
 - **Re-load vs deep-copy per cycle** — re-loading the board is simpler and avoids
   state leakage; the cost is negligible beside place+route. (Deep-copy is the
   alternative if load ever becomes significant.)
-- **Property syntax** — confirm `Autoroute=edge:left` (colon) vs `edge-left`;
-  colon reads best and won't collide with the existing `overlap` token.
+
+## Resolved decisions
+
+- **Property syntax: hyphen** — `Autoroute=edge-left` (not `edge:left`). Reads
+  cleanly, combines as a token (`overlap, edge-top`), and avoids any colon parsing.
+- **Feedback strategy: fresh re-placement** — each feedback cycle re-places from
+  scratch under the accumulated congestion field rather than perturbing the
+  best-so-far (B4).
