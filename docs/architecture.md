@@ -384,7 +384,12 @@ keep-best gate and decayed blend are the guardrails).
 `PipelineHooks` mapping progress to its live display and log. The GUI worker calls
 the *same* two functions with an event-posting hooks object, so the place→route
 orchestration exists once for both front-ends (the duplication `gui-plan.md`
-flagged is gone).
+flagged is gone). The GUI also exposes **best-of-cycles** and **congestion
+feedback**: when its *Cycles* control is > 1 (place+route mode), the worker drives
+`pipeline.run_cycle` in the same loop the CLI's `_run_cycles` uses — reusing the
+shared cycle unit rather than re-implementing place+route — with a leaner
+`CycleHooks` posting per-cycle `Phase`/`Progress`/`BoardSnap` events and the
+*Congestion feedback* checkbox accumulating the field exactly as the CLI does.
 
 Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
 text progress `Reporter` (single-line `\r` updates on a TTY, line-by-line

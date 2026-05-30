@@ -38,7 +38,8 @@ _DEFAULTS = dict(
     place_edge_weight=PlaceParams.edge_weight,
     place_temps=(PlaceParams.t_start, PlaceParams.t_end),
     place_step=PlaceParams.step, place_rotate=PlaceParams.rotate_mode,
-    place_runs=1, snapshots=0, fix_values=False, keep_outline=False)
+    place_runs=1, cycles=1, place_feedback=False, congestion_weight=5.0,
+    snapshots=0, fix_values=False, keep_outline=False)
 
 
 def _copy_board(tmp_path):
@@ -94,3 +95,31 @@ def test_worker_place_and_route_clean(tmp_path):
     # a placement phase ran and posted at least one board snapshot
     assert any(isinstance(e, Phase) and "placing" in e.name for e in events)
     assert any(isinstance(e, BoardSnap) for e in events)
+
+
+def test_worker_cycles_place_and_route_clean(tmp_path):
+    # best-of-cycles through the GUI worker: 3 place+route cycles, keep the best.
+    events = _drive(_cfg(_copy_board(tmp_path), place=True, cycles=3,
+                         place_iters=120))
+    _no_error(events)
+    done = [e for e in events if isinstance(e, Done)]
+    assert len(done) == 1
+    assert done[0].routed > 0 and done[0].violations == []
+    # per-cycle progress was tagged, and a winner was selected
+    assert any(isinstance(e, Phase) and e.name.startswith("cycle 1/3")
+               for e in events)
+    assert any(isinstance(e, Phase) and e.name.startswith("cycle 3/3")
+               for e in events)
+    assert any(isinstance(e, Phase) and "best of" in e.name for e in events)
+
+
+def test_worker_cycles_with_feedback_clean(tmp_path):
+    # congestion feedback path: cycles run sequentially, accumulating the field.
+    events = _drive(_cfg(_copy_board(tmp_path), place=True, cycles=2,
+                         place_feedback=True, congestion_weight=5.0,
+                         place_iters=120))
+    _no_error(events)
+    done = [e for e in events if isinstance(e, Done)]
+    assert len(done) == 1
+    assert done[0].routed > 0 and done[0].violations == []
+    assert any(isinstance(e, Phase) and "best of" in e.name for e in events)

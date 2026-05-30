@@ -197,13 +197,101 @@ class Worker:
             anneal_snapshot=anneal_snapshot, anneal_best=anneal_best,
             overall_best=overall_best)
 
+    def _place_params(self, cfg, rules):
+        """Build the `placement.PlaceParams` from the run config.
+
+        Shared by the single-pass and best-of-cycles paths so the placement knobs
+        stay in lock-step.
+
+        Args:
+            cfg: the run configuration.
+            rules: the design rules (for the default keep-out buffer).
+
+        Returns:
+            A `pyautoroute.placement.PlaceParams`.
+        """
+        from pyautoroute import placement as place_mod
+        from pyautoroute.autoroute import default_place_buffer
+
+        buf = (default_place_buffer(rules) if cfg.place_buffer is None
+               else cfg.place_buffer)
+        return place_mod.PlaceParams(
+            iters=cfg.place_iters, time_budget=cfg.place_time, seed=cfg.seed,
+            exclude=cfg.exclude_net or [],
+            overlap_weight=cfg.place_overlap_weight,
+            compact_weight=cfg.place_compact_weight,
+            edge_weight=cfg.place_edge_weight,
+            keep_outline=getattr(cfg, "keep_outline", False), buffer=buf,
+            t_start=cfg.place_temps[0], t_end=cfg.place_temps[1],
+            step=cfg.place_step, rotate_mode=cfg.place_rotate)
+
+    def _cycle_hooks(self, cfg, margin, tag):
+        """Build a `pipeline.CycleHooks` posting throttled GUI events for one cycle.
+
+        `run_cycle` exposes a leaner hook set than the single-pass pipeline (no live
+        per-iteration board during placement, no route partials / anneal snapshots),
+        so the live canvas updates once per cycle — when that cycle's placement is
+        finalised (`board_snap_cb`) — while phase/progress events stream throughout,
+        each prefixed with ``tag`` (e.g. ``"cycle 2/5: "``).
+
+        Args:
+            cfg: the run configuration (for the progress budgets).
+            margin: placement preview margin (mm), passed to `_snap_pads`.
+            tag: a per-cycle phase prefix.
+
+        Returns:
+            A `pyautoroute.pipeline.CycleHooks`.
+        """
+        from pyautoroute import pipeline
+
+        post = self._post
+        cancel = self._cancel
+        st = {"place_t0": time.monotonic(), "anneal_t0": time.monotonic(),
+              "prog": 0.0, "route_prog": 0.0, "anneal_prog": 0.0}
+
+        def phase(name):
+            if name.startswith("routing"):
+                st["anneal_t0"] = time.monotonic()
+            post(Phase(f"{tag}{name}"))
+
+        def place_progress(it, total, energy, best, temp, accept):
+            if cancel.is_set():
+                return
+            now = time.monotonic()
+            if now - st["prog"] >= _PROGRESS_INTERVAL:
+                st["prog"] = now
+                post(Progress("placing", it, total, energy, best, temp, accept,
+                              0, 0, elapsed=now - st["place_t0"],
+                              budget=cfg.place_time or 0.0))
+
+        def route_progress(done, total, routed, unrouted):
+            now = time.monotonic()
+            if now - st["route_prog"] >= _PROGRESS_INTERVAL:
+                st["route_prog"] = now
+                post(Progress("routing", done, total, 0.0, 0.0, 0.0, 0.0,
+                              routed, unrouted))
+
+        def anneal_progress(it, total, r, u, energy, best, temp, accept):
+            now = time.monotonic()
+            if now - st["anneal_prog"] >= _PROGRESS_INTERVAL:
+                st["anneal_prog"] = now
+                post(Progress("annealing", it, total, energy, best, temp, accept,
+                              r, u, elapsed=now - st["anneal_t0"],
+                              budget=cfg.time_budget or 0.0))
+
+        def board_snap(b):
+            post(BoardSnap(_snap_pads(b, margin)))
+
+        return pipeline.CycleHooks(
+            phase_cb=phase, place_progress=place_progress,
+            route_progress=route_progress, anneal_progress=anneal_progress,
+            board_snap_cb=board_snap)
+
     def _pipeline(self, cfg) -> None:
         from pyautoroute import __version__, geometry, pcb, pipeline
-        from pyautoroute import placement as place_mod
         from pyautoroute import router
         from pyautoroute.autoroute import (
             _results_to_nodes, default_output, default_pitch,
-            default_place_buffer,
         )
         from pyautoroute.rules import load_rules
 
@@ -233,21 +321,23 @@ class Worker:
         pitch = cfg.grid if cfg.grid else default_pitch(rules)
 
         margin = cfg.place_margin
+
+        # ---- best-of-cycles (+ optional congestion feedback) ---------
+        # When placing and routing with cycles > 1, run the place→route→score
+        # cycle the CLI's `--cycles` runs (and `--place-feedback` chains), keeping
+        # the cycle that *routes* best. This shares `pipeline.run_cycle`, so the
+        # orchestration isn't duplicated — only the thin per-cycle driver differs.
+        cycles = max(1, getattr(cfg, "cycles", 1) or 1)
+        if place and not place_only and cycles > 1:
+            self._run_cycles(cfg, board, rules, pitch, margin, input_path,
+                             out_path, fill_nets, cycles)
+            return
+
         hooks = self._build_hooks(cfg, margin, board)
 
         # ---- placement -----------------------------------------------
         if place or place_only:
-            buf = (default_place_buffer(rules) if cfg.place_buffer is None
-                   else cfg.place_buffer)
-            pp = place_mod.PlaceParams(
-                iters=cfg.place_iters, time_budget=cfg.place_time, seed=cfg.seed,
-                exclude=cfg.exclude_net or [],
-                overlap_weight=cfg.place_overlap_weight,
-                compact_weight=cfg.place_compact_weight,
-                edge_weight=cfg.place_edge_weight,
-                keep_outline=getattr(cfg, "keep_outline", False), buffer=buf,
-                t_start=cfg.place_temps[0], t_end=cfg.place_temps[1],
-                step=cfg.place_step, rotate_mode=cfg.place_rotate)
+            pp = self._place_params(cfg, rules)
             pipeline.run_placement(board, place_params=pp,
                                    place_runs=max(1, cfg.place_runs),
                                    seed=cfg.seed, place_margin=margin,
@@ -310,3 +400,100 @@ class Worker:
         self._post(BoardSnap(routed_board))
         self._post(Done(str(out_path), total, routed, unrouted,
                         length, vias, violations, routed_board))
+
+    def _run_cycles(self, cfg, board, rules, pitch, margin, input_path,
+                    out_path, fill_nets, cycles) -> None:
+        """Best-of-cycles place+route, mirroring the CLI's ``--cycles`` loop.
+
+        Runs ``cycles`` independent place→route cycles through `pipeline.run_cycle`
+        (seed ``cfg.seed + k``), keeping the one that *routes* best
+        (`pipeline.select_best`). With ``cfg.place_feedback`` each later cycle
+        re-places under a congestion field accumulated from the previous cycles'
+        routing (decayed by `autoroute._FEEDBACK_DECAY`), spreading footprints out
+        of the hot zones; the keep-best gate means feedback can only help. The
+        winning cycle's board is written, zone-refilled, self-checked and reported
+        exactly as the single-pass path. Live progress is per-cycle (see
+        `_cycle_hooks`).
+
+        Args:
+            cfg: the run configuration.
+            board: the parsed board (used only to frame the congestion field).
+            rules: the design rules.
+            pitch: routing-grid pitch (mm).
+            margin: placement outline margin (mm).
+            input_path: the source board path (re-read each cycle).
+            out_path: the output board path.
+            fill_nets: nets with copper pours (for the zone refill).
+            cycles: number of cycles (> 1).
+        """
+        from dataclasses import replace
+
+        from pyautoroute import __version__, geometry, pcb, router
+        from pyautoroute.autoroute import _FEEDBACK_DECAY, _results_to_nodes
+        from pyautoroute.pipeline import run_cycle, select_best
+
+        pp = self._place_params(cfg, rules)
+        route_params = router.RouteParams(via_cost=cfg.via_weight)
+        route_kw = dict(annealing=bool(cfg.iters or cfg.time_budget),
+                        iters=cfg.iters, time_budget=cfg.time_budget,
+                        unrouted_weight=cfg.unrouted_weight,
+                        anneal_temps=cfg.anneal_temps, via_weight=cfg.via_weight)
+        feedback = bool(getattr(cfg, "place_feedback", False))
+        frame = router.congestion_frame(board, pitch) if feedback else None
+        field = None
+        results: list = []
+
+        for k in range(cycles):
+            if self._cancel.is_set():
+                break
+            tag = f"cycle {k + 1}/{cycles}: "
+            pp_k = pp
+            if feedback and field is not None:
+                pp_k = replace(pp, congestion_field=field,
+                               congestion_weight=cfg.congestion_weight)
+            hooks = self._cycle_hooks(cfg, margin, tag)
+            cr = run_cycle(input_path, rules, pitch, pp_k, route_params,
+                           route_kw=route_kw, place_margin=margin,
+                           seed=cfg.seed + k, hooks=hooks, cancel=self._cancel)
+            results.append(cr)
+            self._post(Phase(
+                f"cycle {k + 1}/{cycles} done: routed {cr.routed}/{cr.n_conns}, "
+                f"energy {cr.energy:.1f}, {cr.vias} vias"
+                + (f", {cr.unrouted} unrouted" if cr.unrouted else "")))
+            self._post(BoardSnap(dataclasses.replace(cr.board),
+                                 results=cr.results, grid=cr.grid))
+            if feedback and k + 1 < cycles and not self._cancel.is_set():
+                new_field = router.congestion_heatmap(cr.conns, cr.results,
+                                                      cr.grid, frame)
+                field = (new_field if field is None
+                         else field.blended(new_field, _FEEDBACK_DECAY))
+
+        if not results:
+            self._post(Phase("cancelled"))
+            return
+
+        best = select_best(results)
+        self._post(Phase(
+            f"best of {len(results)} cycles: seed {best.seed} — routed "
+            f"{best.routed}/{best.n_conns}, energy {best.energy:.1f}, "
+            f"{best.vias} vias"))
+        self._post(BoardSnap(dataclasses.replace(best.board),
+                             results=best.results, grid=best.grid,
+                             kind="overall_best"))
+
+        self._post(Phase("writing placed + routed board"))
+        pcb.stamp_comment(best.board,
+            f"PyAutoRoute v{__version__} — placed + routed "
+            f"{datetime.date.today().isoformat()}")
+        pcb.write_board(best.board, out_path,
+                        new_nodes=_results_to_nodes(best.board, best.grid,
+                                                    best.results),
+                        strip_free_vias=True)
+        if fill_nets:
+            pcb.try_refill_zones(out_path)
+        routed_board = pcb.load_board(out_path)
+        violations = geometry.clearance_violations(routed_board, rules)
+        total = best.routed + best.unrouted
+        self._post(BoardSnap(routed_board))
+        self._post(Done(str(out_path), total, best.routed, best.unrouted,
+                        best.length, best.vias, violations, routed_board))
