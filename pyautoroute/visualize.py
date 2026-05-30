@@ -25,6 +25,7 @@ _FP_OUTLINE_COLOR = "#888888"
 # Autoroute property marker colours.
 _EDGE_COLOR = "#ff8800"     # orange — edge-affinity arrows / star
 _OVERLAP_COLOR = "#aa00cc"  # purple — overlap-ok ring
+_LOCK_COLOR = "#cc0000"     # red — locked footprint
 
 # Direction vectors for edge affinity (in board coordinates, Y-down).
 # "top" = smaller Y → negative dy; "bottom" = larger Y → positive dy.
@@ -241,11 +242,15 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
     - Directional edge affinity → orange arrow pointing toward the target edge.
     - Edge-any affinity → orange star at the footprint centre.
     - Overlap-ok → open purple circle at the footprint centre.
+    - Locked → red square outline at the footprint centre.
     """
     any_xs: list[float] = []
     any_ys: list[float] = []
     ol_xs: list[float] = []
     ol_ys: list[float] = []
+    lock_xs: list[float] = []
+    lock_ys: list[float] = []
+    has_arrows = False
 
     for fp in board.footprints:
         if fp.edge_affinity:
@@ -253,6 +258,7 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
                 any_xs.append(fp.x)
                 any_ys.append(fp.y)
             else:
+                has_arrows = True
                 dx, dy = _EDGE_DIR.get(fp.edge_affinity, (0.0, 0.0))
                 ax.annotate(
                     "", xy=(fp.x + dx * _ARROW_MM, fp.y + dy * _ARROW_MM),
@@ -264,6 +270,9 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
         if fp.overlap_ok:
             ol_xs.append(fp.x)
             ol_ys.append(fp.y)
+        if fp.locked:
+            lock_xs.append(fp.x)
+            lock_ys.append(fp.y)
 
     if any_xs:
         ax.plot(any_xs, any_ys, "*", color=_EDGE_COLOR,
@@ -271,6 +280,32 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
     if ol_xs:
         ax.plot(ol_xs, ol_ys, "o", mfc="none", mec=_OVERLAP_COLOR,
                 ms=20, mew=3.0, zorder=6, alpha=0.9, linestyle="none")
+    if lock_xs:
+        ax.plot(lock_xs, lock_ys, "s", mfc="none", mec=_LOCK_COLOR,
+                ms=16, mew=2.5, zorder=6, alpha=0.9, linestyle="none")
+
+    # Draw legend if any markers are present
+    if any_xs or has_arrows or ol_xs or lock_xs:
+        import matplotlib.lines as mlines
+        handles = []
+        labels = []
+        if has_arrows or any_xs:
+            handles.append(mlines.Line2D([], [], color=_EDGE_COLOR, marker="*",
+                                         linestyle="none", markersize=10, label="Edge"))
+            labels.append("Edge")
+        if ol_xs:
+            handles.append(mlines.Line2D([], [], markerfacecolor="none",
+                                         markeredgecolor=_OVERLAP_COLOR, marker="o",
+                                         linestyle="none", markersize=10, label="Overlap"))
+            labels.append("Overlap")
+        if lock_xs:
+            handles.append(mlines.Line2D([], [], markerfacecolor="none",
+                                         markeredgecolor=_LOCK_COLOR, marker="s",
+                                         linestyle="none", markersize=9, label="Locked"))
+            labels.append("Locked")
+        if handles:
+            ax.legend(handles=handles, loc="upper right", fontsize=7,
+                      framealpha=0.7, title="Constraints", title_fontsize=7)
 
 
 def draw_board(ax, board: Board, *, results=None, grid=None,
