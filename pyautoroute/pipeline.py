@@ -409,10 +409,12 @@ def run_placement(board, *, place_params, place_runs: int, seed: int,
 
 def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                 seed: int, runs: int, jobs: int, snapshots: int, exclude,
+                grid=None, conns=None, order=None,
                 hooks=None, cancel=None) -> PipelineResult:
     """Route a (placed) board best-of-`runs` and keep the lowest-energy result.
 
-    Builds the connections, greedy order, and grid over `board`, then routes
+    Builds the connections, greedy order, and grid over `board` (unless passed in
+    pre-built — the CLI builds them early for its parameter dump), then routes
     `runs` times (each greedy route + optional anneal). With ``runs > 1`` and
     ``jobs > 1`` the runs are dispatched across a `ProcessPoolExecutor` (progress
     suppressed); otherwise they run sequentially with live `hooks`. Selection —
@@ -430,6 +432,10 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
         jobs: worker processes for parallel routing (``> 1`` enables it).
         snapshots: annealing snapshot count (single-run only; 0 disables).
         exclude: net patterns to leave unrouted.
+        grid: optional pre-built routing grid (built here, with a phase event, if
+            ``None``).
+        conns: optional pre-built connection list (built here if ``None``).
+        order: optional pre-built greedy order (built here if ``None``).
         hooks: optional `PipelineHooks`.
         cancel: optional cancellation `Event`.
 
@@ -437,9 +443,14 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
         The `PipelineResult` (``place_stats`` is ``None``; the caller fills it).
     """
     h = hooks or PipelineHooks()
-    conns = netlist.build_connections(board, exclude=exclude or [])
-    order = netlist.greedy_order(conns)
-    grid = Grid(board, rules, pitch)
+    if conns is None:
+        _call(h.phase, "building netlist (MST rats-nest)")
+        conns = netlist.build_connections(board, exclude=exclude or [])
+    if order is None:
+        order = netlist.greedy_order(conns)
+    if grid is None:
+        _call(h.phase, f"building {pitch}mm routing grid")
+        grid = Grid(board, rules, pitch)
     annealing = route_kw["annealing"]
 
     best_energy = float("inf")
@@ -458,9 +469,9 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                 futs = [ex.submit(_route_run_worker, p) for p in payloads]
                 for fut in concurrent.futures.as_completed(futs):
                     out = fut.result()
-                    done_n += 1
                     _call(h.route_run_done, done_n, runs, out["energy"],
                           out["summary"], out["metrics"])
+                    done_n += 1
                     if out["energy"] < best_energy:
                         best_energy = out["energy"]
                         final_results = out["results"]
