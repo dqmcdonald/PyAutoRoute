@@ -80,7 +80,8 @@ The original file is never modified — a routed copy is written alongside it.
 | `--iters N` | Run simulated-annealing optimisation for N iterations. |
 | `--time SECONDS` | Run optimisation for a wall-clock budget instead. |
 | `--runs N` | Route `N` times with different annealing seeds and keep the lowest-energy result (best-of-N). Default 1. Multiplies runtime ~N×; only varies the result when annealing (`--iters`/`--time`) is on. |
-| `--jobs N`, `-j N` | Run the `--runs` trials across `N` worker processes (parallel best-of-N). `0` uses every CPU (capped at `--runs`). `1` (default) keeps the sequential path with live per-run progress. Speedup ≈ `min(runs, cores)`. In parallel mode per-run live progress is suppressed (it can't interleave cleanly across processes); each run logs a one-line completion. |
+| `--jobs N`, `-j N` | Run the `--runs` trials (or `--cycles` cycles) across `N` worker processes (parallel best-of-N). `0` uses every CPU (capped at the trial/cycle count). `1` (default) keeps the sequential path with live progress. Speedup ≈ `min(count, cores)`. In parallel mode live progress is suppressed (it can't interleave cleanly across processes); each trial/cycle logs a one-line completion. |
+| `--cycles N` | **With `--place`:** run `N` independent place+route cycles and keep the one that *routes* best — fewest unrouted, then lowest energy — selecting on the true objective rather than placement energy alone (default 1). Parallelised by `--jobs`. See *Best-of-cycles* below. |
 | `--auto` | Probe a few grid/via settings on this board, pick the best, and (on a terminal) ask to confirm before routing with them. `--auto-yes` skips the prompt; `--auto-probe-time S` sets the budget per probed setting. |
 | `--unrouted-weight W` | Annealing energy penalty per unrouted connection (default 100). Higher ⇒ the optimiser tries harder to complete every connection, at the expense of wirelength/vias; lower ⇒ it tolerates leaving hard nets for manual routing. |
 | `--anneal-temps START END` | Start/end temperature of the geometric cooling schedule (default `4.0 0.05`); `START > END > 0`. Higher `START` explores more (better escape from local minima, slower convergence); lower `END` exploits harder at the finish. |
@@ -107,6 +108,23 @@ few short runs often beats one long run. (`--snapshots` needs a single run.) Add
 `--jobs N` / `-j N` to run those runs in parallel across worker processes
 (`-j 0` uses every core); the lowest-energy result is kept exactly as in the
 sequential path.
+
+#### Best-of-cycles (`--cycles`, with `--place`)
+
+`--runs` and `--place-runs` pick the best *placement* by **placement** energy
+(rats-nest + overlap + compactness) and then route it — but a placement that
+*looks* best can route worse (more vias, or nets it can't complete). `--cycles N`
+closes that gap: it runs `N` independent **place→route** attempts (each a fresh
+board, seeded `seed, seed+1, …`) and keeps the one that **routes** best — fewest
+unrouted connections first, then lowest routed energy. It selects on the true
+objective, so it sees what a placement proxy can't.
+
+`--cycles` is the **outer** loop and the recommended knob for a better board. To
+avoid an N×M blow-up, each cycle runs **one** placement and **one** routing;
+`--place-runs` (best placement by placement energy) and `--runs` (best route by
+routing energy) remain available as **inner** loops for power users. Cycles are
+independent, so `--jobs N` parallelises them across processes exactly like
+`--runs`. `--cycles 1` (the default) is unchanged from today.
 
 ### Examples
 
@@ -232,7 +250,7 @@ Placement options (all also work with `--place-only`):
 | Option | Meaning |
 |---|---|
 | `--place-iters N` / `--place-time S` | Placement budget (iterations or wall-clock seconds). |
-| `--place-runs N` | Run placement `N` times (different seeds) and keep the lowest-energy placement (best-of-N). Default 1. |
+| `--place-runs N` | Run placement `N` times (different seeds) and keep the lowest-energy placement (best-of-N). Default 1. An *inner* loop; for a better routed board prefer `--cycles` (above), which selects on the routed result. |
 | `--place-temps START END` | Start/end temperature of the placement cooling schedule (default `8.0 0.05`); `START > END > 0`. |
 | `--place-step MM` | Max translate step (mm) at the start temperature (default 20). Shrinks as the schedule cools. |
 | `--place-rotate {ortho,free,none}` | Rotation moves: `ortho` (±90/180, default), `free` (any angle), or `none`. |
