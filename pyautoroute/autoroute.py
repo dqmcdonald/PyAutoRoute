@@ -422,7 +422,7 @@ def _place_params_from_args(args, board, rules, rep):
     return pp, keep_outline
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, _print_version: bool = True) -> int:
     """Execute the full pipeline: parse -> grid -> route -> (anneal) -> write.
 
     Writes the routed board, optional snapshots and log, runs the clearance
@@ -431,6 +431,8 @@ def run(args: argparse.Namespace) -> int:
 
     Args:
         args: the parsed CLI namespace (see `build_parser`).
+        _print_version: if False, suppress the opening ``PyAutoRoute vX.Y``
+            line (used by `main` when the settings header already printed it).
 
     Returns:
         Process exit code: 0 if the self-check is clean, 2 if it finds a
@@ -442,7 +444,8 @@ def run(args: argparse.Namespace) -> int:
                                     place_only=args.place_only))
     pro_path = Path(args.pro) if args.pro else default_pro(input_path)
     rep = Reporter(quiet=args.quiet, log_path=_resolve_log_path(args, out_path))
-    print(f"PyAutoRoute {__version__}")
+    if _print_version:
+        print(f"PyAutoRoute {__version__}")
 
     rep.phase("parsing board + rules")
     board = pcb.load_board(input_path)
@@ -1154,6 +1157,74 @@ def _append_option(lines: list, dest: str, action, value,
     lines.append("\n")
 
 
+def _print_settings_header(
+    args: argparse.Namespace,
+    args_cli: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    pure_defaults: dict,
+    proj_ini_path: "Path | None",
+    cfg_path: "Path | None",
+    proj_ini_values: dict,
+    cfg_values: dict,
+) -> None:
+    """Print the startup header: version, config files, non-default settings table.
+
+    Args:
+        args: effective parsed namespace (defaults + ini + CLI).
+        args_cli: parsed namespace with no ini defaults applied (CLI-only).
+        parser: the CLI parser (for action metadata).
+        pure_defaults: ``{dest: default}`` captured before any ``set_defaults``.
+        proj_ini_path: path to the auto-loaded project ini, or ``None``.
+        cfg_path: path to the ``--config`` ini, or ``None``.
+        proj_ini_values: settings loaded from the project ini.
+        cfg_values: settings loaded from ``--config``.
+    """
+    print(f"PyAutoRoute {__version__}")
+    if proj_ini_path is not None:
+        print(f"  Project ini:  {proj_ini_path}")
+    if cfg_path is not None:
+        print(f"  --config:     {cfg_path}")
+
+    actions = _configurable_actions(parser)
+    rows: list[tuple[str, str, str]] = []
+    for dest, action in actions.items():
+        effective = getattr(args, dest, None)
+        pure_def = pure_defaults.get(dest, action.default)
+        if effective == pure_def:
+            continue                        # still at default — skip
+
+        long_opt = next((s for s in action.option_strings if s.startswith("--")),
+                        action.option_strings[0])
+        val_str = _format_config_value(action, effective)
+
+        cli_val = getattr(args_cli, dest, pure_def)
+        if cli_val != pure_def:
+            source = "cli"
+        elif dest in cfg_values and effective == cfg_values[dest]:
+            source = cfg_path.name if cfg_path else "ini"
+        elif dest in proj_ini_values:
+            source = proj_ini_path.name if proj_ini_path else "ini"
+        else:
+            source = "ini"
+
+        rows.append((long_opt, val_str, source))
+
+    w_opt = max((len(r[0]) for r in rows), default=len("Option"))
+    w_val = max((len(r[1]) for r in rows), default=len("Value"))
+    w_opt = max(w_opt, len("Option"))
+    w_val = max(w_val, len("Value"))
+    if rows:
+        hdr = f"  {'Option':<{w_opt}}  {'Value':<{w_val}}  Source"
+        sep = f"  {'-' * w_opt}  {'-' * w_val}  ------"
+        print()
+        print(hdr)
+        print(sep)
+        for opt, val, src in rows:
+            print(f"  {opt:<{w_opt}}  {val:<{w_val}}  {src}")
+        print()
+    sys.stdout.flush()
+
+
 def write_config(parser: argparse.ArgumentParser, args, path: str | Path) -> None:
     """Write the effective settings to an INI file with per-option comments.
 
@@ -1360,14 +1431,32 @@ def main(argv=None) -> int:
     pre.add_argument("input", nargs="?")
     known, _ = pre.parse_known_args(argv)
     parser = build_parser()
+
+    # Capture pure argparse defaults before any set_defaults calls.
+    pure_defaults = {a.dest: a.default for a in parser._actions
+                     if a.option_strings and a.dest not in _CONFIG_SKIP}
+
+    proj_ini_path: Path | None = None
+    proj_ini_values: dict = {}
     if known.input:
         proj_ini = Path(known.input).with_suffix(".ini")
         d = load_project_config(proj_ini, parser)
         if d:
+            proj_ini_path = proj_ini
+            proj_ini_values = d
             parser.set_defaults(**d)
+
+    cfg_path: Path | None = None
+    cfg_values: dict = {}
     if known.config:
-        parser.set_defaults(**load_config(known.config, parser))
+        cfg_values = load_config(known.config, parser)
+        cfg_path = Path(known.config)
+        parser.set_defaults(**cfg_values)
+
     args = parser.parse_args(argv)
+
+    # CLI-only namespace (no ini defaults) used for source detection in header.
+    args_cli = build_parser().parse_args(argv)
 
     if args.write_config is not None:
         cfg_path = (Path(args.write_config) if args.write_config
@@ -1402,7 +1491,10 @@ def main(argv=None) -> int:
         parser.error("--place-iters/--place-time require --place or --place-only")
     if args.place_only and (args.iters or args.time_budget):
         parser.error("--place-only does not route; drop --iters/--time")
-    return run(args)
+    _print_settings_header(args, args_cli, parser, pure_defaults,
+                           proj_ini_path, cfg_path,
+                           proj_ini_values, cfg_values)
+    return run(args, _print_version=False)
 
 
 if __name__ == "__main__":
