@@ -434,6 +434,35 @@ where the biggest differences are, and why (e.g. "PyAutoRoute uses 2.5× vias bu
 is 300 mm shorter"). Copper-pour nets (GND, power planes) are automatically excluded
 so the comparison focuses on routed signal nets.
 
+## Ground plane (`--ground-plane`)
+
+Auto-add a GND copper pour after routing:
+
+```bash
+pyautoroute board.kicad_pcb --ground-plane \
+    [--ground-net GND] \
+    [--ground-plane-layer B.Cu|F.Cu|both] \
+    [--ground-plane-margin 0.5] \
+    [--stitch-vias [PITCH]]
+```
+
+After routing, a zone boundary is emitted following the board outline (inset by
+margin). PyAutoRoute also adds connecting vias where GND copper is isolated to
+only one layer (e.g. SMD-only pads on F.Cu with a B.Cu pour). Optional
+`--stitch-vias [PITCH]` (default 5 mm) lays a regular grid of GND vias to tie
+the planes together — most useful with `--ground-plane-layer both`.
+
+**Important caveat**: KiCad computes the actual copper fill via `kicad-cli` (required);
+PyAutoRoute's DRC self-check cannot verify the pour's clearance to other-net copper,
+since the fill doesn't exist until KiCad runs. The self-check passes only for the
+routed traces; the pour itself is verified by KiCad's fill and DRC. If `kicad-cli`
+is unavailable, the zone boundary is written (unfilled) — open the board in KiCad
+to fill.
+
+Works with `--place` and `--cycles` (applies to the winning routed board before
+write). Auto-detects the GND net by name (exact `GND` first, then glob match on
+`gnd*` / `*ground*`); use `--ground-net` to specify if multiple grounds exist.
+
 ## Helper script
 
 `./pyautoroute.sh` is an interactive menu of common tasks — install the package,

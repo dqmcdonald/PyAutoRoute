@@ -529,6 +529,22 @@ flags boards with DRC violations, and analyses the results with prose. Calls `ro
 on each board with the same exclude set and design rules (auto-detected from the first
 board's sibling `.kicad_pro`), then formats the results for comparison.
 
+### `groundplane.py` — auto-add ground plane after routing
+
+`--ground-plane` emits a GND copper-pour zone boundary following the board outline
+(inset by margin) and adds connecting vias where GND is isolated to only one layer
+(e.g. SMD-only pads on F.Cu). Uses `geometry.outline_to_polygon().buffer(-margin)`
+for the boundary, then calls `pcb.make_zone_node()` (in pcb.py) to emit the zone
+s-expression with `(fill yes …)` so `kicad-cli` picks it up on refill. Connectivity
+vias are found by union-find over GND copper (pads + segments + vias), tracking which
+layers each component reaches. Optional `--stitch-vias [PITCH]` lays a regular grid
+of GND vias to tie planes together.
+
+**Critical invariant:** `geometry.board_obstacles` (and thus `clearance_violations`)
+skips filled zones, so PyAutoRoute's self-check cannot verify the pour's clearance —
+that is delegated to KiCad's fill / `kicad-cli`. The self-check passes for the routed
+traces; the zone boundary is emitted but unfilled if `kicad-cli` is absent (warned).
+
 ### `pyautoroute.sh` — helper menu
 A repo-root Bash script offering a menu of common tasks (install, regenerate API
 docs via the `pdoc` recipe, run the short/long test suite, run the performance

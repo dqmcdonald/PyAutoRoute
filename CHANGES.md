@@ -12,6 +12,13 @@ a **patch** bump for fixes and small corrections. Newest first.
   lock, or `Autoroute-overlap` — with their reference and value (e.g. `J1
   edge=left`), so you can confirm what's pinned before a run. Nothing is printed
   when no footprint is constrained.
+- **Auto-add ground plane (`--ground-plane`)** — after routing, emit a GND copper
+  pour (zone) boundary following the board outline (inset by margin). Adds connecting
+  vias where GND copper is isolated to only one layer (e.g. SMD-only islands on F.Cu),
+  and optional stitching vias (`--stitch-vias`) to tie the planes together. KiCad
+  computes the actual fill; PyAutoRoute emits only the boundary and the connecting
+  vias. Works with `--place` and `--cycles`. Flags as "self-check excludes the pour"
+  since KiCad's fill (delegated to kicad-cli) is the DRC authority.
 
 ## 0.34.0
 

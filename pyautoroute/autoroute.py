@@ -589,7 +589,7 @@ def run(args: argparse.Namespace, _print_version: bool = True) -> int:
         rep.phase("writing placed board")
         _stamp(board, "placed")
         pcb.write_board(board, out_path, new_nodes=None, strip_free_vias=True)
-        if fill_nets:
+        if fill_nets or args.ground_plane:
             ok = pcb.try_refill_zones(out_path)
             if ok:
                 rep.log("zones refilled via kicad-cli")
@@ -740,11 +740,28 @@ def run(args: argparse.Namespace, _print_version: bool = True) -> int:
     rep.phase("writing routed board")
     mode = "placed + routed" if args.place else "routed"
     _stamp(board, mode)
+
+    # Build node list: routing results + ground plane (if requested)
+    new_nodes = _results_to_nodes(board, grid, final_results)
+    if args.ground_plane:
+        from . import groundplane
+        margin = args.ground_plane_margin or rules.default_clearance
+        layers = ["F.Cu", "B.Cu"] if args.ground_plane_layer == "both" else [args.ground_plane_layer]
+        for layer in layers:
+            gp_nodes, gp_warns = groundplane.build(
+                board, rules, net=args.ground_net, layer=layer, margin=margin,
+                stitch_pitch=args.stitch_vias
+            )
+            new_nodes.extend(gp_nodes)
+            for w in gp_warns:
+                rep.log(f"ground-plane: {w}")
+                print(f"  ⚠ ground-plane: {w}")
+
     pcb.write_board(board, out_path,
-                    new_nodes=_results_to_nodes(board, grid, final_results),
+                    new_nodes=new_nodes,
                     strip_free_vias=True)
 
-    if fill_nets:
+    if fill_nets or args.ground_plane:
         ok = pcb.try_refill_zones(out_path)
         if ok:
             rep.log("zones refilled via kicad-cli")
@@ -894,7 +911,7 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                     new_nodes=_results_to_nodes(sel_board, grid, final_results),
                     strip_free_vias=True)
 
-    if fill_nets:
+    if fill_nets or args.ground_plane:
         ok = pcb.try_refill_zones(out_path)
         if ok:
             rep.log("zones refilled via kicad-cli")
@@ -1417,6 +1434,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="annealing seconds per probed setting under --auto (default %(default)s)")
     p.add_argument("--exclude-net", action="append", default=[], metavar="PATTERN",
                    help="net name/glob to leave un-routed (repeatable)")
+    p.add_argument("--ground-plane", action="store_true",
+                   help="add a GND copper pour zone after routing")
+    p.add_argument("--ground-net", default=None, metavar="NET",
+                   help="net name for --ground-plane (default: auto-detect GND)")
+    p.add_argument("--ground-plane-layer", default="B.Cu", metavar="LAYER",
+                   choices=["B.Cu", "F.Cu", "both"],
+                   help="layer(s) for the ground pour (default: %(default)s)")
+    p.add_argument("--ground-plane-margin", type=float, default=None, metavar="MM",
+                   help="inset margin from board outline (mm; default: board clearance)")
+    p.add_argument("--stitch-vias", type=float, nargs="?", const=5.0, metavar="PITCH",
+                   help="add stitching vias at PITCH mm intervals (default 5.0 mm; "
+                        "most useful with --ground-plane-layer both)")
     p.add_argument("--seed", type=int, default=0, help="random seed")
     p.add_argument("--via-weight", type=float, default=2.0, help="via cost (mm-equiv)")
     p.add_argument("--search-margin", type=float, default=None, metavar="MM",
