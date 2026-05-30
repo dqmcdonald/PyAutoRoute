@@ -82,6 +82,8 @@ The original file is never modified — a routed copy is written alongside it.
 | `--runs N` | Route `N` times with different annealing seeds and keep the lowest-energy result (best-of-N). Default 1. Multiplies runtime ~N×; only varies the result when annealing (`--iters`/`--time`) is on. |
 | `--jobs N`, `-j N` | Run the `--runs` trials (or `--cycles` cycles) across `N` worker processes (parallel best-of-N). `0` uses every CPU (capped at the trial/cycle count). `1` (default) keeps the sequential path with live progress. Speedup ≈ `min(count, cores)`. In parallel mode live progress is suppressed (it can't interleave cleanly across processes); each trial/cycle logs a one-line completion. |
 | `--cycles N` | **With `--place`:** run `N` independent place+route cycles and keep the one that *routes* best — fewest unrouted, then lowest energy — selecting on the true objective rather than placement energy alone (default 1). Parallelised by `--jobs`. See *Best-of-cycles* below. |
+| `--place-feedback` | **With `--cycles N`:** feed each cycle's routing back into the next placement as a *congestion field*, spreading footprints out of the cells where routing struggled (PathFinder-style). Cycles then run sequentially; the best-routing cycle is still kept, so feedback can only help. Opt-in and experimental. See *Congestion feedback* below. |
+| `--congestion-weight W` | With `--place-feedback`: how hard to spread parts out of the routed hot zones (mm-cost per unit congestion at a footprint centroid; default 5.0). |
 | `--auto` | Probe a few grid/via settings on this board, pick the best, and (on a terminal) ask to confirm before routing with them. `--auto-yes` skips the prompt; `--auto-probe-time S` sets the budget per probed setting. |
 | `--unrouted-weight W` | Annealing energy penalty per unrouted connection (default 100). Higher ⇒ the optimiser tries harder to complete every connection, at the expense of wirelength/vias; lower ⇒ it tolerates leaving hard nets for manual routing. |
 | `--anneal-temps START END` | Start/end temperature of the geometric cooling schedule (default `4.0 0.05`); `START > END > 0`. Higher `START` explores more (better escape from local minima, slower convergence); lower `END` exploits harder at the finish. |
@@ -125,6 +127,30 @@ avoid an N×M blow-up, each cycle runs **one** placement and **one** routing;
 routing energy) remain available as **inner** loops for power users. Cycles are
 independent, so `--jobs N` parallelises them across processes exactly like
 `--runs`. `--cycles 1` (the default) is unchanged from today.
+
+#### Congestion feedback (`--place-feedback`, with `--cycles`)
+
+Best-of-cycles tries `N` *independent* placements. `--place-feedback` makes each
+cycle **learn** from the last one's routing (PathFinder-style): after a cycle
+routes, a coarse board-wide **congestion field** is built — high where routing
+struggled (dense copper, vias, and the regions of connections it couldn't
+complete) — and the next cycle re-places under it, pushing footprints **out of**
+those hot zones so the layout spreads exactly where routing was hard. The field
+accumulates (decayed) across cycles.
+
+Each feedback cycle still re-places from scratch (its own seed) under the
+accumulated field — not a tweak of the previous best — so every cycle stays an
+independent, exploratory attempt with the field as the only memory carried
+forward. Because the best cycle is still chosen by **routed** score, feedback can
+only help or be discarded. It is opt-in and experimental: coupled place/route
+loops can oscillate, so the keep-best gate and a decayed blend are the guardrails,
+and `--congestion-weight` bounds how hard parts are pushed. Feedback couples each
+cycle to the previous one, so it runs the cycles **sequentially** (it overrides
+`--jobs`). Example:
+
+```bash
+pyautoroute MyBoard.kicad_pcb --place --cycles 6 --place-feedback --iters 4000
+```
 
 ### Examples
 
@@ -259,6 +285,7 @@ Placement options (all also work with `--place-only`):
 | `--keep-outline` | Keep the board's existing `Edge.Cuts` and contain the footprints within it, instead of regenerating a bounding-box outline (needs a closed outline; ignored otherwise). |
 | `--place-overlap-weight W` / `--place-compact-weight W` | Energy weights for overlap area and layout compactness. |
 | `--place-edge-weight W` | Pull/alignment strength (cost per mm from the target edge) for footprints flagged `Autoroute-edge=<side>` (default 2.0). Higher pulls edge parts out harder and aligns them flatter against the edge. |
+| `--place-feedback` / `--congestion-weight W` | Congestion-aware re-placement across cycles (needs `--cycles N`); see *Congestion feedback* above. |
 
 The live placement progress shows the temperature, current/best energy, and the
 recent **acceptance ratio** (`acc=…%`, which falls as the schedule cools); the

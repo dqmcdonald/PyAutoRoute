@@ -6,7 +6,8 @@ tracks, this moves footprint positions/rotations to minimise rats-nest length
 while keeping bodies from overlapping and pulling the layout together.
 
 Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
-+ edge_weight·edge_distance + containment_weight·area_outside_outline``:
++ edge_weight·edge_distance + containment_weight·area_outside_outline
++ congestion_weight·Σ field(centroid)``:
 
 - **ratsnest** — total MST length over the pad centroids (reuses
   `pyautoroute.netlist`); shrinks as connected pads are drawn together.
@@ -41,6 +42,15 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
   affinity then targets the outline rather than the layout bbox. Zero otherwise.
   Note ``keep_outline`` makes the energy depend on absolute position (the outline
   is fixed), so `recenter` is skipped in that mode.
+- **Σ field(centroid)** — only under congestion feedback (``--place-feedback``),
+  when a `pyautoroute.router.CongestionField` from a previous cycle's routed
+  result is supplied. Each footprint's body-box centre is sampled in the field
+  (high where routing was congested — dense copper, vias, unrouted nets) and the
+  values summed, so minimising the term spreads parts *out of* the hot cells the
+  router struggled with. The field is in absolute board coordinates (it anchors
+  the layout), so like ``keep_outline`` it makes the energy position-dependent and
+  `recenter` is skipped. Zero when no field is supplied, so default behaviour is
+  unchanged.
 
 Moves (over the *movable* footprints — locked ones are fixed obstacles): translate
 by a temperature-scaled random step, rotate (``rotate_mode``: ``ortho`` = ±90°/180°,
@@ -226,6 +236,14 @@ class PlaceParams:
     edge_weight: float = 2.0          # mm-cost per mm an edge-flagged footprint sits from its target edge
     keep_outline: bool = False        # contain footprints within the board's existing Edge.Cuts
     containment_weight: float = 50.0  # cost per mm² a footprint protrudes outside the kept outline
+    # Congestion feedback (--place-feedback): when `congestion_field` is set (a
+    # `router.CongestionField` from a previous cycle's routed result), each
+    # footprint is penalised by `congestion_weight · field(centroid)`, pushing
+    # parts out of the cells where routing struggled. Absolute-coordinate, so the
+    # field anchors the layout — `recenter` is skipped while it is active. None /
+    # weight 0 (the default) leaves placement unchanged.
+    congestion_field: object = None
+    congestion_weight: float = 0.0    # mm-cost per unit field value at a footprint centroid
     step: float = 20.0                # max translate step (mm) at t_start
     buffer: float = 0.5               # keep-out gap (mm) enforced between footprints
     rotate_mode: str = "ortho"        # "ortho" (+/-90/180), "free" (any angle), "none"
@@ -313,6 +331,7 @@ class _Placer:
         self._bbox = 0.0
         self._edge = 0.0
         self._containment = 0.0
+        self._congestion = 0.0
         self._idx_of_fp: dict[int, int] = {id(fp): i for i, fp in enumerate(self.boxed)}
         # Footprints that opted into edge placement: boxed-index -> side
         # ("any"|"left"|"right"|"top"|"bottom"). Fixed for the run.
@@ -367,6 +386,31 @@ class _Placer:
         self._bbox = self._bbox_from_bounds()
         self._edge = self._edge_sum_from_bounds(self._bounds)
         self._containment = self._containment_sum(self._boxes)
+        self._congestion = self._congestion_sum(self._bounds)
+
+    def _congestion_sum(self, bounds) -> float:
+        """Total congestion-field value sampled at the footprint centroids.
+
+        Zero (and skipped) unless ``--place-feedback`` supplied a
+        `router.CongestionField`. Each footprint's body-box centre is sampled and
+        the values summed; minimising this term pushes parts out of the cells where
+        a previous cycle's routing was congested. Like the bbox and edge terms it
+        depends on the absolute layout, so it is an O(N) recompute per move.
+
+        Args:
+            bounds: per-footprint ``(minx, miny, maxx, maxy)`` tuples (e.g.
+                ``self._bounds``).
+
+        Returns:
+            The summed field value (dimensionless), or ``0.0`` when no field.
+        """
+        field = self.p.congestion_field
+        if field is None or not bounds:
+            return 0.0
+        total = 0.0
+        for bx0, by0, bx1, by1 in bounds:
+            total += field.value_at((bx0 + bx1) * 0.5, (by0 + by1) * 0.5)
+        return total
 
     def _containment_sum(self, boxes) -> float:
         """Total footprint area protruding outside the kept board outline.
@@ -473,7 +517,8 @@ class _Placer:
         return (self._rats + self.p.overlap_weight * self._overlap
                 + self.p.compact_weight * self._bbox
                 + self.p.edge_weight * self._edge
-                + self.p.containment_weight * self._containment)
+                + self.p.containment_weight * self._containment
+                + self.p.congestion_weight * self._congestion)
 
     def _overlap_touching(self, idxs: set[int], boxes) -> float:
         """Overlap area of every pair/fixed-text touching a footprint in `idxs`.
@@ -642,10 +687,12 @@ class _Placer:
             nl = self._conns[ci].est_length
             self._conn_len[ci] = nl
             self._rats += nl
-        # bbox + edge: cheap O(N) recompute from the cached plain-tuple bounds
-        # (both depend on the global layout extent, which any move can shift).
+        # bbox + edge + congestion: cheap O(N) recompute from the cached
+        # plain-tuple bounds (the bbox/edge depend on the global layout extent and
+        # the congestion sample on each centroid, both of which any move can shift).
         self._bbox = self._bbox_from_bounds()
         self._edge = self._edge_sum_from_bounds(self._bounds)
+        self._congestion = self._congestion_sum(self._bounds)
 
     def _energy_components(self) -> tuple[float, float, float]:
         """Return the ``(ratsnest, overlap_area, bbox_area)`` energy terms."""
@@ -669,9 +716,11 @@ class _Placer:
         boxes = [self._fp_box(fp) for fp in self.boxed]
         edge = self._edge_sum_from_bounds([b.bounds for b in boxes])
         containment = self._containment_sum(boxes)
+        congestion = self._congestion_sum([b.bounds for b in boxes])
         return (rats + self.p.overlap_weight * overlap
                 + self.p.compact_weight * bbox_area + self.p.edge_weight * edge
-                + self.p.containment_weight * containment)
+                + self.p.containment_weight * containment
+                + self.p.congestion_weight * congestion)
 
     @staticmethod
     def _snapshot(fps):
@@ -904,8 +953,10 @@ def place(board: Board, params: PlaceParams | None = None,
     params = params or PlaceParams()
     # keep_outline ties the placement to a fixed outline (absolute coordinates),
     # so the layout must not be re-centred afterwards — that would shift parts
-    # back out of the outline they were contained within.
-    do_recenter = not params.keep_outline
+    # back out of the outline they were contained within. A congestion field is
+    # likewise absolute (it anchors parts to/away from board cells), so recentring
+    # would invalidate it too.
+    do_recenter = not params.keep_outline and params.congestion_field is None
     if runs <= 1:
         result = _Placer(board, params).run(on_progress, cancel)
         if do_recenter:
