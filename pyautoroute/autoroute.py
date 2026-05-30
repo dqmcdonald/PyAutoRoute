@@ -869,28 +869,19 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
 
 
 def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
-    """Render the optional debug plot, report timing, and close the log.
-
-    Shared tail of both the routing and place-only paths.
+    """Report timing and close the log; the shared tail of the routing and
+    place-only paths.
 
     Args:
         rep: the reporter.
         args: the parsed CLI namespace.
-        out_path: the output board path (basis for the plot/log names).
-        board: the reloaded output board (rendered when ``--debug-plot``).
+        out_path: the output board path (basis for the log name).
+        board: the reloaded output board (unused; kept for signature symmetry).
         violations: the self-check violations (empty == clean) for the exit code.
 
     Returns:
         Process exit code: 0 if `violations` is empty, else 2.
     """
-    if args.debug_plot:
-        from . import visualize
-        plot_path = str(out_path.with_suffix(".png"))
-        visualize.render(board, plot_path, title=out_path.name)
-        if not args.quiet:
-            print(f"  debug plot:    {plot_path}")
-        rep.log(f"debug plot -> {plot_path}")
-
     real, cpu = rep.runtime()
     timing = f"runtime:       {real:.2f}s real, {cpu:.2f}s cpu"
     print(f"  {timing}")
@@ -1407,7 +1398,6 @@ def build_parser() -> argparse.ArgumentParser:
                         "progress (bare --log uses <output>.log)")
     p.add_argument("--fix-values", action="store_true",
                    help="move footprint Value text to the silkscreen layer before routing")
-    p.add_argument("--debug-plot", action="store_true", help="write a PNG render")
     p.add_argument("--quiet", action="store_true", help="suppress live progress display")
     return p
 

@@ -99,8 +99,20 @@ def test_draw_board_renders_silkscreen_text():
     assert "R1" not in texts       # hidden Reference should be skipped
 
 
-def test_render_writes_png(tmp_path):
-    board = _board([_pad("A", 5, 5), _pad("A", 15, 15)])
-    out = tmp_path / "b.png"
-    visualize.render(board, str(out))
-    assert out.exists() and out.stat().st_size > 0
+def test_draw_board_draws_rats_nest_overlay():
+    board = _board([_pad("A", 5, 5), _pad("A", 15, 5)])
+    ax = _ax()
+    base = _ax()
+    visualize.draw_board(base, board)                       # no overlay
+    visualize.draw_board(ax, board,
+                         rats_nest=[(5, 5, 15, 5)])          # one airwire
+    # the overlay adds exactly one LineCollection over the no-overlay render
+    assert len(ax.collections) == len(base.collections) + 1
+
+
+def test_draw_board_rats_nest_none_is_noop():
+    board = _board([_pad("A", 5, 5)])
+    ax = _ax()
+    visualize.draw_board(ax, board, rats_nest=None)
+    visualize.draw_board(ax, board, rats_nest=[])           # empty draws nothing
+    assert len(ax.collections) == 1                          # just the pad

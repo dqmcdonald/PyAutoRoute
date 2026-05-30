@@ -95,7 +95,7 @@ class RunConfig:
         "place_runs",
         "cycles", "place_feedback", "congestion_weight",
         "snapshots",
-        "debug_plot", "quiet", "log",
+        "quiet", "log",
         "auto", "auto_yes", "auto_probe_time",
         "fix_values", "keep_outline",
     )
@@ -155,7 +155,6 @@ class ControlsPanel(ttk.Frame):
         self._congestion_weight = tk.StringVar(value="5.0")
         # Output
         self._log = tk.BooleanVar(value=False)
-        self._debug_plot = tk.BooleanVar(value=False)
         self._quiet = tk.BooleanVar(value=False)
         # Advanced (stored as strings for easy edit)
         self._seed = tk.StringVar(value="0")
@@ -292,13 +291,9 @@ class ControlsPanel(ttk.Frame):
                                   variable=self._log)
         cb_log.grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=4)
         add_tooltip(cb_log, "Write a verbose log (<output>.log).")
-        cb_plt = ttk.Checkbutton(of, text="Debug PNG plot",
-                                  variable=self._debug_plot)
-        cb_plt.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=4)
-        add_tooltip(cb_plt, "Save a PNG render of the routed board.")
         cb_q = ttk.Checkbutton(of, text="Quiet (no progress)",
                                 variable=self._quiet)
-        cb_q.grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=4)
+        cb_q.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=4)
         add_tooltip(cb_q, "Suppress live progress output.")
 
         # Button row
@@ -472,8 +467,6 @@ class ControlsPanel(ttk.Frame):
         _sv("place_compact_weight", self._place_cw)
         _sv("place_edge_weight", self._place_ew)
         _sv("auto_probe_time", self._auto_probe_time)
-        if "debug_plot" in d:
-            self._debug_plot.set(bool(d["debug_plot"]))
         if "quiet" in d:
             self._quiet.set(bool(d["quiet"]))
         if "fix_values" in d:
@@ -568,6 +561,11 @@ class ControlsPanel(ttk.Frame):
         cfg = self.get_run_config()
         self._on_run(cfg)
 
+    def exclude_nets(self) -> list[str]:
+        """The current exclude-net patterns (comma/space-split), for display use."""
+        raw = self._exclude_net.get().strip()
+        return [x.strip() for x in raw.split(",") if x.strip()] if raw else []
+
     def get_run_config(self) -> RunConfig:
         def _f(var, default=None):
             s = var.get().strip()
@@ -592,8 +590,7 @@ class ControlsPanel(ttk.Frame):
         bv = _f(self._budget_val)
         pbk = self._place_budget_kind.get()
         pbv = _f(self._place_budget_val)
-        excl_raw = self._exclude_net.get().strip()
-        excl = [x.strip() for x in excl_raw.split(",") if x.strip()] if excl_raw else []
+        excl = self.exclude_nets()
 
         return RunConfig(
             input=self._full_input_path(),
@@ -627,7 +624,6 @@ class ControlsPanel(ttk.Frame):
             place_feedback=self._place_feedback.get(),
             congestion_weight=_f(self._congestion_weight, 5.0),
             snapshots=0,
-            debug_plot=self._debug_plot.get(),
             quiet=self._quiet.get(),
             log=None,
             auto=False,
@@ -671,7 +667,6 @@ class ControlsPanel(ttk.Frame):
             place_feedback=cfg.place_feedback or False,
             congestion_weight=cfg.congestion_weight or 5.0,
             snapshots=0,
-            debug_plot=cfg.debug_plot,
             quiet=cfg.quiet,
             log=None,
             auto=False,

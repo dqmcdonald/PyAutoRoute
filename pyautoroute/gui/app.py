@@ -137,6 +137,7 @@ class App:
         self._best_snap: BoardSnap | None = None
         self._overall_best_snap: BoardSnap | None = None
         self._view_mode = tk.StringVar(value="current")
+        self._show_rats = tk.BooleanVar(value=False)   # rats-nest overlay toggle
 
         self._build_menu()
         self._build_layout()
@@ -207,6 +208,12 @@ class App:
                 variable=self._view_mode,
                 command=self._on_view_change,
             ).pack(side=tk.LEFT, padx=2)
+        ttk.Separator(view_bar, orient=tk.VERTICAL).pack(
+            side=tk.LEFT, fill=tk.Y, padx=6)
+        rats_cb = ttk.Checkbutton(
+            view_bar, text="Rats-nest", variable=self._show_rats,
+            command=self._on_view_change)
+        rats_cb.pack(side=tk.LEFT, padx=2)
 
         # Right: metrics + energy graph (vertical stack)
         right = ttk.Frame(pw)
@@ -294,8 +301,7 @@ class App:
             else:
                 self._current_snap = event
             if self._view_mode.get() == event.kind:
-                self._board_canvas.show_board(
-                    event.board, event.results, event.grid)
+                self._render(event.board, event.results, event.grid)
         elif isinstance(event, Done):
             self._on_done(event)
         elif isinstance(event, Error):
@@ -420,7 +426,7 @@ class App:
             self._overall_best_snap = None
             self._view_mode.set("current")
 
-            self._board_canvas.show_board(board, title=Path(path).name)
+            self._render(board, title=Path(path).name)
 
             outline_note = (
                 "  ⚠ No Edge.Cuts found — default outline added."
@@ -449,6 +455,46 @@ class App:
         except Exception as exc:
             messagebox.showerror("Open failed", str(exc))
 
+    def _rats_segments(self, board, results):
+        """Airwire segments for the rats-nest overlay, or ``None`` when off.
+
+        Draws the *full* rats-nest while nothing is routed (``results is None``)
+        and only the **unrouted** connections once routing has produced results,
+        so the overlay shrinks as the board completes. Uses the same exclusions the
+        router applies — the user's exclude-net patterns plus copper-pour nets — so
+        the airwires line up with what was actually routed.
+
+        Args:
+            board: the board being shown.
+            results: the routing results for that board (or ``None``).
+
+        Returns:
+            A list of ``(x1, y1, x2, y2)`` segments, or ``None`` when the toggle is
+            off / no board.
+        """
+        if not self._show_rats.get() or board is None:
+            return None
+        try:
+            from pyautoroute import netlist, pcb
+            exclude = self._controls.exclude_nets() + sorted(
+                pcb.zone_fill_nets(board))
+            conns = netlist.build_connections(board, exclude=exclude)
+        except Exception:
+            return None
+        segs = []
+        for i, c in enumerate(conns):
+            routed = (results is not None and i < len(results)
+                      and results[i] is not None)
+            if not routed:
+                segs.append((c.a.cx, c.a.cy, c.b.cx, c.b.cy))
+        return segs
+
+    def _render(self, board, results=None, grid=None, title=None) -> None:
+        """Draw a board on the canvas, adding the rats-nest overlay when enabled."""
+        self._board_canvas.show_board(
+            board, results, grid, title=title,
+            rats_nest=self._rats_segments(board, results))
+
     def _on_view_change(self) -> None:
         """Switch the canvas to the selected view state."""
         inp = self._controls._full_input_path()
@@ -456,35 +502,30 @@ class App:
         mode = self._view_mode.get()
         if mode == "initial":
             if self._initial_board is not None:
-                self._board_canvas.show_board(
-                    self._initial_board, title=f"{title_base} (initial)")
+                self._render(self._initial_board, title=f"{title_base} (initial)")
             if self._initial_stats is not None:
                 self._metrics.set_initial_stats(self._initial_stats)
         elif mode == "current":
             snap = self._current_snap
             if snap is not None:
-                self._board_canvas.show_board(
-                    snap.board, snap.results, snap.grid,
-                    title=f"{title_base} (current)")
+                self._render(snap.board, snap.results, snap.grid,
+                             title=f"{title_base} (current)")
             elif self._initial_board is not None:
-                self._board_canvas.show_board(
-                    self._initial_board, title=f"{title_base} (initial)")
+                self._render(self._initial_board, title=f"{title_base} (initial)")
             if self._last_done is not None:
                 self._metrics.set_done(self._last_done)
         elif mode == "best":
             snap = self._best_snap
             if snap is not None:
-                self._board_canvas.show_board(
-                    snap.board, snap.results, snap.grid,
-                    title=f"{title_base} (best)")
+                self._render(snap.board, snap.results, snap.grid,
+                             title=f"{title_base} (best)")
             if self._last_done is not None:
                 self._metrics.set_done(self._last_done)
         elif mode == "overall_best":
             snap = self._overall_best_snap
             if snap is not None:
-                self._board_canvas.show_board(
-                    snap.board, snap.results, snap.grid,
-                    title=f"{title_base} (overall best)")
+                self._render(snap.board, snap.results, snap.grid,
+                             title=f"{title_base} (overall best)")
             if self._last_done is not None:
                 self._metrics.set_done(self._last_done)
 
