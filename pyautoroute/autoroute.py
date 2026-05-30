@@ -294,6 +294,48 @@ def _stamp(board, mode: str) -> None:
     pcb.stamp_comment(board, f"PyAutoRoute v{__version__} — {mode} {today}")
 
 
+def _footprint_constraint_summary(fp) -> str | None:
+    """One-line summary of a footprint's placement constraints, or ``None``.
+
+    Args:
+        fp: a `pyautoroute.pcb.Footprint`.
+
+    Returns:
+        A comma-separated string of the constraints the footprint carries
+        (``edge=<side>`` for an `Autoroute-edge` affinity, ``locked``, and/or
+        ``overlap`` for `Autoroute-overlap`), or ``None`` when it has none.
+    """
+    parts = []
+    if fp.edge_affinity:
+        parts.append(f"edge={fp.edge_affinity}")
+    if fp.locked:
+        parts.append("locked")
+    if fp.overlap_ok:
+        parts.append("overlap")
+    return ", ".join(parts) if parts else None
+
+
+def _print_footprint_constraints(board) -> None:
+    """Print the footprints that carry placement constraints (silent if none).
+
+    Lists each footprint flagged with an edge affinity, a lock, or an overlap-ok
+    flag, with its reference and the constraint(s). Prints nothing when no
+    footprint is constrained, so it never adds noise to a plain board.
+
+    Args:
+        board: the parsed board.
+    """
+    items = [(fp.ref, s) for fp in board.footprints
+             if (s := _footprint_constraint_summary(fp))]
+    if not items:
+        return
+    items.sort(key=lambda t: t[0])
+    width = max(len(ref) for ref, _ in items)
+    print("  constraints:")
+    for ref, summary in items:
+        print(f"    {ref:<{width}}  {summary}")
+
+
 def _results_to_nodes(board, grid: Grid, results) -> list:
     """Flatten routed results into the KiCad nodes to append to the board.
 
@@ -480,6 +522,8 @@ def run(args: argparse.Namespace, _print_version: bool = True) -> int:
         from pyautoroute.report import routing_stats
         init = routing_stats(board, rules)
         print(f"  initial board: {init.summary()}")
+
+    _print_footprint_constraints(board)
 
     cycles = max(1, getattr(args, "cycles", 1))
     if cycles > 1 and not args.place:

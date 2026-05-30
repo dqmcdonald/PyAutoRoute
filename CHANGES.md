@@ -7,6 +7,11 @@ a **patch** bump for fixes and small corrections. Newest first.
 
 ## 0.35.0
 
+- **Startup listing of footprint constraints.** When the CLI starts it now prints
+  any footprints that carry placement constraints — an `Autoroute-edge` affinity, a
+  lock, or `Autoroute-overlap` — with their reference and value (e.g. `J1
+  edge=left`), so you can confirm what's pinned before a run. Nothing is printed
+  when no footprint is constrained.
 - **Auto-add ground plane (`--ground-plane`)** — after routing, emit a GND copper
   pour (zone) boundary following the board outline (inset by margin). Adds connecting
   vias where GND copper is isolated to only one layer (e.g. SMD-only islands on F.Cu),
