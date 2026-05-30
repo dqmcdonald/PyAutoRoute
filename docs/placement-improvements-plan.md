@@ -115,7 +115,7 @@ faces left) and add a rotation-alignment term.
   term, the outline polygon passed in; all wired into `_move_delta`/`_cached_energy`.
 - `autoroute.py` — `--keep-outline`, `--place-edge-weight`; thread into `PlaceParams`.
 - `gui/controls.py` — keep-outline checkbox; edge-weight in Advanced.
-- `tests/test_placement.py` — (i) an `edge:left` part ends up left-most; (ii) `edge`
+- `tests/test_placement.py` — (i) an `edge-left` part ends up left-most; (ii) `edge`
   part ends on the perimeter; (iii) `--keep-outline` keeps all parts inside the
   parsed polygon and leaves the Edge.Cuts node unchanged in the output; (iv)
   `overlap` + `edge` combine; locked parts still fixed.
