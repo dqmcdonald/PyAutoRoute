@@ -5,6 +5,14 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.35.0
+
+- **Startup listing of footprint constraints.** When the CLI starts it now prints
+  any footprints that carry placement constraints — an `Autoroute-edge` affinity, a
+  lock, or `Autoroute-overlap` — with their reference and value (e.g. `J1
+  edge=left`), so you can confirm what's pinned before a run. Nothing is printed
+  when no footprint is constrained.
+
 ## 0.34.0
 
 - **Board comparison tool (`pyautoroute-compare`)** — compare 2–3 routed boards from

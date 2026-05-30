@@ -259,6 +259,11 @@ Footprint attributes steer it:
   (higher = harder). The two properties are independent, so a part can carry both.
   By default the "edge" is the regenerated outline's boundary; with `--keep-outline`
   it is the board's existing Edge.Cuts (below).
+
+On startup the CLI lists any footprints carrying these constraints — those with an
+edge affinity, a lock, or the overlap flag — with their reference and value (e.g.
+`J1  edge=left`), so you can confirm what's pinned before a run. Nothing is printed
+when no footprint is constrained.
 - **`--keep-outline`** — by default `--place` discards the board's `Edge.Cuts` and
   regenerates a bounding rectangle around the result. Pass `--keep-outline` to
   instead **keep the existing outline** and contain the footprints within it — for
