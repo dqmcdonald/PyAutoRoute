@@ -21,6 +21,16 @@ _LAYER_COLOR = {"F.Cu": "#cc3333", "B.Cu": "#3366cc"}
 _FP_OUTLINE_LAYERS = {"F.CrtYd", "B.CrtYd", "F.Fab", "B.Fab", "F.SilkS", "B.SilkS"}
 _FP_OUTLINE_COLOR = "#888888"
 
+# Autoroute property marker colours.
+_EDGE_COLOR = "#ff8800"     # orange — edge-affinity arrows / star
+_OVERLAP_COLOR = "#aa00cc"  # purple — overlap-ok ring
+
+# Direction vectors for edge affinity (in board coordinates, Y-down).
+# "top" = smaller Y → negative dy; "bottom" = larger Y → positive dy.
+_EDGE_DIR = {"left": (-1.0, 0.0), "right": (1.0, 0.0),
+             "top": (0.0, -1.0), "bottom": (0.0, 1.0)}
+_ARROW_MM = 2.0   # arrow length in mm
+
 # Silkscreen text layers (both old and new KiCad naming).
 _SILK_LAYERS = {"F.SilkS", "B.SilkS", "F.Silkscreen", "B.Silkscreen"}
 _SILK_TEXT_COLOR = {"front": "#aa8800", "back": "#007799"}
@@ -221,6 +231,44 @@ def _silk_text_items(board: Board):
             yield bx, by, content, angle, lay.startswith("B.")
 
 
+def _draw_autoroute_markers(ax, board: Board) -> None:
+    """Draw markers for footprints that carry Autoroute KiCad properties.
+
+    - Directional edge affinity → orange arrow pointing toward the target edge.
+    - Edge-any affinity → orange star at the footprint centre.
+    - Overlap-ok → open purple circle at the footprint centre.
+    """
+    any_xs: list[float] = []
+    any_ys: list[float] = []
+    ol_xs: list[float] = []
+    ol_ys: list[float] = []
+
+    for fp in board.footprints:
+        if fp.edge_affinity:
+            if fp.edge_affinity == "any":
+                any_xs.append(fp.x)
+                any_ys.append(fp.y)
+            else:
+                dx, dy = _EDGE_DIR.get(fp.edge_affinity, (0.0, 0.0))
+                ax.annotate(
+                    "", xy=(fp.x + dx * _ARROW_MM, fp.y + dy * _ARROW_MM),
+                    xytext=(fp.x, fp.y),
+                    arrowprops=dict(arrowstyle="-|>", color=_EDGE_COLOR,
+                                    lw=1.5, mutation_scale=10),
+                    zorder=6,
+                )
+        if fp.overlap_ok:
+            ol_xs.append(fp.x)
+            ol_ys.append(fp.y)
+
+    if any_xs:
+        ax.plot(any_xs, any_ys, "*", color=_EDGE_COLOR,
+                ms=9, zorder=6, alpha=0.9, linestyle="none")
+    if ol_xs:
+        ax.plot(ol_xs, ol_ys, "o", mfc="none", mec=_OVERLAP_COLOR,
+                ms=10, mew=1.5, zorder=6, alpha=0.9, linestyle="none")
+
+
 def draw_board(ax, board: Board, *, results=None, grid=None,
                title: str | None = None) -> None:
     """Paint a board (outline, pads, tracks, vias) onto a matplotlib Axes.
@@ -284,6 +332,9 @@ def draw_board(ax, board: Board, *, results=None, grid=None,
         ax.text(tx, ty, content, fontsize=6, color=color,
                 ha="center", va="center", rotation=angle,
                 rotation_mode="anchor", clip_on=True)
+
+    if board.footprints:
+        _draw_autoroute_markers(ax, board)
 
     ax.set_aspect("equal")
     ax.invert_yaxis()      # KiCad Y points down
