@@ -5,6 +5,16 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.35.0
+
+- **Auto-add ground plane (`--ground-plane`)** — after routing, emit a GND copper
+  pour (zone) boundary following the board outline (inset by margin). Adds connecting
+  vias where GND copper is isolated to only one layer (e.g. SMD-only islands on F.Cu),
+  and optional stitching vias (`--stitch-vias`) to tie the planes together. KiCad
+  computes the actual fill; PyAutoRoute emits only the boundary and the connecting
+  vias. Works with `--place` and `--cycles`. Flags as "self-check excludes the pour"
+  since KiCad's fill (delegated to kicad-cli) is the DRC authority.
+
 ## 0.34.0
 
 - **Board comparison tool (`pyautoroute-compare`)** — compare 2–3 routed boards from

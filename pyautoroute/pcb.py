@@ -890,6 +890,50 @@ def make_via(board: Board, x, y, size, drill, layer_a, layer_b, net) -> SList:
     ])
 
 
+def make_zone_node(board: Board, layer: str, net: str,
+                   pts: list[tuple[float, float]], *,
+                   clearance: float = 0.5,
+                   min_thickness: float = 0.25) -> SList:
+    """Build a ``(zone ...)`` copper-pour boundary node (no filled_polygon — KiCad fills it).
+
+    Args:
+        board: the board (for net-reference style).
+        layer: the zone layer (e.g. "B.Cu", "F.Cu").
+        net: the net name (e.g. "GND").
+        pts: list of (x, y) boundary vertices (exterior ring; drop repeated close point).
+        clearance: thermal-relief clearance and connect_pads clearance (mm).
+        min_thickness: minimum copper strand thickness (mm).
+
+    Returns:
+        A ``(zone ...)`` node with net, layer, hatch, fill, and polygon outline.
+        The ``(filled_polygon ...)`` is omitted — KiCad adds it on refill.
+    """
+    # Build (pts (xy x y) ...)
+    pts_node = SList([sexpr.sym("pts")])
+    for x, y in pts:
+        pts_node.append(SList([sexpr.sym("xy"), sexpr.number(x), sexpr.number(y)]))
+
+    return SList([
+        sexpr.sym("zone"),
+        _net_ref_node(board, net),
+        SList([sexpr.sym("layer"), sexpr.string(layer)]),
+        SList([sexpr.sym("uuid"), sexpr.string(str(__import__("uuid").uuid4()))]),
+        SList([sexpr.sym("hatch"), sexpr.sym("edge"), sexpr.number(0.5)]),
+        SList([
+            sexpr.sym("connect_pads"),
+            SList([sexpr.sym("clearance"), sexpr.number(clearance)])
+        ]),
+        SList([sexpr.sym("min_thickness"), sexpr.number(min_thickness)]),
+        SList([
+            sexpr.sym("fill"), sexpr.sym("yes"),
+            SList([sexpr.sym("thermal_gap"), sexpr.number(clearance)]),
+            SList([sexpr.sym("thermal_bridge_width"), sexpr.number(clearance)]),
+            SList([sexpr.sym("island_removal_mode"), sexpr.number(0)])
+        ]),
+        SList([sexpr.sym("polygon"), SList([pts_node])]),
+    ])
+
+
 def make_edge_rect(x1: float, y1: float, x2: float, y2: float,
                    width: float = 0.05) -> SList:
     """Build a ``(gr_rect ...)`` board-outline node on ``Edge.Cuts``.
