@@ -397,7 +397,7 @@ otherwise, silent under `--quiet`), the metrics report, and the post-write
 self-check. `default_output` names the file for the run — `_routed`,
 `_placed_routed` (`--place`), or `_placed` (`--place-only`). `--place-only` runs
 the placement pass then writes the placed board and returns *before* the
-netlist/grid/route phases; `_finish` (debug plot + timing + log close) and the
+netlist/grid/route phases; `_finish` (timing + log close) and the
 self-check are shared with the routing path. Exit code 2 if the self-check finds a
 violation. The version
 (`pyautoroute.__version__`, read from the installed package metadata) is printed
@@ -422,12 +422,16 @@ Two diagnostic options hook into this flow:
   writes regardless of `--quiet`. Bare `--log` uses `<output>.log`.
 
 ### `visualize.py` — board rendering
-`draw_board(ax, board, *, results=None, grid=None, title=None)` paints the outline,
-pads, tracks, and vias onto a caller-supplied matplotlib Axes (clearing it first, so
-it can refresh a live view). `render()` is a thin Agg wrapper around it for the
-`--debug-plot` PNG; the planned GUI canvas embeds a Figure and calls `draw_board`
-directly. Passing `results` (+ `grid`) draws an in-progress routing straight from the
-router's node paths, before any segments are written to the board.
+`draw_board(ax, board, *, results=None, grid=None, rats_nest=None, title=None)`
+paints the outline, pads, tracks, and vias onto a caller-supplied matplotlib Axes
+(clearing it first, so it can refresh a live view). It backs the GUI canvas
+(`gui.canvas.BoardCanvas` embeds a Figure and calls it directly); matplotlib is a
+GUI-only dependency. Passing `results` (+ `grid`) draws an in-progress routing
+straight from the router's node paths, before any segments are written to the
+board; passing `rats_nest` (a list of `(x1, y1, x2, y2)` airwire segments) overlays
+the unrouted connections as thin dashed lines beneath the copper — the GUI's
+"Rats-nest" view toggle (`gui.app` computes the segments via `netlist.build_connections`,
+filtering to the connections whose `results[i]` is `None`).
 
 ### `tune.py` — parameter sweep & scoring
 Scores a routing with a single objective

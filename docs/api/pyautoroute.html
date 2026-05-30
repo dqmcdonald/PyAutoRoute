@@ -511,7 +511,12 @@ keep-best gate and decayed blend are the guardrails).</p>
 <code>PipelineHooks</code> mapping progress to its live display and log. The GUI worker calls
 the <em>same</em> two functions with an event-posting hooks object, so the place→route
 orchestration exists once for both front-ends (the duplication <code>gui-plan.md</code>
-flagged is gone).</li>
+flagged is gone). The GUI also exposes <strong>best-of-cycles</strong> and <strong>congestion
+feedback</strong>: when its <em>Cycles</em> control is &gt; 1 (place+route mode), the worker drives
+<code>pipeline.run_cycle</code> in the same loop the CLI's <code>_run_cycles</code> uses — reusing the
+shared cycle unit rather than re-implementing place+route — with a leaner
+<code>CycleHooks</code> posting per-cycle <code>Phase</code>/<code>Progress</code>/<code>BoardSnap</code> events and the
+<em>Congestion feedback</em> checkbox accumulating the field exactly as the CLI does.</li>
 </ul>
 
 <p>Argument parsing, the parse → (place) → grid → route → (anneal) → write flow, the live
@@ -520,7 +525,7 @@ otherwise, silent under <code>--quiet</code>), the metrics report, and the post-
 self-check. <code>default_output</code> names the file for the run — <code>_routed</code>,
 <code>_placed_routed</code> (<code>--place</code>), or <code>_placed</code> (<code>--place-only</code>). <code>--place-only</code> runs
 the placement pass then writes the placed board and returns <em>before</em> the
-netlist/grid/route phases; <code>_finish</code> (debug plot + timing + log close) and the
+netlist/grid/route phases; <code>_finish</code> (timing + log close) and the
 self-check are shared with the routing path. Exit code 2 if the self-check finds a
 violation. The version
 (<code>pyautoroute.__version__</code>, read from the installed package metadata) is printed
@@ -549,12 +554,16 @@ writes regardless of <code>--quiet</code>. Bare <code>--log</code> uses <code>&l
 
 <h3 id="visualizepy-board-rendering"><code>visualize.py</code> — board rendering</h3>
 
-<p><code>draw_board(ax, board, *, results=None, grid=None, title=None)</code> paints the outline,
-pads, tracks, and vias onto a caller-supplied matplotlib Axes (clearing it first, so
-it can refresh a live view). <code>render()</code> is a thin Agg wrapper around it for the
-<code>--debug-plot</code> PNG; the planned GUI canvas embeds a Figure and calls <code>draw_board</code>
-directly. Passing <code>results</code> (+ <code>grid</code>) draws an in-progress routing straight from the
-router's node paths, before any segments are written to the board.</p>
+<p><code>draw_board(ax, board, *, results=None, grid=None, rats_nest=None, title=None)</code>
+paints the outline, pads, tracks, and vias onto a caller-supplied matplotlib Axes
+(clearing it first, so it can refresh a live view). It backs the GUI canvas
+(<code>gui.canvas.BoardCanvas</code> embeds a Figure and calls it directly); matplotlib is a
+GUI-only dependency. Passing <code>results</code> (+ <code>grid</code>) draws an in-progress routing
+straight from the router's node paths, before any segments are written to the
+board; passing <code>rats_nest</code> (a list of <code>(x1, y1, x2, y2)</code> airwire segments) overlays
+the unrouted connections as thin dashed lines beneath the copper — the GUI's
+"Rats-nest" view toggle (<code>gui.app</code> computes the segments via <code>netlist.build_connections</code>,
+filtering to the connections whose <code>results[i]</code> is <code>None</code>).</p>
 
 <h3 id="tunepy-parameter-sweep-scoring"><code>tune.py</code> — parameter sweep &amp; scoring</h3>
 

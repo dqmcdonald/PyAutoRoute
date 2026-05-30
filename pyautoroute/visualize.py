@@ -1,9 +1,10 @@
 """Matplotlib rendering of a (routed) board.
 
-`draw_board` paints a board onto a caller-supplied Axes so the same routine backs
-both the ``--debug-plot`` PNG (`render`) and a live, embedded GUI canvas. With
-``results`` (+ ``grid``) it draws an in-progress routing straight from the router's
-node paths, before any segments have been written to the board.
+`draw_board` paints a board onto a caller-supplied Axes; it backs the live,
+embedded GUI canvas (`pyautoroute.gui.canvas`). With ``results`` (+ ``grid``) it
+draws an in-progress routing straight from the router's node paths, before any
+segments have been written to the board, and with ``rats_nest`` it overlays the
+unrouted airwires (`pyautoroute.gui.app`'s "Rats-nest" toggle).
 """
 
 from __future__ import annotations
@@ -34,6 +35,9 @@ _ARROW_MM = 4.0   # arrow length in mm
 # Silkscreen text layers (both old and new KiCad naming).
 _SILK_LAYERS = {"F.SilkS", "B.SilkS", "F.Silkscreen", "B.Silkscreen"}
 _SILK_TEXT_COLOR = {"front": "#aa8800", "back": "#007799"}
+
+# Rats-nest airwires — thin dashed, neutral, subordinate to copper.
+_RATSNEST_COLOR = "#9a9a9a"
 
 
 def _draw_results(ax, grid, results) -> None:
@@ -270,7 +274,7 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
 
 
 def draw_board(ax, board: Board, *, results=None, grid=None,
-               title: str | None = None) -> None:
+               rats_nest=None, title: str | None = None) -> None:
     """Paint a board (outline, pads, tracks, vias) onto a matplotlib Axes.
 
     Layers are colour-coded (F.Cu red, B.Cu blue) and the Y axis is inverted to
@@ -284,6 +288,9 @@ def draw_board(ax, board: Board, *, results=None, grid=None,
             board's committed segments (requires `grid`); used for live rendering
             during routing, before the tracks are written to the board.
         grid: the routing grid backing `results` (node -> coordinate conversion).
+        rats_nest: optional airwire segments ``[(x1, y1, x2, y2), …]`` to overlay
+            as thin dashed lines (the unrouted connections); ``None``/empty draws
+            nothing. Drawn beneath the copper so tracks stay legible.
         title: optional Axes title.
     """
     ax.clear()
@@ -307,6 +314,12 @@ def draw_board(ax, board: Board, *, results=None, grid=None,
         pc = PolyCollection(polys, facecolor=_LAYER_COLOR.get(layer, "#999"),
                             alpha=0.45, edgecolor="none")
         ax.add_collection(pc)
+
+    if rats_nest:
+        air = [[(x1, y1), (x2, y2)] for (x1, y1, x2, y2) in rats_nest]
+        ax.add_collection(LineCollection(
+            air, colors=_RATSNEST_COLOR, linewidths=0.6,
+            linestyles="dashed", alpha=0.6, zorder=0.5))
 
     if results is not None and grid is not None:
         _draw_results(ax, grid, results)
@@ -340,21 +353,3 @@ def draw_board(ax, board: Board, *, results=None, grid=None,
     ax.invert_yaxis()      # KiCad Y points down
     if title is not None:
         ax.set_title(title)
-
-
-def render(board: Board, out_path: str, title: str = "PyAutoRoute") -> None:
-    """Write a matplotlib PNG of the board: outline, pads, tracks, and vias.
-
-    Args:
-        board: the (routed) board to render.
-        out_path: destination path for the PNG.
-        title: the plot title.
-    """
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(9, 10))
-    draw_board(ax, board, title=title)
-    fig.savefig(out_path, dpi=85, bbox_inches="tight")
-    plt.close(fig)

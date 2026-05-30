@@ -31,10 +31,11 @@ class BoardCanvas(ttk.Frame):
         self._has_board = False
 
     def show_board(self, board, results=None, grid=None,
-                   title: str | None = None) -> None:
+                   title: str | None = None, rats_nest=None) -> None:
         """Render *board* onto the canvas (may be called from the main thread)."""
         self._has_board = True
-        draw_board(self._ax, board, results=results, grid=grid, title=title)
+        draw_board(self._ax, board, results=results, grid=grid,
+                   rats_nest=rats_nest, title=title)
         self._ax.axis("on")
         self._mpl.draw()
 
