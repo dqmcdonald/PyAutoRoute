@@ -63,6 +63,7 @@ class Config:
     temps: tuple[float, float] = (4.0, 0.05)
     iters: int | None = None
     time_budget: float | None = None
+    search_margin: float | None = None   # A* search box margin (mm); None = unbounded
 
 
 def evaluate(board, rules, cfg: Config, seed: int, grid: Grid | None = None) -> TuneMetrics:
@@ -82,7 +83,8 @@ def evaluate(board, rules, cfg: Config, seed: int, grid: Grid | None = None) -> 
     if grid is None:
         grid = Grid(board, rules, pitch)
     conns = netlist.build_connections(board)
-    params = router.RouteParams(via_cost=cfg.via_weight)
+    params = router.RouteParams(via_cost=cfg.via_weight,
+                                search_margin=cfg.search_margin)
     state = router.RoutingState(grid)
     t0 = time.time()
     res = router.route_all(state, conns, netlist.greedy_order(conns), params)
@@ -169,6 +171,65 @@ def best_config(scored: list[ConfigScore]) -> Config:
         The best `Config`.
     """
     return min(scored, key=lambda cs: cs.median_score).config
+
+
+def probe_search_margin(board, rules, cfg: Config, seed: int,
+                        tolerance: float = 0.02) -> float | None:
+    """Find the smallest search_margin that matches unbounded routing quality.
+
+    Runs the router once with ``search_margin=None`` (unbounded) to establish a
+    baseline score, then tries progressively tighter margins — derived from the
+    board diagonal — returning the smallest that stays within *tolerance* of the
+    baseline. A smaller margin speeds up routing without sacrificing quality.
+
+    Args:
+        board: the parsed board.
+        rules: its design rules.
+        cfg: the best config from the main sweep (grid_mult and via_weight used;
+            its own search_margin is ignored).
+        seed: the routing seed.
+        tolerance: accept a margin if its score is within this fraction above the
+            unbounded baseline (default 0.02 = 2%).
+
+    Returns:
+        The recommended search_margin in mm, or ``None`` if unbounded is best
+        (e.g. the board is too small for a margin to matter, or every tested
+        margin degrades quality).
+    """
+    import math
+
+    pitch = default_pitch(rules) * cfg.grid_mult
+    grid = Grid(board, rules, pitch)
+
+    # Derive candidate margins from the board diagonal.
+    minx, miny, maxx, maxy = grid.outline.bounds
+    diagonal = math.hypot(maxx - minx, maxy - miny)
+
+    # Fractions of diagonal: from loose (50%) down to tight (5%).
+    # Also always include a few absolute minimums in case the board is tiny.
+    fractions = [0.5, 0.25, 0.15, 0.1, 0.05]
+    candidates = sorted({max(2.0, round(diagonal * f, 1)) for f in fractions},
+                        reverse=True)  # largest first
+
+    # Baseline: unbounded search
+    base_cfg = Config(grid_mult=cfg.grid_mult, via_weight=cfg.via_weight,
+                      iters=cfg.iters, time_budget=cfg.time_budget,
+                      search_margin=None)
+    base_metrics = evaluate(board, rules, base_cfg, seed, grid=grid)
+    base_score = score(base_metrics)
+    threshold = base_score * (1 + tolerance)
+
+    best_margin = None   # None = unbounded is the fallback
+    for m in candidates:
+        test_cfg = Config(grid_mult=cfg.grid_mult, via_weight=cfg.via_weight,
+                          iters=cfg.iters, time_budget=cfg.time_budget,
+                          search_margin=m)
+        m_metrics = evaluate(board, rules, test_cfg, seed, grid=grid)
+        m_score = score(m_metrics)
+        if m_score <= threshold:
+            best_margin = m   # this margin is acceptable; try something tighter
+
+    return best_margin
 
 
 # Default search space for the CLI / --auto probe: a few grid pitches and via

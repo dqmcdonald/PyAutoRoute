@@ -647,9 +647,15 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         rep.done()
         bm = scored[0].metrics[0]
         total = bm.routed + bm.unrouted
+
+        rep.phase("auto: probing search margin")
+        suggested_margin = tune.probe_search_margin(board, rules, best, seed=args.seed)
+        rep.done()
+
         chosen = (f"auto: best probe grid={chosen_pitch} mm (x{best.grid_mult}), "
-                  f"via-weight={best.via_weight} -> {bm.routed}/{total} routed, "
-                  f"{bm.length:.0f} mm, {bm.vias} vias")
+                  f"via-weight={best.via_weight}, "
+                  f"search-margin={suggested_margin if suggested_margin is not None else 'unbounded'}"
+                  f" -> {bm.routed}/{total} routed, {bm.length:.0f} mm, {bm.vias} vias")
         print(f"\n  {chosen}")
         rep.log(chosen)
         apply_auto = True
@@ -658,6 +664,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
                 in ("", "y", "yes")
         if apply_auto:
             args.grid, args.via_weight, pitch = chosen_pitch, best.via_weight, chosen_pitch
+            if suggested_margin is not None:
+                args.search_margin = suggested_margin
         else:
             print("  auto: keeping the given settings")
 
