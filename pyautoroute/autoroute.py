@@ -336,6 +336,24 @@ def _print_footprint_constraints(board) -> None:
         print(f"    {ref:<{width}}  {summary}")
 
 
+def _log_footprint_constraints(rep: Reporter, board) -> None:
+    """Log the footprints that carry placement constraints (silent if none).
+
+    Args:
+        rep: Reporter instance for logging.
+        board: the parsed board.
+    """
+    items = [(fp.ref, s) for fp in board.footprints
+             if (s := _footprint_constraint_summary(fp))]
+    if not items:
+        return
+    items.sort(key=lambda t: t[0])
+    width = max(len(ref) for ref, _ in items)
+    rep.log("constraints:")
+    for ref, summary in items:
+        rep.log(f"  {ref:<{width}}  {summary}")
+
+
 def _results_to_nodes(board, grid: Grid, results) -> list:
     """Flatten routed results into the KiCad nodes to append to the board.
 
@@ -535,6 +553,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         print(f"  initial board: {init.summary()}")
 
     _print_footprint_constraints(board)
+    _log_footprint_constraints(rep, board)
 
     cycles = max(1, getattr(args, "cycles", 1))
     if cycles > 1 and not args.place:
