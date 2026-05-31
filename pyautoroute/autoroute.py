@@ -937,8 +937,21 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
 
     rep.phase("writing placed + routed board")
     _stamp(sel_board, "placed + routed")
-    pcb.write_board(sel_board, out_path,
-                    new_nodes=_results_to_nodes(sel_board, grid, final_results),
+    new_nodes = _results_to_nodes(sel_board, grid, final_results)
+    if args.ground_plane:
+        from . import groundplane
+        margin = args.ground_plane_margin or rules.default_class.clearance
+        layers = ["F.Cu", "B.Cu"] if args.ground_plane_layer == "both" else [args.ground_plane_layer]
+        for layer in layers:
+            gp_nodes, gp_warns = groundplane.build(
+                sel_board, rules, net=args.ground_net, layer=layer, margin=margin,
+                stitch_pitch=args.stitch_vias
+            )
+            new_nodes.extend(gp_nodes)
+            for w in gp_warns:
+                rep.log(f"ground-plane: {w}")
+                print(f"  ⚠ ground-plane: {w}")
+    pcb.write_board(sel_board, out_path, new_nodes=new_nodes,
                     strip_free_vias=True)
 
     if fill_nets or args.ground_plane:
