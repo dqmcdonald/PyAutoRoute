@@ -471,7 +471,8 @@ def _place_params_from_args(args, board, rules, rep):
     return pp, keep_outline
 
 
-def run(args: argparse.Namespace, _print_version: bool = True) -> int:
+def run(args: argparse.Namespace, _print_version: bool = True,
+        _startup_log_params: tuple | None = None) -> int:
     """Execute the full pipeline: parse -> grid -> route -> (anneal) -> write.
 
     Writes the routed board, optional snapshots and log, runs the clearance
@@ -482,6 +483,9 @@ def run(args: argparse.Namespace, _print_version: bool = True) -> int:
         args: the parsed CLI namespace (see `build_parser`).
         _print_version: if False, suppress the opening ``PyAutoRoute vX.Y``
             line (used by `main` when the settings header already printed it).
+        _startup_log_params: optional tuple of (args_cli, parser, pure_defaults,
+            proj_ini_path, cfg_path, proj_ini_values, cfg_values) to log the
+            startup header. When provided, logs the header to the log file.
 
     Returns:
         Process exit code: 0 if the self-check is clean, 2 if it finds a
@@ -495,6 +499,13 @@ def run(args: argparse.Namespace, _print_version: bool = True) -> int:
     rep = Reporter(quiet=args.quiet, log_path=_resolve_log_path(args, out_path))
     if _print_version:
         print(f"PyAutoRoute {__version__}")
+
+    if _startup_log_params:
+        (args_cli, parser, pure_defaults, proj_ini_path, cfg_path,
+         proj_ini_values, cfg_values) = _startup_log_params
+        _log_startup_header(rep, args, args_cli, parser, pure_defaults,
+                            proj_ini_path, cfg_path,
+                            proj_ini_values, cfg_values)
 
     rep.phase("parsing board + rules")
     board = pcb.load_board(input_path)
@@ -1265,6 +1276,74 @@ def _print_settings_header(
     sys.stdout.flush()
 
 
+def _log_startup_header(
+    rep: Reporter,
+    args: argparse.Namespace,
+    args_cli: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    pure_defaults: dict,
+    proj_ini_path: "Path | None" = None,
+    cfg_path: "Path | None" = None,
+    proj_ini_values: dict | None = None,
+    cfg_values: dict | None = None,
+) -> None:
+    """Log the startup header: version, config files, non-default settings table.
+
+    Args:
+        rep: Reporter instance for logging.
+        args: effective parsed namespace (defaults + ini + CLI).
+        args_cli: parsed namespace with no ini defaults applied (CLI-only).
+        parser: the CLI parser (for action metadata).
+        pure_defaults: ``{dest: default}`` captured before any ``set_defaults``.
+        proj_ini_path: path to the auto-loaded project ini, or ``None``.
+        cfg_path: path to the ``--config`` ini, or ``None``.
+        proj_ini_values: settings loaded from the project ini.
+        cfg_values: settings loaded from ``--config``.
+    """
+    rep.log(f"PyAutoRoute {__version__}")
+    if proj_ini_path is not None:
+        rep.log(f"  Project ini:  {proj_ini_path}")
+    if cfg_path is not None:
+        rep.log(f"  --config:     {cfg_path}")
+
+    actions = _configurable_actions(parser)
+    rows: list[tuple[str, str, str]] = []
+    for dest, action in actions.items():
+        effective = getattr(args, dest, None)
+        pure_def = pure_defaults.get(dest, action.default)
+        if effective == pure_def:
+            continue
+
+        long_opt = next((s for s in action.option_strings if s.startswith("--")),
+                        action.option_strings[0])
+        val_str = _format_config_value(action, effective)
+
+        cli_val = getattr(args_cli, dest, pure_def)
+        if cli_val != pure_def:
+            source = "cli"
+        elif (cfg_values and dest in cfg_values and
+              effective == cfg_values[dest]):
+            source = cfg_path.name if cfg_path else "ini"
+        elif proj_ini_values and dest in proj_ini_values:
+            source = proj_ini_path.name if proj_ini_path else "ini"
+        else:
+            source = "ini"
+
+        rows.append((long_opt, val_str, source))
+
+    if rows:
+        rep.log("")
+        w_opt = max((len(r[0]) for r in rows), default=len("Option"))
+        w_val = max((len(r[1]) for r in rows), default=len("Value"))
+        w_opt = max(w_opt, len("Option"))
+        w_val = max(w_val, len("Value"))
+        rep.log(f"Option{' ' * (w_opt - 6)}  Value{' ' * (w_val - 5)}  Source")
+        rep.log(f"{'-' * w_opt}  {'-' * w_val}  ------")
+        for opt, val, src in rows:
+            rep.log(f"{opt:<{w_opt}}  {val:<{w_val}}  {src}")
+        rep.log("")
+
+
 def write_config(parser: argparse.ArgumentParser, args, path: str | Path) -> None:
     """Write the effective settings to an INI file with per-option comments.
 
@@ -1556,7 +1635,11 @@ def main(argv=None) -> int:
     _print_settings_header(args, args_cli, parser, pure_defaults,
                            proj_ini_path, cfg_path,
                            proj_ini_values, cfg_values)
-    return run(args, _print_version=False)
+    startup_log_params = (args_cli, parser, pure_defaults,
+                          proj_ini_path, cfg_path,
+                          proj_ini_values, cfg_values)
+    return run(args, _print_version=False,
+               _startup_log_params=startup_log_params)
 
 
 if __name__ == "__main__":
