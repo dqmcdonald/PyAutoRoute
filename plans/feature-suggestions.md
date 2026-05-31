@@ -192,7 +192,6 @@ If implementation effort is to be prioritized:
 
 1. **Bounded A\* search** — biggest performance win; `architecture.md:459` already
    names it the highest-value next optimisation.
-2. **Partial re-routing (`--nets` / `--keep-existing`)** — biggest workflow win,
-   built on existing per-connection occupancy.
+2. ✅ **Partial re-routing** — shipped as `--existing-routes preserve`.
 3. **Differential pairs** — biggest "real PCB" capability gap; unsupported
    end-to-end today.
