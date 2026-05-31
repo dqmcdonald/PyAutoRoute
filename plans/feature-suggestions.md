@@ -12,15 +12,19 @@ back for their own residual TODOs.
 
 > **Recently landed** (see `CHANGES.md`):
 > - **Bounded A\* search** (`--search-margin`) — shipped in 0.25.0.
-> - **Vectorised A\* overlay** — shipped in 0.25.3; the profiling that motivated
->   it points to caching the static free mask / heuristic field across reroutes as
->   the next perf step.
->
-> **In design:**
-> - **Edge-aware placement + place↔route coupling** — see
->   [`placement-improvements-plan.md`](placement-improvements-plan.md): edge-affinity
->   for connectors, a `--keep-outline` mode, best-of-cycles selection on the routed
->   result, and congestion feedback into re-placement.
+> - **Vectorised A\* overlay** — shipped in 0.25.3.
+> - **Ground plane** (`--ground-plane`, `--stitch-vias`, `--ground-plane-layer`) —
+>   shipped; see [`ground-plane-plan.md`](ground-plane-plan.md).
+> - **Board comparison** (`pyautoroute-compare`) — shipped; see
+>   [`board-comparison-plan.md`](board-comparison-plan.md).
+> - **Partial / incremental re-routing** (`--existing-routes preserve`) — shipped;
+>   keeps existing copper, detects pre-routed connections via union-find, routes
+>   only the remainder. Fixes the doubled-tracks bug on re-route (`clear` mode
+>   now also strips segments, not just vias). Closes item #3 below.
+> - **Edge-aware placement + place↔route coupling** — shipped; see
+>   [`placement-improvements-plan.md`](placement-improvements-plan.md).
+> - **Interactive footprint constraints** (GUI click-to-set edge/lock/overlap) —
+>   shipped; see [`footprint-interaction-plan.md`](footprint-interaction-plan.md).
 
 ## Context
 
@@ -59,16 +63,14 @@ net-class width/gap. Detect pairs in `netlist.py`, parse the two class fields in
 `rules.py`, then route the partner under a coupling constraint in the A\* cost
 model. High value; large but self-contained.
 
-### 3. Incremental / partial re-routing ("route only these nets")
+### 3. ✅ Incremental / partial re-routing (`--existing-routes preserve`) — **shipped**
 
-Today the writer strips all free vias and reroutes everything. A
-`--keep-existing` / `--nets PATTERN` mode would lock already-routed segments as
-obstacles and route only the named/unrouted nets, making the tool usable
-iteratively on a partly hand-routed board. The grid already supports static
-obstacles from existing copper (`geometry.board_obstacles`, `grid.py:246-259`),
-and `RoutingState` already keys occupancy per connection with exact rip-up
-(`router.py:124-197`), so the foundations exist. Biggest workflow win, moderate
-architectural risk.
+`--existing-routes {clear,preserve}` (default `clear`). In `preserve` mode: keep
+existing copper, run a layer-aware union-find over segments/vias/THT pads to
+classify each MST connection as pre-routed or unrouted, pass only unrouted
+connections to the router, and treat all existing copper as obstacles. `clear` mode
+(the new default) also strips segments before writing — fixing the doubled-tracks
+bug that occurred when re-routing an already-routed board.
 
 ### 4. Per-net-class clearance masks
 

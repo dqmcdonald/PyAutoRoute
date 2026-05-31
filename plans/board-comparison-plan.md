@@ -1,7 +1,11 @@
 # Plan: compare routed boards (`pyautoroute-compare`)
 
-Status: **design — not yet implemented.** Target a single shippable feature
-(new console script, minor version bump, docs + `CHANGES.md`).
+Status: **✅ Implemented.** `pyautoroute-compare` shipped as a console script.
+Post-ship fix: `_resolve_pro` crashed with `TypeError: Path(None)` when no
+`.kicad_pro` sibling existed (e.g. `Test1_routed.kicad_pcb` → looked for
+`Test1_routed.kicad_pro`, not `Test1.kicad_pro`). Fixed: scan the board
+directory for any `*.kicad_pro` and fall back to default rules when none found;
+`load_rules` now accepts `None`.
 
 ## Goal
 

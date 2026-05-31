@@ -1,7 +1,8 @@
 # Plan: auto-add a ground plane after routing (`--ground-plane`)
 
-Status: **design — not yet implemented.** Target a single shippable feature
-(new CLI option, minor version bump, docs + `CHANGES.md`).
+Status: **✅ Implemented.** All three phases shipped. Several bugs subsequently
+found and fixed (thermal bridge width, connectivity via conflict detection,
+THT pad connectivity). See `CHANGES.md` for full history.
 
 ## Goal
 
@@ -230,16 +231,24 @@ KiCad fill, which needs kicad-cli)
 
 ## Phasing
 
-1. **Pour boundary + refill** — `--ground-plane` adds a single back-layer GND zone
+1. ✅ **Pour boundary + refill** — `--ground-plane` adds a single back-layer GND zone
    (outline inset by margin), existing-pour guard, GND auto-detect, force-refill.
-   Usable immediately for the common case (through-hole GND already reaches B.Cu).
-   Tests: node round-trip, inset, guard, detect.
-2. **Connectivity vias** — guarantee every GND component reaches the pour layer.
-   Tests on an isolated-SMD-GND board.
-3. **Stitching vias + multi-layer** — `--stitch-vias`, `--ground-plane-layer
-   both/front`.
+2. ✅ **Connectivity vias** — guarantee every GND component reaches the pour layer.
+3. ✅ **Stitching vias + multi-layer** — `--stitch-vias`, `--ground-plane-layer both/front`.
 
-Each phase is independently shippable.
+## Post-ship fixes
+
+- **`thermal_bridge_width < min_thickness`**: KiCad silently dropped thermal relief
+  spokes narrower than `min_thickness`, leaving THT pads unconnected. Fixed: clamp
+  `thermal_bridge_width` to `max(clearance, min_thickness)`.
+- **Connectivity via shorting B.Cu traces**: vias were placed at SMD pad centres
+  without checking for other-net copper already routed on the pour layer. Fixed:
+  build a B.Cu obstacle index (including freshly-routed `new_nodes` not yet in the
+  board object) and reject conflicting positions; spiral-search outward for an
+  alternative when the pad centre conflicts.
+- **Component-level layer check**: the union-find used a per-position check instead
+  of per-component, incorrectly flagging components containing THT pads as needing
+  connectivity vias. Fixed: aggregate layers across all positions in each component.
 
 ## Risks & open questions
 

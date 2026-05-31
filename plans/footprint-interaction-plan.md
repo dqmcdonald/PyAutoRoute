@@ -1,7 +1,10 @@
 # Plan: interactive footprint constraints in the GUI
 
-Status: **design — not yet implemented.** Target a single shippable feature
-(minor version bump, e.g. `0.32.0 → 0.33.0`, with docs + `CHANGES.md`).
+Status: **✅ Implemented.** Click a footprint in the Initial view to set
+edge affinity, locked, and overlap-ok constraints; canvas markers update
+immediately; "Save constraints to board" writes back with a `.bak` backup.
+Implemented via `pcb.footprint_at`, `pcb.set_footprint_edge/locked/overlap`,
+and the context-menu interaction in `app.py`.
 
 ## Goal
 
