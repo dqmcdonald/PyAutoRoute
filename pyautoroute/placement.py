@@ -106,7 +106,6 @@ def _fp_silk_text_extents(fp: Footprint) -> list[tuple[float, float, float]]:
         Value property, or fp_text) in the footprint.
     """
     from .pcb import children, child, strings, floats, atoms_after_head
-    from .sexpr import SList
 
     extents: list[tuple[float, float, float]] = []
 

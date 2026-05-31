@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
+import fnmatch
 
 if TYPE_CHECKING:
     from .pcb import Board
@@ -29,15 +29,14 @@ def build(board: Board, rules: DesignRules, *,
     Returns:
         (list of zone/via nodes, list of warning strings). Empty list if skipped.
     """
-    from . import pcb, geometry, netlist
-    import fnmatch
+    from . import pcb, geometry
 
     nodes: list[SList] = []
     warnings: list[str] = []
 
     # ── Guard: existing pour ──────────────────────────────────────────────────
     if pcb.zone_fill_nets(board):
-        warnings.append(f"Board already has a copper pour; not adding ground plane")
+        warnings.append("Board already has a copper pour; not adding ground plane")
         return ([], warnings)
 
     # ── GND auto-detect ───────────────────────────────────────────────────────

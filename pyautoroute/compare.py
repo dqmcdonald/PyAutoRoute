@@ -168,7 +168,6 @@ def format_report(result: CompareResult) -> str:
     # Metrics table
     lines.append("")
     labels = result.labels
-    n_boards = len(labels)
 
     # Column widths
     metric_width = 18
@@ -279,16 +278,11 @@ def format_report(result: CompareResult) -> str:
 
 
 def _layer_breakdown(result: CompareResult) -> dict[str, list[float]]:
-    """Get segment lengths grouped by layer for each board."""
-    from . import pcb
+    """Get segment lengths grouped by layer for each board.
 
-    layers_by_board = []
-    all_layers = set()
-
-    for board_path, stats in zip([], result.stats):  # TODO: need board paths
-        # For now, skip layer breakdown since we don't have board objects in CompareResult
-        pass
-
+    TODO: need board paths to compute this; CompareResult currently omits them.
+    """
+    # For now, return empty since we don't have board objects in CompareResult
     return {}
 
 

@@ -23,7 +23,7 @@ from pathlib import Path
 from . import __version__, anneal, geometry, netlist, pcb, placement, router
 from .grid import Grid
 from .pipeline import (
-    CycleHooks, PipelineHooks, _cycle_worker, _route_run_worker, run_cycle,
+    CycleHooks, PipelineHooks, _cycle_worker, run_cycle,
     run_placement, run_routing, select_best,
 )
 from .rules import load_rules
@@ -50,7 +50,7 @@ class Reporter:
         self.tty = (not quiet) and hasattr(stream, "isatty") and stream.isatty()
         self._t0 = time.time()
         self._c0 = time.process_time()
-        self.log_file = open(log_path, "w") if log_path else None
+        self.log_file = open(log_path, "w", encoding="utf-8") if log_path else None
         self.tag = ""
 
     def phase(self, name: str) -> None:
@@ -1315,7 +1315,7 @@ def write_config(parser: argparse.ArgumentParser, args, path: str | Path) -> Non
             _append_option(lines, sib, action_map[sib], sib_val,
                            commented=True)
 
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
 

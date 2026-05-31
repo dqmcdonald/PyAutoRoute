@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.spatial import cKDTree
 
-from . import netlist, router
+from . import router
 from .router import RouteParams, RouteResult, RoutingState
 
 # Window (in iterations) over which the live acceptance ratio is measured. A

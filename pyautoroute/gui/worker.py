@@ -215,7 +215,7 @@ class Worker:
             return []
 
         try:
-            from pyautoroute import groundplane, pcb
+            from pyautoroute import groundplane
         except ImportError:
             self._post(Phase("⚠ ground-plane: not available"))
             return []
