@@ -618,7 +618,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     if args.place_only:
         rep.phase("writing placed board")
         _stamp(board, "placed")
-        pcb.write_board(board, out_path, new_nodes=None, strip_free_vias=True)
+        # Placement always clears existing routing (moved footprints invalidate old tracks).
+        pcb.write_board(board, out_path, new_nodes=None,
+                        strip_free_vias=True, strip_segments=True)
         if fill_nets or args.ground_plane:
             ok = pcb.try_refill_zones(out_path)
             if ok:
@@ -659,10 +661,27 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         else:
             print("  auto: keeping the given settings")
 
+    existing_routes = getattr(args, "existing_routes", "clear")
+    if existing_routes == "preserve" and (args.place or args.place_only):
+        print("  note: --existing-routes preserve is ignored with --place "
+              "(placement invalidates existing routing); using clear")
+        existing_routes = "clear"
+
     rep.phase("building netlist (MST rats-nest)")
     conns = netlist.build_connections(board, exclude=args.exclude_net)
     excluded = sorted({p.net for p in board.pads if p.net
                        and netlist.is_excluded(p.net, args.exclude_net)})
+
+    n_pre_routed = 0
+    if existing_routes == "preserve":
+        pre_routed, conns = netlist.pre_routed_connections(board, conns)
+        n_pre_routed = len(pre_routed)
+        if n_pre_routed:
+            rep.log(f"pre-routed:    {n_pre_routed} connection(s) already satisfied "
+                    f"by existing copper (skipped)")
+            if not args.quiet:
+                print(f"  pre-routed:    {n_pre_routed} connection(s) preserved, "
+                      f"{len(conns)} remaining")
 
     rep.phase(f"building {pitch}mm routing grid")
     grid = Grid(board, rules, pitch)
@@ -693,7 +712,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     def on_snapshot(k, n, results):
         sp = snap_dir / f"{input_path.stem}_anneal_{k:02d}of{n:02d}.kicad_pcb"
         pcb.write_board(board, sp, new_nodes=_results_to_nodes(board, grid, results),
-                        strip_free_vias=True)
+                        strip_free_vias=(existing_routes == "clear"),
+                        strip_segments=(existing_routes == "clear"))
         nrouted = sum(1 for r in results if r is not None)
         rep.log(f"snapshot {k}/{n} -> {sp}  routed={nrouted}/{len(results)}")
 
@@ -789,7 +809,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
     pcb.write_board(board, out_path,
                     new_nodes=new_nodes,
-                    strip_free_vias=True)
+                    strip_free_vias=(existing_routes == "clear"),
+                    strip_segments=(existing_routes == "clear"))
 
     if fill_nets or args.ground_plane:
         ok = pcb.try_refill_zones(out_path)
@@ -805,7 +826,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     violations = geometry.clearance_violations(routed_board, rules)
     rep.done()
 
-    _report(rep, out_path, len(conns), routed, unrouted, length, vias,
+    total_conns = len(conns) + n_pre_routed
+    _report(rep, out_path, total_conns, routed + n_pre_routed, unrouted, length, vias,
             violations, excluded)
     return _finish(rep, args, out_path, routed_board, violations)
 
@@ -951,8 +973,9 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
             for w in gp_warns:
                 rep.log(f"ground-plane: {w}")
                 print(f"  ⚠ ground-plane: {w}")
+    # cycles always uses --place, which forces clear mode
     pcb.write_board(sel_board, out_path, new_nodes=new_nodes,
-                    strip_free_vias=True)
+                    strip_free_vias=True, strip_segments=True)
 
     if fill_nets or args.ground_plane:
         ok = pcb.try_refill_zones(out_path)
@@ -1582,6 +1605,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "progress (bare --log uses <output>.log)")
     p.add_argument("--fix-values", action="store_true",
                    help="move footprint Value text to the silkscreen layer before routing")
+    p.add_argument("--existing-routes", choices=("clear", "preserve"), default="clear",
+                   metavar="{clear,preserve}",
+                   help="clear (default): strip all existing tracks and vias before routing "
+                        "so re-routing a board never doubles tracks. "
+                        "preserve: keep existing copper, detect which connections are already "
+                        "satisfied, route only the remainder, treating existing copper as "
+                        "obstacles — enabling partial routing of a partially hand-routed board.")
     p.add_argument("--quiet", action="store_true", help="suppress live progress display")
     return p
 

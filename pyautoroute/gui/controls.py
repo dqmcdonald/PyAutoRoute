@@ -100,6 +100,7 @@ class RunConfig:
         "fix_values", "keep_outline",
         "ground_plane", "ground_net", "ground_plane_layer",
         "ground_plane_margin", "stitch_vias",
+        "existing_routes",
     )
 
     def __init__(self, **kw):
@@ -146,6 +147,7 @@ class ControlsPanel(ttk.Frame):
         self._budget_val = tk.StringVar(value="")
         self._runs = tk.StringVar(value="1")
         self._exclude_net = tk.StringVar(value="")
+        self._existing_routes = tk.StringVar(value="clear")
         # Placement
         self._place_budget_kind = tk.StringVar(value="iters")
         self._place_budget_val = tk.StringVar(value="")
@@ -246,6 +248,16 @@ class ControlsPanel(ttk.Frame):
         _row(rf, 4, "Exclude net:", excl_e,
              "Comma-separated net names or glob patterns to leave un-routed "
              "(e.g. GND, PWR_*).")
+        er_row = ttk.Frame(rf)
+        er_row.grid(row=5, column=0, columnspan=2, sticky=tk.EW, padx=4, pady=2)
+        ttk.Label(er_row, text="Existing routes:").pack(side=tk.LEFT)
+        for val, lbl in (("clear", "Clear"), ("preserve", "Preserve")):
+            ttk.Radiobutton(er_row, text=lbl,
+                            variable=self._existing_routes,
+                            value=val).pack(side=tk.LEFT, padx=4)
+        add_tooltip(er_row,
+                    "Clear: strip all existing tracks/vias before routing (default). "
+                    "Preserve: keep existing copper and only route unconnected nets.")
 
         # Placement section
         self._place_frame = pf = _section(p, "Placement")
@@ -496,6 +508,8 @@ class ControlsPanel(ttk.Frame):
             self._ground_plane_layer.set(d["ground_plane_layer"])
         _sv("ground_plane_margin", self._ground_plane_margin)
         _sv("stitch_vias", self._stitch_vias)
+        if "existing_routes" in d and d["existing_routes"] in ("clear", "preserve"):
+            self._existing_routes.set(d["existing_routes"])
 
     # ── advanced dialog ───────────────────────────────────────────────
 
@@ -711,6 +725,7 @@ class ControlsPanel(ttk.Frame):
             ground_plane_layer=self._ground_plane_layer.get(),
             ground_plane_margin=_f(self._ground_plane_margin),
             stitch_vias=_f(self._stitch_vias),
+            existing_routes=self._existing_routes.get() or "clear",
         )
 
     def _to_namespace(self, parser) -> argparse.Namespace:
@@ -759,4 +774,5 @@ class ControlsPanel(ttk.Frame):
             ground_plane_layer=cfg.ground_plane_layer or "B.Cu",
             ground_plane_margin=cfg.ground_plane_margin,
             stitch_vias=cfg.stitch_vias,
+            existing_routes=cfg.existing_routes or "clear",
         )

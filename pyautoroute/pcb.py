@@ -155,6 +155,7 @@ class Segment:
     width: float
     layer: str
     net: str
+    node: "SList | None" = None   # source node, so write_board can strip it
 
 
 @dataclass
@@ -630,6 +631,7 @@ def _parse_segments(tree: SList, numbered: dict[int, str]) -> list[Segment]:
                 width=w[0] if w else 0.2,
                 layer=lay[0] if lay else "F.Cu",
                 net=_net_name(child(it, "net"), numbered),
+                node=it,
             ))
     return out
 
@@ -1314,8 +1316,9 @@ def fix_value_layers(board: Board) -> int:
 
 def write_board(board: Board, out_path: str | Path,
                 new_nodes: list[SList] | None = None,
-                strip_free_vias: bool = True) -> None:
-    """Serialize a routed copy: drop free vias, append new segment/via nodes.
+                strip_free_vias: bool = True,
+                strip_segments: bool = False) -> None:
+    """Serialize a routed copy: drop free vias/segments, append new routing nodes.
 
     Clones the parsed tree (untouched subtrees keep their source spans, so the
     diff against the input stays limited to the routing edits).
@@ -1327,8 +1330,14 @@ def write_board(board: Board, out_path: str | Path,
             append (from `make_segment` / `make_via`); `None` for none.
         strip_free_vias: when True, omit the board's dangling free vias from the
             output.
+        strip_segments: when True, omit all existing ``(segment ...)`` tracks
+            from the output (use for a clean re-route so tracks are not doubled).
     """
-    strip_ids = {id(v.node) for v in board.free_vias} if strip_free_vias else set()
+    strip_ids: set[int] = set()
+    if strip_free_vias:
+        strip_ids.update(id(v.node) for v in board.free_vias if v.node is not None)
+    if strip_segments:
+        strip_ids.update(id(s.node) for s in board.segments if s.node is not None)
     new_root = SList()
     for ch in board.tree:
         if isinstance(ch, SList) and id(ch) in strip_ids:

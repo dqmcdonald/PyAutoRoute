@@ -388,7 +388,9 @@ class Worker:
             pcb.stamp_comment(board,
                 f"PyAutoRoute v{__version__} — placed "
                 f"{datetime.date.today().isoformat()}")
-            pcb.write_board(board, out_path, new_nodes=None, strip_free_vias=True)
+            # Placement always clears existing routing.
+            pcb.write_board(board, out_path, new_nodes=None,
+                            strip_free_vias=True, strip_segments=True)
             if fill_nets:
                 pcb.try_refill_zones(out_path)
             placed = pcb.load_board(out_path)
@@ -405,6 +407,20 @@ class Worker:
         runs = max(1, cfg.runs)
         if runs > 1 and not annealing:
             runs = 1                                    # greedy is deterministic
+        existing_routes = getattr(cfg, "existing_routes", "clear") or "clear"
+        if existing_routes == "preserve" and (place or place_only):
+            existing_routes = "clear"   # placement invalidates existing routing
+
+        # For preserve mode: build the full connection list, filter out pre-routed
+        # connections, and pass only the remainder to run_routing.
+        n_pre_routed = 0
+        conns = None
+        if existing_routes == "preserve":
+            from pyautoroute import netlist
+            all_conns = netlist.build_connections(board, exclude=cfg.exclude_net or [])
+            pre_routed_conns, conns = netlist.pre_routed_connections(board, all_conns)
+            n_pre_routed = len(pre_routed_conns)
+
         route_params = router.RouteParams(via_cost=cfg.via_weight)
         route_kw = dict(annealing=annealing, iters=cfg.iters,
                         time_budget=cfg.time_budget,
@@ -413,7 +429,8 @@ class Worker:
         res = pipeline.run_routing(
             board, rules, pitch, route_params=route_params, route_kw=route_kw,
             seed=cfg.seed, runs=runs, jobs=1, snapshots=_ANNEAL_SNAP_COUNT,
-            exclude=cfg.exclude_net or [], hooks=hooks, cancel=self._cancel)
+            exclude=cfg.exclude_net or [], hooks=hooks, cancel=self._cancel,
+            conns=conns)
 
         if res.results is None:
             self._post(Phase("cancelled before routing completed"))
@@ -432,14 +449,15 @@ class Worker:
         new_nodes = _results_to_nodes(board, grid, final_results)
         new_nodes.extend(self._ground_plane_nodes(cfg, board, rules, out_path))
         pcb.write_board(board, out_path, new_nodes=new_nodes,
-                        strip_free_vias=True)
+                        strip_free_vias=(existing_routes == "clear"),
+                        strip_segments=(existing_routes == "clear"))
         if fill_nets or getattr(cfg, "ground_plane", False):
             pcb.try_refill_zones(out_path)
         routed_board = pcb.load_board(out_path)
         violations = geometry.clearance_violations(routed_board, rules)
-        total = routed + unrouted
+        total = routed + unrouted + n_pre_routed
         self._post(BoardSnap(routed_board))
-        self._post(Done(str(out_path), total, routed, unrouted,
+        self._post(Done(str(out_path), total, routed + n_pre_routed, unrouted,
                         length, vias, violations, routed_board))
 
     def _run_cycles(self, cfg, board, rules, pitch, margin, input_path,
@@ -528,8 +546,9 @@ class Worker:
             f"{datetime.date.today().isoformat()}")
         new_nodes = _results_to_nodes(best.board, best.grid, best.results)
         new_nodes.extend(self._ground_plane_nodes(cfg, best.board, rules, out_path))
+        # cycles always uses --place, which forces clear mode
         pcb.write_board(best.board, out_path, new_nodes=new_nodes,
-                        strip_free_vias=True)
+                        strip_free_vias=True, strip_segments=True)
         if fill_nets or getattr(cfg, "ground_plane", False):
             pcb.try_refill_zones(out_path)
         routed_board = pcb.load_board(out_path)

@@ -490,3 +490,42 @@ class TestFootprintConstraints:
         finally:
             import os
             os.unlink(tmp_path)
+
+
+# ── write_board strip_segments ─────────────────────────────────────────────────
+
+def _board_with_segment(tmp_path):
+    """Write a minimal board with one segment and return the path."""
+    raw = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
+        ' (segment (start 0 0) (end 10 0) (width 0.25) (layer "F.Cu")'
+        '  (net "A") (uuid "aaa")))'
+    )
+    p = tmp_path / "seg.kicad_pcb"
+    p.write_text(raw, encoding="utf-8")
+    return p
+
+
+def test_write_board_strips_segments(tmp_path):
+    """strip_segments=True removes existing tracks from the output."""
+    src = _board_with_segment(tmp_path)
+    board = pcb.load_board(src)
+    assert len(board.segments) == 1
+
+    out = tmp_path / "out.kicad_pcb"
+    pcb.write_board(board, out, strip_segments=True)
+
+    reloaded = pcb.load_board(out)
+    assert len(reloaded.segments) == 0
+
+
+def test_write_board_preserves_segments_by_default(tmp_path):
+    """strip_segments defaults to False — existing tracks are kept."""
+    src = _board_with_segment(tmp_path)
+    board = pcb.load_board(src)
+
+    out = tmp_path / "out.kicad_pcb"
+    pcb.write_board(board, out, strip_segments=False)
+
+    reloaded = pcb.load_board(out)
+    assert len(reloaded.segments) == 1
