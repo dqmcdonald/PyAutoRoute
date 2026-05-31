@@ -213,8 +213,8 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
                         break
 
         if via_point:
-            via_size = rules.via_size if rules else 0.5
-            via_drill = rules.via_drill if rules else 0.25
+            via_size = rules.via_diameter_for(gnd_net) if rules else 0.5
+            via_drill = rules.via_drill_for(gnd_net) if rules else 0.25
             via_node = pcb.make_via(
                 board, via_point[0], via_point[1], via_size, via_drill,
                 "F.Cu", "B.Cu", gnd_net
@@ -250,8 +250,8 @@ def _add_stitching_vias(board: Board, rules: DesignRules, gnd_net: str, layer: s
                             too_close = True
                             break
                 if not too_close:
-                    via_size = rules.via_size if rules else 0.5
-                    via_drill = rules.via_drill if rules else 0.25
+                    via_size = rules.via_diameter_for(gnd_net) if rules else 0.5
+                    via_drill = rules.via_drill_for(gnd_net) if rules else 0.25
                     via_node = pcb.make_via(
                         board, x, y, via_size, via_drill,
                         "F.Cu", "B.Cu", gnd_net
