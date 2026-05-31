@@ -780,7 +780,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         for layer in layers:
             gp_nodes, gp_warns = groundplane.build(
                 board, rules, net=args.ground_net, layer=layer, margin=margin,
-                stitch_pitch=args.stitch_vias
+                stitch_pitch=args.stitch_vias, routed_nodes=new_nodes
             )
             new_nodes.extend(gp_nodes)
             for w in gp_warns:
@@ -945,7 +945,7 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
         for layer in layers:
             gp_nodes, gp_warns = groundplane.build(
                 sel_board, rules, net=args.ground_net, layer=layer, margin=margin,
-                stitch_pitch=args.stitch_vias
+                stitch_pitch=args.stitch_vias, routed_nodes=new_nodes
             )
             new_nodes.extend(gp_nodes)
             for w in gp_warns:

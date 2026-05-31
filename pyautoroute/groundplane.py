@@ -15,7 +15,8 @@ def build(board: Board, rules: DesignRules, *,
           net: str | None = None,
           layer: str = "B.Cu",
           margin: float | None = None,
-          stitch_pitch: float | None = None) -> tuple[list[SList], list[str]]:
+          stitch_pitch: float | None = None,
+          routed_nodes: list | None = None) -> tuple[list[SList], list[str]]:
     """Build ground-plane zone node(s) and connecting vias.
 
     Args:
@@ -25,6 +26,9 @@ def build(board: Board, rules: DesignRules, *,
         layer: zone layer ("B.Cu", "F.Cu", or pass multiple times for each).
         margin: outline inset margin (mm); if None, uses board default clearance.
         stitch_pitch: optional pitch (mm) for stitching vias between layers; if None, no stitching.
+        routed_nodes: freshly-generated routing SList nodes (segments + vias) not yet
+            applied to *board*; included in the pour-layer obstacle check so that
+            connectivity vias aren't placed where new routing already exists.
 
     Returns:
         (list of zone/via nodes, list of warning strings). Empty list if skipped.
@@ -97,7 +101,8 @@ def build(board: Board, rules: DesignRules, *,
 
     # ── Connectivity vias (for SMD-only islands) ──────────────────────────────
     connectivity_vias = _add_connectivity_vias(
-        board, rules, gnd_net, layer, inset_poly, clearance
+        board, rules, gnd_net, layer, inset_poly, clearance,
+        routed_nodes=routed_nodes or []
     )
     nodes.extend(connectivity_vias)
 
@@ -111,8 +116,107 @@ def build(board: Board, rules: DesignRules, *,
     return (nodes, warnings)
 
 
+def _node_head(node) -> str:
+    """Return the head symbol of an SList node (e.g. 'segment', 'via')."""
+    from . import sexpr as sx
+    if node and isinstance(node[0], sx.Atom):
+        return node[0].raw  # raw gives the unquoted symbol name
+    return ""
+
+
+def _child(node, key: str):
+    """Return the first child SList of *node* whose head symbol matches *key*."""
+    from . import sexpr as sx
+    for child in node:
+        if isinstance(child, sx.SList) and _node_head(child) == key:
+            return child
+    return None
+
+
+def _atom_text(node, idx: int) -> str:
+    """Return atom at *idx* in *node* as a plain string (quotes stripped)."""
+    from . import sexpr as sx
+    if node is None or idx >= len(node):
+        return ""
+    tok = node[idx]
+    return tok.text if isinstance(tok, sx.Atom) else ""
+
+
+def _float(node, idx: int) -> float:
+    """Return atom at *idx* in *node* as a float."""
+    from . import sexpr as sx
+    if node is None or idx >= len(node):
+        return 0.0
+    tok = node[idx]
+    if isinstance(tok, sx.Atom):
+        try:
+            return float(tok.text)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _obstacles_from_nodes(nodes: list, layer: str, gnd_net: str):
+    """Extract Obstacle objects for *layer* from freshly-built routing SList nodes.
+
+    Parses ``(segment ...)`` and ``(via ...)`` nodes — the same format produced by
+    ``pcb.make_segment`` / ``pcb.make_via`` — and returns `geometry.Obstacle` objects
+    for copper on *layer* whose net differs from *gnd_net*.
+    """
+    from . import geometry, sexpr as sx
+    from shapely.geometry import LineString, Point
+
+    obs = []
+    for node in nodes:
+        if not isinstance(node, sx.SList) or not node:
+            continue
+        head = _node_head(node)
+
+        if head == "segment":
+            # (segment (start x1 y1) (end x2 y2) (width w) (layer "L") (net "N") ...)
+            start_n = _child(node, "start")
+            end_n   = _child(node, "end")
+            width_n = _child(node, "width")
+            layer_n = _child(node, "layer")
+            net_n   = _child(node, "net")
+            if not all([start_n, end_n, width_n, layer_n]):
+                continue
+            seg_layer = _atom_text(layer_n, 1)
+            if seg_layer != layer:
+                continue
+            net = _atom_text(net_n, 1) if net_n else ""
+            if net == gnd_net:
+                continue
+            x1, y1 = _float(start_n, 1), _float(start_n, 2)
+            x2, y2 = _float(end_n, 1),   _float(end_n, 2)
+            w       = _float(width_n, 1)
+            line = LineString([(x1, y1), (x2, y2)]).buffer(w / 2)
+            obs.append(geometry.Obstacle(line, net, seg_layer))
+
+        elif head == "via":
+            # (via (at x y) (size d) (layers "F.Cu" "B.Cu") (net "N") ...)
+            at_n     = _child(node, "at")
+            size_n   = _child(node, "size")
+            layers_n = _child(node, "layers")
+            net_n    = _child(node, "net")
+            if not all([at_n, size_n, layers_n]):
+                continue
+            via_layers = [_atom_text(layers_n, i) for i in range(1, len(layers_n))]
+            if layer not in via_layers:
+                continue
+            net = _atom_text(net_n, 1) if net_n else ""
+            if net == gnd_net:
+                continue
+            cx, cy = _float(at_n, 1), _float(at_n, 2)
+            d = _float(size_n, 1)
+            obs.append(geometry.Obstacle(Point(cx, cy).buffer(d / 2), net, layer))
+
+    return obs
+
+
 def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer: str,
-                           pour_poly, clearance: float) -> list[SList]:
+                           pour_poly, clearance: float,
+                           routed_nodes: list | None = None) -> list[SList]:
     """Add vias to connect GND islands that don't reach the pour layer.
 
     For each connected GND component that doesn't have copper on the pour layer:
@@ -126,6 +230,8 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
 
     # Build an obstacle index for the pour layer so we can reject via positions
     # that would create a short with other-net copper already routed there.
+    # Include both copper already in the board AND freshly-routed nodes that
+    # haven't been applied to the board object yet.
     via_size = rules.via_diameter_for(gnd_net) if rules else 0.6
     via_drill = rules.via_drill_for(gnd_net) if rules else 0.3
     via_radius = via_size / 2.0
@@ -134,6 +240,10 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         o for o in geometry.board_obstacles(board)
         if o.layer == layer and o.net != gnd_net and o.net
     ]
+    if routed_nodes:
+        pour_layer_obstacles.extend(
+            _obstacles_from_nodes(routed_nodes, layer, gnd_net)
+        )
     if pour_layer_obstacles:
         _obs_tree = STRtree([o.geom for o in pour_layer_obstacles])
     else:
