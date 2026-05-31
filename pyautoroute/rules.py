@@ -175,15 +175,17 @@ def default_rules() -> DesignRules:
     )
 
 
-def load_rules(pro_path: str | Path) -> DesignRules:
+def load_rules(pro_path: str | Path | None) -> DesignRules:
     """Parse a ``.kicad_pro`` file into `DesignRules`.
 
     Args:
-        pro_path: path to the project ``.kicad_pro`` file.
+        pro_path: path to the project ``.kicad_pro`` file, or ``None`` to use defaults.
 
     Returns:
-        The parsed `DesignRules`, or `default_rules()` if the file is missing.
+        The parsed `DesignRules`, or `default_rules()` if the file is missing or None.
     """
+    if pro_path is None:
+        return default_rules()
     pro_path = Path(pro_path)
     if not pro_path.exists():
         return default_rules()

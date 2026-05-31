@@ -85,14 +85,14 @@ def test_auto_labels_from_paths():
 
 def test_resolve_pro_returns_given_path():
     """_resolve_pro returns the path if provided."""
-    result = compare._resolve_pro("/path/to/design.kicad_pro", "/any/path")
+    result = compare._resolve_pro("/path/to/design.kicad_pro", ["/any/path"])
     assert result == "/path/to/design.kicad_pro"
 
 
 def test_resolve_pro_returns_none_if_not_found():
     """_resolve_pro returns None if no project file found."""
     # Use a path that definitely doesn't have a sibling .kicad_pro
-    result = compare._resolve_pro(None, "/nonexistent/board.kicad_pcb")
+    result = compare._resolve_pro(None, ["/nonexistent/board.kicad_pcb"])
     assert result is None
 
 

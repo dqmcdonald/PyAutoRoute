@@ -52,7 +52,7 @@ def compare(paths: list[str], *, pro: str | None = None, labels: list[str] | Non
     boards = [pcb.load_board(p) for p in paths]
 
     # Load design rules from shared .kicad_pro
-    pro_path = _resolve_pro(pro, paths[0])
+    pro_path = _resolve_pro(pro, paths)
     rules = rules_mod.load_rules(pro_path)
 
     # Collect copper-pour nets from all boards (union across all)
@@ -79,22 +79,36 @@ def compare(paths: list[str], *, pro: str | None = None, labels: list[str] | Non
     )
 
 
-def _resolve_pro(pro: str | None, first_path: str) -> str | None:
+def _resolve_pro(pro: str | None, board_paths: list[str]) -> str | None:
     """Resolve the project file path.
 
-    If `pro` is given, return it. Otherwise, try first_path's sibling `.kicad_pro`,
-    then with the same stem. Return None if not found.
+    Tries (in order):
+    1. The explicit ``--pro`` argument.
+    2. Each board path with its suffix replaced by ``.kicad_pro``.
+    3. Any ``.kicad_pro`` file in the same directory as the first board.
+    Returns None if nothing is found (caller falls back to default rules).
     """
     if pro is not None:
         return pro
-    p = Path(first_path)
-    with_suffix = p.with_suffix(".kicad_pro")
-    if with_suffix.exists():
-        return str(with_suffix)
-    with_stem = p.with_name(p.stem + ".kicad_pro")
-    if with_stem.exists():
-        return str(with_stem)
-    return None
+    # Try exact-name match for each supplied board path
+    for bp in board_paths:
+        candidate = Path(bp).with_suffix(".kicad_pro")
+        if candidate.exists():
+            return str(candidate)
+    # Scan the directory of the first board for any .kicad_pro
+    first_dir = Path(board_paths[0]).parent
+    try:
+        pros = list(first_dir.glob("*.kicad_pro"))
+    except (OSError, ValueError):
+        pros = []
+    if len(pros) == 1:
+        return str(pros[0])
+    # Multiple .kicad_pro files — prefer the one whose stem matches any board stem
+    board_stems = {Path(bp).stem for bp in board_paths}
+    for candidate in pros:
+        if candidate.stem in board_stems:
+            return str(candidate)
+    return str(pros[0]) if pros else None
 
 
 def _auto_labels(paths: list[str]) -> list[str]:
