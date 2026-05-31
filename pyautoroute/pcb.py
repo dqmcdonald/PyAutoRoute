@@ -913,6 +913,10 @@ def make_zone_node(board: Board, layer: str, net: str,
     for x, y in pts:
         pts_node.append(SList([sexpr.sym("xy"), sexpr.number(x), sexpr.number(y)]))
 
+    # Thermal bridge spokes must be at least as wide as min_thickness, otherwise
+    # KiCad's fill algorithm silently drops the thermal reliefs for affected pads.
+    thermal_bridge = max(clearance, min_thickness)
+
     return SList([
         sexpr.sym("zone"),
         _net_ref_node(board, net),
@@ -927,7 +931,7 @@ def make_zone_node(board: Board, layer: str, net: str,
         SList([
             sexpr.sym("fill"), sexpr.sym("yes"),
             SList([sexpr.sym("thermal_gap"), sexpr.number(clearance)]),
-            SList([sexpr.sym("thermal_bridge_width"), sexpr.number(clearance)]),
+            SList([sexpr.sym("thermal_bridge_width"), sexpr.number(thermal_bridge)]),
             SList([sexpr.sym("island_removal_mode"), sexpr.number(0)])
         ]),
         SList([sexpr.sym("polygon"), pts_node]),

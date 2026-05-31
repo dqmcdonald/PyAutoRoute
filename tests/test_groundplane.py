@@ -5,6 +5,25 @@ from __future__ import annotations
 from pyautoroute import pcb, sexpr
 
 
+def test_make_zone_node_thermal_bridge_width():
+    """thermal_bridge_width is never less than min_thickness."""
+    board = pcb.Board(
+        tree=sexpr.SList(),
+        copper_layers=["F.Cu", "B.Cu"],
+        pads=[], free_vias=[], segments=[], zones=[], outline=[],
+    )
+    pts = [(10, 10), (90, 10), (90, 70), (10, 70)]
+    # clearance (0.2) < min_thickness (0.25): bridge must be clamped to 0.25
+    zone = pcb.make_zone_node(board, "B.Cu", "GND", pts, clearance=0.2, min_thickness=0.25)
+    zone_str = str(zone)
+    # Verify thermal_bridge_width is 0.25, not 0.2
+    assert "thermal_bridge_width" in zone_str
+    idx = zone_str.find("thermal_bridge_width")
+    snippet = zone_str[idx:idx+40]
+    assert "0.2 " not in snippet and "0.2)" not in snippet, \
+        f"thermal_bridge_width should not be 0.2: {snippet}"
+
+
 def test_make_zone_node_structure():
     """make_zone_node builds a properly-structured zone SList."""
     # Create minimal board for testing

@@ -169,11 +169,19 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         _union(p1, p2)
 
 
-    # Find components that don't reach the pour layer
-    roots_needing_via: set = set()
+    # Aggregate layers per component root, then find components lacking the pour layer.
+    # Checking per-position would incorrectly flag a component as needing a via whenever
+    # any segment endpoint in it lacks the pour layer, even if a THT pad in the same
+    # component already provides full-layer coverage.
+    root_layers: dict = {}
     for snap_pos, layers in component_layers.items():
-        if layer not in layers:
-            roots_needing_via.add(_find(snap_pos))
+        root = _find(snap_pos)
+        root_layers.setdefault(root, set()).update(layers)
+
+    roots_needing_via: set = {
+        root for root, layers in root_layers.items()
+        if layer not in layers
+    }
 
     # For each component needing a via, find a point inside the pour polygon
     for root in roots_needing_via:
