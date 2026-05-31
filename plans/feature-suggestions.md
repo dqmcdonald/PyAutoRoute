@@ -190,8 +190,11 @@ backup/replace, despite [`gui-plan.md`](gui-plan.md) proposing exactly those.
 
 If implementation effort is to be prioritized:
 
-1. **Bounded A\* search** — biggest performance win; `architecture.md:459` already
-   names it the highest-value next optimisation.
-2. ✅ **Partial re-routing** — shipped as `--existing-routes preserve`.
-3. **Differential pairs** — biggest "real PCB" capability gap; unsupported
-   end-to-end today.
+1. **Differential pairs** — biggest "real PCB" capability gap; unsupported
+   end-to-end today (rules not parsed, no net-name pair detection, no coupling
+   constraint in A*).
+2. **Per-net-class clearance masks** — routes denser mixed-rule boards; the grid
+   currently uses a single worst-case margin across all net classes.
+3. **Drill geometry + hole-to-hole DRC** — closes a real self-check gap;
+   `min_hole_to_hole` is already parsed and `Pad.drill` is already modelled,
+   so most of the scaffolding exists.
