@@ -930,7 +930,7 @@ def make_zone_node(board: Board, layer: str, net: str,
             SList([sexpr.sym("thermal_bridge_width"), sexpr.number(clearance)]),
             SList([sexpr.sym("island_removal_mode"), sexpr.number(0)])
         ]),
-        SList([sexpr.sym("polygon"), SList([pts_node])]),
+        SList([sexpr.sym("polygon"), pts_node]),
     ])
 
 
