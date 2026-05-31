@@ -414,9 +414,11 @@ class ControlsPanel(ttk.Frame):
     def _save_settings(self):
         inp = self._full_input_path()
         init = str(Path(inp).with_suffix(".ini")) if inp else ""
+        # Pass the stem only — defaultextension adds ".ini" so the dialog
+        # doesn't show "myboard.ini" and then append another ".ini" on save.
         path = filedialog.asksaveasfilename(
             title="Save settings",
-            initialfile=Path(init).name if init else "",
+            initialfile=Path(init).stem if init else "",
             initialdir=str(Path(init).parent) if init else ".",
             defaultextension=".ini",
             filetypes=[("INI config", "*.ini"),
