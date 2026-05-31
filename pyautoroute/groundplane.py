@@ -341,12 +341,34 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
                 if Point(x, y).within(pour_poly):
                     yield (x, y)
 
+    def _spiral_search(cx: float, cy: float) -> tuple[float, float] | None:
+        """Search for a conflict-free via position near (cx, cy) in expanding rings."""
+        step = via_size + clearance
+        for ring in range(1, 6):
+            r = ring * step
+            n = max(4, ring * 4)
+            import math
+            for i in range(n):
+                angle = 2 * math.pi * i / n
+                x = cx + r * math.cos(angle)
+                y = cy + r * math.sin(angle)
+                if Point(x, y).within(pour_poly) and _via_clear(x, y):
+                    return (x, y)
+        return None
+
     for root in roots_needing_via:
         via_point = None
+        first_candidate = None
         for (x, y) in _candidate_positions(root):
+            if first_candidate is None:
+                first_candidate = (x, y)
             if _via_clear(x, y):
                 via_point = (x, y)
                 break
+
+        # If every exact candidate conflicts, search outward from the first candidate.
+        if via_point is None and first_candidate is not None:
+            via_point = _spiral_search(first_candidate[0], first_candidate[1])
 
         if via_point:
             via_node = pcb.make_via(
