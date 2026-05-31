@@ -151,11 +151,11 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         snap_pos = _snap(pad.cx, pad.cy)
         # Through-hole pads reach all layers
         if "Via" in pad.pad_type or all(layer in pad.copper_layers for layer in ["F.Cu", "B.Cu"]):
-            component_layers.setdefault(snap_pos, set()).update(["F.Cu", "B.Cu"])
+            component_layers[snap_pos] = {"F.Cu", "B.Cu"}
         else:
-            component_layers.setdefault(snap_pos, set()).add(
+            component_layers[snap_pos] = {
                 pad.copper_layers[0] if pad.copper_layers else "F.Cu"
-            )
+            }
         _union(("pad", id(pad)), snap_pos)
 
     # Register GND segments
@@ -168,13 +168,6 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         component_layers.setdefault(p2, set()).add(seg.layer)
         _union(p1, p2)
 
-    # Register GND vias (they bridge layers)
-    for via in board.free_vias:
-        if via.net != gnd_net:
-            continue
-        snap_pos = _snap(via.cx, via.cy)
-        component_layers.setdefault(snap_pos, set()).update(via.layers)
-        _union(("via", id(via)), snap_pos)
 
     # Find components that don't reach the pour layer
     roots_needing_via: set = set()
