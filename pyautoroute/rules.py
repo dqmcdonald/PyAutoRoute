@@ -188,7 +188,7 @@ def load_rules(pro_path: str | Path) -> DesignRules:
     if not pro_path.exists():
         return default_rules()
 
-    data = json.loads(pro_path.read_text())
+    data = json.loads(pro_path.read_text(encoding="utf-8"))
     net_settings = data.get("net_settings") or {}
     raw_classes = net_settings.get("classes") or []
 

@@ -695,7 +695,7 @@ def load_board(pcb_path: str | Path) -> Board:
     Returns:
         The populated `Board`.
     """
-    tree = sexpr.loads(Path(pcb_path).read_text())
+    tree = sexpr.loads(Path(pcb_path).read_text(encoding="utf-8"))
     copper = _copper_layers(tree)
     numbered = _numbered_net_table(tree)
     name_only = len(numbered) == 0
@@ -793,7 +793,7 @@ def try_refill_zones(board_path: Path) -> bool:
              "--refill-zones", "--save-board",
              "--output", "/dev/null",
              str(board_path)],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=120, check=False,
         )
         return result.returncode == 0
     except Exception:
@@ -1332,7 +1332,7 @@ def write_board(board: Board, out_path: str | Path,
         new_root.append(ch)
     for node in (new_nodes or []):
         new_root.append(node)
-    Path(out_path).write_text(sexpr.dump_file(new_root))
+    Path(out_path).write_text(sexpr.dump_file(new_root), encoding="utf-8")
 
 
 # --- footprint constraint editor (GUI) ----------------------------------------

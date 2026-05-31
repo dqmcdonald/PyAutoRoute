@@ -73,7 +73,7 @@ def main(argv=None) -> int:
         return 0
 
     from pyautoroute.sexpr import dump_file
-    out_path.write_text(dump_file(board.tree))
+    out_path.write_text(dump_file(board.tree), encoding="utf-8")
     print(f"Written: {out_path}")
     return 0
 
