@@ -118,12 +118,39 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     For each connected GND component that doesn't have copper on the pour layer:
     place a via at a point inside the pour polygon to tie the component in.
     """
-    from . import pcb
+    from . import pcb, geometry
     from shapely.geometry import Point
+    from shapely.strtree import STRtree
 
     vias = []
 
-    # Union-find over GND copper (pads + segments + vias)
+    # Build an obstacle index for the pour layer so we can reject via positions
+    # that would create a short with other-net copper already routed there.
+    via_size = rules.via_diameter_for(gnd_net) if rules else 0.6
+    via_drill = rules.via_drill_for(gnd_net) if rules else 0.3
+    via_radius = via_size / 2.0
+
+    pour_layer_obstacles = [
+        o for o in geometry.board_obstacles(board)
+        if o.layer == layer and o.net != gnd_net and o.net
+    ]
+    if pour_layer_obstacles:
+        _obs_tree = STRtree([o.geom for o in pour_layer_obstacles])
+    else:
+        _obs_tree = None
+
+    def _via_clear(x: float, y: float) -> bool:
+        """Return True if a via centred at (x, y) has no clearance conflict on the pour layer."""
+        if _obs_tree is None:
+            return True
+        ring = Point(x, y).buffer(via_radius + clearance)
+        for idx in _obs_tree.query(ring):
+            obs = pour_layer_obstacles[idx]
+            if Point(x, y).buffer(via_radius).distance(obs.geom) < clearance - 1e-6:
+                return False
+        return True
+
+    # Union-find over GND copper (pads + segments)
     parent: dict = {}
 
     def _find(k):
@@ -136,7 +163,6 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     def _union(a, b):
         parent[_find(a)] = _find(b)
 
-    # Helper to snap a point to 0.01 mm grid
     SNAP_MM = 0.01
     def _snap(x, y):
         return (round(x / SNAP_MM), round(y / SNAP_MM))
@@ -149,8 +175,7 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         if pad.net != gnd_net:
             continue
         snap_pos = _snap(pad.cx, pad.cy)
-        # Through-hole pads reach all layers
-        if "Via" in pad.pad_type or all(layer in pad.copper_layers for layer in ["F.Cu", "B.Cu"]):
+        if "Via" in pad.pad_type or all(lyr in pad.copper_layers for lyr in ["F.Cu", "B.Cu"]):
             component_layers[snap_pos] = {"F.Cu", "B.Cu"}
         else:
             component_layers[snap_pos] = {
@@ -168,7 +193,6 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         component_layers.setdefault(p2, set()).add(seg.layer)
         _union(p1, p2)
 
-
     # Aggregate layers per component root, then find components lacking the pour layer.
     # Checking per-position would incorrectly flag a component as needing a via whenever
     # any segment endpoint in it lacks the pour layer, even if a THT pad in the same
@@ -183,39 +207,38 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         if layer not in layers
     }
 
-    # For each component needing a via, find a point inside the pour polygon
-    for root in roots_needing_via:
-        # Find a pad or segment point in this component that's inside the pour
-        via_point = None
+    # For each component needing a via, find a conflict-free point inside the pour polygon.
+    # Try candidate positions in order: GND pad centres, GND segment midpoints, any snap pos.
+    # Skip any position where the via annular ring on the pour layer would overlap other-net
+    # copper (which the router may have placed there).
+    def _candidate_positions(root):
         for pad in board.pads:
             if pad.net != gnd_net:
                 continue
             if _find(_snap(pad.cx, pad.cy)) == root and Point(pad.cx, pad.cy).within(pour_poly):
-                via_point = (pad.cx, pad.cy)
-                break
-        if via_point is None:
-            for seg in board.segments:
-                if seg.net != gnd_net:
-                    continue
-                mid_x = (seg.x1 + seg.x2) / 2
-                mid_y = (seg.y1 + seg.y2) / 2
-                if _find(_snap(mid_x, mid_y)) == root and Point(mid_x, mid_y).within(pour_poly):
-                    via_point = (mid_x, mid_y)
-                    break
+                yield (pad.cx, pad.cy)
+        for seg in board.segments:
+            if seg.net != gnd_net:
+                continue
+            mid_x = (seg.x1 + seg.x2) / 2
+            mid_y = (seg.y1 + seg.y2) / 2
+            if _find(_snap(mid_x, mid_y)) == root and Point(mid_x, mid_y).within(pour_poly):
+                yield (mid_x, mid_y)
+        for snap_pos in component_layers.keys():
+            if _find(snap_pos) == root:
+                x = snap_pos[0] * SNAP_MM
+                y = snap_pos[1] * SNAP_MM
+                if Point(x, y).within(pour_poly):
+                    yield (x, y)
 
-        if via_point is None:
-            # Try any position in the component
-            for snap_pos in component_layers.keys():
-                if _find(snap_pos) == root:
-                    x = snap_pos[0] * 0.01
-                    y = snap_pos[1] * 0.01
-                    if Point(x, y).within(pour_poly):
-                        via_point = (x, y)
-                        break
+    for root in roots_needing_via:
+        via_point = None
+        for (x, y) in _candidate_positions(root):
+            if _via_clear(x, y):
+                via_point = (x, y)
+                break
 
         if via_point:
-            via_size = rules.via_diameter_for(gnd_net) if rules else 0.5
-            via_drill = rules.via_drill_for(gnd_net) if rules else 0.25
             via_node = pcb.make_via(
                 board, via_point[0], via_point[1], via_size, via_drill,
                 "F.Cu", "B.Cu", gnd_net
