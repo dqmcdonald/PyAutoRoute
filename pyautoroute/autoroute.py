@@ -21,6 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import __version__, anneal, geometry, netlist, pcb, placement, router
+from .report import routing_stats
 from .grid import Grid
 from .pipeline import (
     CycleHooks, PipelineHooks, _cycle_worker, run_cycle,
@@ -547,10 +548,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         if n:
             print(f"  fix-values:    moved {n} Value text node(s) to silkscreen")
 
+    init_stats = routing_stats(board, rules, exclude=args.exclude_net)
     if board.segments:
-        from pyautoroute.report import routing_stats
-        init = routing_stats(board, rules)
-        print(f"  initial board: {init.summary()}")
+        print(f"  initial board: {init_stats.summary()}")
 
     _print_footprint_constraints(board)
     _log_footprint_constraints(rep, board)
@@ -570,7 +570,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         args.place_feedback = False
     if cycles > 1:
         return _run_cycles(args, rep, input_path, out_path, rules, pitch,
-                           board, fill_nets, cycles)
+                           board, fill_nets, cycles, init_stats=init_stats)
 
     if args.place or args.place_only:
         pp, keep_outline = _place_params_from_args(args, board, rules, rep)
@@ -872,16 +872,18 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     # reload the written board and self-check clearances
     routed_board = pcb.load_board(out_path)
     violations = geometry.clearance_violations(routed_board, rules)
+    final_stats = routing_stats(routed_board, rules, exclude=args.exclude_net)
     rep.done()
 
     total_conns = len(conns) + n_pre_routed
     _report(rep, out_path, total_conns, routed + n_pre_routed, unrouted, length, vias,
-            violations, excluded)
+            violations, excluded, init_stats=init_stats, final_stats=final_stats,
+            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
     return _finish(rep, args, out_path, routed_board, violations)
 
 
 def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
-                cycles) -> int:
+                cycles, init_stats=None) -> int:
     """Best-of-cycles: keep the best-*routing* of N independent place+route runs.
 
     Each cycle re-loads the board and runs one placement + one routing through
@@ -1036,10 +1038,12 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
 
     routed_board = pcb.load_board(out_path)
     violations = geometry.clearance_violations(routed_board, rules)
+    final_stats = routing_stats(routed_board, rules, exclude=args.exclude_net)
     rep.done()
 
     _report(rep, out_path, best.n_conns, best.routed, best.unrouted, best.length,
-            best.vias, violations, excluded)
+            best.vias, violations, excluded, init_stats=init_stats, final_stats=final_stats,
+            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
     return _finish(rep, args, out_path, routed_board, violations)
 
 
@@ -1069,7 +1073,8 @@ def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
 
 
 def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
-            violations, excluded) -> None:
+            violations, excluded, *, init_stats=None, final_stats=None,
+            via_weight: float = 2.0, unrouted_weight: float = 100.0) -> None:
     """Print the final metrics summary and mirror it to the log.
 
     Args:
@@ -1080,9 +1085,12 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
         unrouted: connections not routed.
         length: total wirelength (mm).
         vias: total via count.
-        violations: clearance-violation tuples from the self-check (empty ==
-            clean).
+        violations: clearance-violation tuples from the self-check (empty == clean).
         excluded: net names excluded from routing.
+        init_stats: `RoutingStats` for the input board (for the improvement summary).
+        final_stats: `RoutingStats` reloaded from the written output board.
+        via_weight: via cost coefficient (for score computation).
+        unrouted_weight: unrouted penalty coefficient (for score computation).
     """
     pct = 100.0 * routed / n_conns if n_conns else 100.0
     lines = [
@@ -1104,6 +1112,42 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
     for ln in lines:
         print(f"  {ln}")
         rep.log(ln)
+
+    # ── Improvement summary ──────────────────────────────────────────────────
+    if init_stats is not None and final_stats is not None:
+        def _score(s):
+            return unrouted_weight * s.unrouted + s.length + via_weight * s.vias
+
+        i, f = init_stats, final_stats
+        i_score, f_score = _score(i), _score(f)
+        delta_score = f_score - i_score
+        pct_change = (delta_score / i_score * 100) if i_score else 0.0
+
+        def _fmt_delta(val, fmt="+.1f", good_negative=True):
+            sign = "↓" if (val < 0) == good_negative else "↑"
+            return f"{sign}{abs(val):{fmt}}"
+
+        i_pct = 100 * i.routed / i.total if i.total else 100.0
+        f_pct = 100 * f.routed / f.total if f.total else 100.0
+
+        d_len  = f.length - i.length
+        d_vias = f.vias - i.vias
+        cmp_lines = [
+            "improvement:   before → after",
+            (f"  connections  {i.routed}/{i.total} ({i_pct:.0f}%)"
+             f" → {f.routed}/{f.total} ({f_pct:.0f}%)"),
+            (f"  wirelength   {i.length:.1f} mm → {f.length:.1f} mm"
+             + (f"  ({_fmt_delta(d_len, '.1f')})" if i.length else "")),
+            (f"  vias         {i.vias} → {f.vias}"
+             + (f"  ({_fmt_delta(d_vias, 'd')})" if i.vias else "")),
+            (f"  score        {i_score:.0f} → {f_score:.0f}"
+             f"  ({_fmt_delta(delta_score, '.0f')},"
+             f" {abs(pct_change):.0f}% {'better' if delta_score < 0 else 'worse'})"),
+        ]
+        print()
+        for ln in cmp_lines:
+            print(f"  {ln}")
+            rep.log(ln)
 
 
 def _report_placed(rep: Reporter, out_path, board, violations) -> None:
