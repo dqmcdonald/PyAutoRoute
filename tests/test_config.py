@@ -26,12 +26,12 @@ def _write(tmp_path, body):
 
 
 def test_config_values_applied(tmp_path):
-    cfg = _write(tmp_path, "grid = 0.3\ntime_budget = 120\nvia_weight = 4.0\n"
+    cfg = _write(tmp_path, "grid = 0.3\nrouting_time = 120\nvia_weight = 4.0\n"
                            "place = true\nanneal_temps = 5.0, 0.1\n"
                            "exclude_net = GND, /PWR*\n")
     a = _parse_with_config(cfg, ["b.kicad_pcb"])
     assert a.grid == 0.3
-    assert a.time_budget == 120.0
+    assert a.routing_time == 120.0
     assert a.via_weight == 4.0
     assert a.place is True
     assert list(a.anneal_temps) == [5.0, 0.1]

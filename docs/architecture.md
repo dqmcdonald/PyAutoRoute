@@ -425,10 +425,10 @@ grid would route on a single layer.
 Two diagnostic options hook into this flow:
 - **`--snapshots N`** writes `N` intermediate routed boards to a `snapshots/`
   subdir during annealing. The annealer fires an `on_snapshot(k, n, results)`
-  callback as it crosses each `k/N` of its progress (by iteration for `--iters`,
-  by wall-clock for `--time`); the run() callback serialises the current routing
+  callback as it crosses each `k/N` of its progress (by iteration for `--routing-iters`,
+  by wall-clock for `--routing-time`); the run() callback serialises the current routing
   to `snapshots/<input>_anneal_<k>of<N>.kicad_pcb`. The final snapshot captures
-  the best routing. No-op (with a note) if neither `--iters` nor `--time` is set.
+  the best routing. No-op (with a note) if neither `--routing-iters` nor `--routing-time` is set.
 - **`--log [FILE]`** tees a verbose plain-text log: a parameter/board dump up
   front, a throttled trace of routing and annealing progress, snapshot events,
   and the final metrics — all timestamped. The `Reporter` owns the file and
@@ -646,7 +646,7 @@ an unbounded search would re-scan the whole board every iteration.
   and re-committing the snapshots (committing is idempotent given a path).
 - **Acceptance** = Metropolis: accept if `ΔE ≤ 0`, else with probability
   `exp(−ΔE/T)`. `T` follows a geometric schedule from `t_start` to `t_end`.
-- **Budget** = `--iters` or `--time` (else a small default); the best-seen routing
+- **Budget** = `--routing-iters` or `--routing-time` (else a small default); the best-seen routing
   is returned regardless of where the walk ends.
 - Per-route A* is expansion-capped during annealing so a hard net fails fast
   instead of exploring forever.

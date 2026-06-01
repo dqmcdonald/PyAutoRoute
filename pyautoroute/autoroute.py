@@ -14,6 +14,7 @@ import concurrent.futures
 import configparser
 import datetime
 import os
+import shutil
 import textwrap
 import sys
 import time
@@ -435,11 +436,11 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
     rep.log(f"seed           {args.seed}")
     if args.exclude_net:
         rep.log(f"exclude nets   {', '.join(args.exclude_net)}")
-    if args.iters:
-        rep.log(f"anneal iters   {args.iters}")
-    if args.time_budget:
-        rep.log(f"anneal time    {args.time_budget} s")
-    if args.iters or args.time_budget:
+    if args.routing_iters:
+        rep.log(f"anneal iters   {args.routing_iters}")
+    if args.routing_time:
+        rep.log(f"anneal time    {args.routing_time} s")
+    if args.routing_iters or args.routing_time:
         rep.log(f"unrouted wt    {args.unrouted_weight}")
         rep.log(f"anneal temps   {args.anneal_temps[0]} -> {args.anneal_temps[1]}")
         if args.runs > 1:
@@ -735,8 +736,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     grid = Grid(board, rules, pitch)
 
     runs = max(1, args.runs)
-    if runs > 1 and not (args.iters or args.time_budget):
-        print("  note: --runs > 1 has no effect without --iters/--time "
+    if runs > 1 and not (args.routing_iters or args.routing_time):
+        print("  note: --runs > 1 has no effect without --routing-iters/--routing-time "
               "(greedy routing is deterministic); using 1 run")
         runs = 1
     # Worker count for parallel best-of-N: --jobs 0 means "use as many workers
@@ -747,8 +748,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     parallel = runs > 1 and jobs > 1
     # snapshots only make sense during a single annealing run
     snap_n = args.snapshots
-    if snap_n and not (args.iters or args.time_budget):
-        print("  note: --snapshots needs --iters or --time (annealing); ignoring")
+    if snap_n and not (args.routing_iters or args.routing_time):
+        print("  note: --snapshots needs --routing-iters or --routing-time (annealing); ignoring")
         snap_n = 0
     if snap_n and runs > 1:
         print("  note: --snapshots needs a single run; ignoring with --runs > 1")
@@ -776,9 +777,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     params = router.RouteParams(via_cost=args.via_weight,
                                 search_margin=args.search_margin)
     order = netlist.greedy_order(conns)
-    annealing = bool(args.iters or args.time_budget)
-    route_kw = dict(annealing=annealing, iters=args.iters,
-                    time_budget=args.time_budget,
+    annealing = bool(args.routing_iters or args.routing_time)
+    route_kw = dict(annealing=annealing, iters=args.routing_iters,
+                    time_budget=args.routing_time,
                     unrouted_weight=args.unrouted_weight,
                     anneal_temps=args.anneal_temps, via_weight=args.via_weight,
                     stall_patience=args.stall_patience,
@@ -795,7 +796,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     def _rt_anneal(it, total, r, u, energy, best, temp, accept, ob):
         rep.annealing(it, total, r, u, energy, best, temp, accept,
                       elapsed=time.monotonic() - _anneal_t0[0],
-                      budget=args.time_budget or 0.0, overall_best=ob)
+                      budget=args.routing_time or 0.0, overall_best=ob)
 
     def _rt_run_done(k, n, energy, summary, metrics, is_best=False, iters=0):
         if parallel:                                   # completion-ordered logging
@@ -890,6 +891,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     _report(rep, out_path, total_conns, routed + n_pre_routed, unrouted, length, vias,
             violations, excluded, init_stats=init_stats, final_stats=final_stats,
             via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
+    _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
     return _finish(rep, args, out_path, routed_board, violations)
 
 
@@ -922,8 +924,8 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
     pp, _keep = _place_params_from_args(args, board, rules, rep)
     route_params = router.RouteParams(via_cost=args.via_weight,
                                       search_margin=args.search_margin)
-    route_kw = dict(annealing=bool(args.iters or args.time_budget),
-                    iters=args.iters, time_budget=args.time_budget,
+    route_kw = dict(annealing=bool(args.routing_iters or args.routing_time),
+                    iters=args.routing_iters, time_budget=args.routing_time,
                     unrouted_weight=args.unrouted_weight,
                     anneal_temps=args.anneal_temps, via_weight=args.via_weight,
                     stall_patience=args.stall_patience,
@@ -1058,7 +1060,51 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
     _report(rep, out_path, best.n_conns, best.routed, best.unrouted, best.length,
             best.vias, violations, excluded, init_stats=init_stats, final_stats=final_stats,
             via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
+    _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
     return _finish(rep, args, out_path, routed_board, violations)
+
+
+def _maybe_replace_in_place(
+    args, input_path: Path, out_path: Path,
+    init_stats, final_stats, rep: Reporter,
+) -> None:
+    """If --in-place and the result is better, back up the input and replace it.
+
+    Args:
+        args: the parsed CLI namespace.
+        input_path: the original input board path.
+        out_path: the written output board path.
+        init_stats: `RoutingStats` for the input board before routing.
+        final_stats: `RoutingStats` for the written output board.
+        rep: the reporter (for mirroring the message to the log).
+    """
+    if not getattr(args, "in_place", False):
+        return
+    if init_stats is None or final_stats is None:
+        return
+
+    via_w = args.via_weight
+    unr_w = args.unrouted_weight
+
+    def _score(s):
+        return unr_w * s.unrouted + s.length + via_w * s.vias
+
+    before = _score(init_stats)
+    after = _score(final_stats)
+
+    if after < before:
+        bak_path = input_path.with_suffix(input_path.suffix + ".bak")
+        shutil.copy2(input_path, bak_path)
+        shutil.copy2(out_path, input_path)
+        msg = (f"in-place:      score {before:.0f} → {after:.0f}; "
+               f"backed up to {bak_path.name}, replaced {input_path.name}")
+        print(f"  {msg}")
+        rep.log(msg)
+    else:
+        msg = (f"in-place:      result score {after:.0f} ≥ input score {before:.0f}"
+               f" — keeping {out_path.name} only")
+        print(f"  {msg}")
+        rep.log(msg)
 
 
 def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
@@ -1580,6 +1626,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pro", help="project .kicad_pro (default: sibling)")
     p.add_argument("-o", "--output", help="output .kicad_pcb (default: INPUT_routed, "
                                           "or _placed_routed / _placed when placing)")
+    p.add_argument("--in-place", action="store_true",
+                   help="if the routed result is better than the input (scored as "
+                        "unrouted × --unrouted-weight + wirelength + vias × --via-weight), "
+                        "back up the input to INPUT.kicad_pcb.bak and replace it with the "
+                        "routed output. The output file is always written first.")
     p.add_argument("--grid", type=float, help="grid pitch in mm (default derived from rules)")
     p.add_argument("--place", action="store_true",
                    help="experimental: place footprints (simulated annealing) before "
@@ -1635,12 +1686,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="run placement N times (different seeds) and keep the "
                         "lowest-energy placement (default 1)")
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--iters", type=int, help="optimisation iteration budget")
-    g.add_argument("--time", type=float, dest="time_budget", help="optimisation time budget (s)")
+    g.add_argument("--routing-iters", type=int, help="optimisation iteration budget")
+    g.add_argument("--routing-time", type=float, help="optimisation time budget (s)")
     p.add_argument("--runs", type=int, default=1, metavar="N",
                    help="route N times with different annealing seeds and keep the "
                         "lowest-energy result (default 1; only varies with "
-                        "--iters/--time)")
+                        "--routing-iters/--routing-time)")
     p.add_argument("--cycles", type=int, default=1, metavar="N",
                    help="with --place: run N independent place+route cycles and "
                         "keep the one that *routes* best (fewest unrouted, then "
@@ -1708,7 +1759,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stall-patience", type=int, default=0, metavar="N",
                    help="stop annealing early if the accept ratio stays below "
                         "--stall-ratio for N consecutive windows; 0 = disabled "
-                        "(default). 3–5 is a good starting value with --time.")
+                        "(default). 3–5 is a good starting value with --routing-time.")
     p.add_argument("--stall-ratio", type=float,
                    default=anneal.AnnealParams.stall_ratio, metavar="R",
                    help="accept-ratio threshold for early termination "
@@ -1719,11 +1770,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "than 1e-6 over N consecutive iterations; 0 = disabled "
                         "(default). Useful when the routing is already optimal and "
                         "every reroute produces the same result — avoids spending "
-                        "the full --time budget confirming nothing can improve. "
+                        "the full --routing-time budget confirming nothing can improve. "
                         "20–50 is a good starting value.")
     p.add_argument("--snapshots", type=int, default=0, metavar="N",
                    help="during annealing, save N board snapshots to a snapshots/ "
-                        "subdir (requires --iters or --time)")
+                        "subdir (requires --routing-iters or --routing-time)")
     p.add_argument("--log", nargs="?", const="", default=None, metavar="FILE",
                    help="write a verbose log of parameters and routing/anneal "
                         "progress (bare --log uses <output>.log)")
@@ -1823,8 +1874,8 @@ def main(argv=None) -> int:
         parser.error("--place-runs must be >= 1")
     if (args.place_iters or args.place_time) and not (args.place or args.place_only):
         parser.error("--place-iters/--place-time require --place or --place-only")
-    if args.place_only and (args.iters or args.time_budget):
-        parser.error("--place-only does not route; drop --iters/--time")
+    if args.place_only and (args.routing_iters or args.routing_time):
+        parser.error("--place-only does not route; drop --routing-iters/--routing-time")
     _print_settings_header(args, args_cli, parser, pure_defaults,
                            proj_ini_path, cfg_path,
                            proj_ini_values, cfg_values)

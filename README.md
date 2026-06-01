@@ -69,17 +69,18 @@ package installs as pure Python.
 pyautoroute INPUT.kicad_pcb [options]
 ```
 
-The original file is never modified — a routed copy is written alongside it.
+The original file is never modified unless you pass `--in-place` — a routed copy is always written alongside it first.
 
 | Option | Meaning |
 |---|---|
 | `--pro PROJECT.kicad_pro` | Project file with the design rules (default: the sibling `.kicad_pro`). |
 | `-o, --output FILE` | Output path. Default is named for the run: `INPUT_routed` (route), `INPUT_placed_routed` (`--place`), or `INPUT_placed` (`--place-only`). |
+| `--in-place` | If the routed result scores better than the input (score = `unrouted × --unrouted-weight + wirelength + vias × --via-weight`), back up the input to `INPUT.kicad_pcb.bak` and overwrite it with the routed output. The output file is always written first; the original is only replaced when there is a measurable improvement. |
 | `--place-only` | Place the footprints (see `--place`) and write `INPUT_placed.kicad_pcb` **without routing**. |
 | `--grid MM` | Routing grid pitch in mm (default: derived from the rules, ≈ `track/2 + clearance`). Finer = better coverage but slower. A pitch more than ~2× the derived one prints a warning: a coarse grid can't fit a node in the gap beside a pad and so forces vias where a finer grid would route on one layer. |
-| `--iters N` | Run simulated-annealing optimisation for N iterations. |
-| `--time SECONDS` | Run optimisation for a wall-clock budget instead. |
-| `--runs N` | Route `N` times with different annealing seeds and keep the lowest-energy result (best-of-N). Default 1. Multiplies runtime ~N×; only varies the result when annealing (`--iters`/`--time`) is on. |
+| `--routing-iters N` | Run simulated-annealing optimisation for N iterations. |
+| `--routing-time SECONDS` | Run optimisation for a wall-clock budget instead. |
+| `--runs N` | Route `N` times with different annealing seeds and keep the lowest-energy result (best-of-N). Default 1. Multiplies runtime ~N×; only varies the result when annealing (`--routing-iters`/`--routing-time`) is on. |
 | `--jobs N`, `-j N` | Run the `--runs` trials (or `--cycles` cycles) across `N` worker processes (parallel best-of-N). `0` uses every CPU (capped at the trial/cycle count). `1` (default) keeps the sequential path with live progress. Speedup ≈ `min(count, cores)`. In parallel mode live progress is suppressed (it can't interleave cleanly across processes); each trial/cycle logs a one-line completion. |
 | `--cycles N` | **With `--place`:** run `N` independent place+route cycles and keep the one that *routes* best — fewest unrouted, then lowest energy — selecting on the true objective rather than placement energy alone (default 1). Parallelised by `--jobs`. See *Best-of-cycles* below. |
 | `--place-feedback` | **With `--cycles N`:** feed each cycle's routing back into the next placement as a *congestion field*, spreading footprints out of the cells where routing struggled (PathFinder-style). Cycles then run sequentially; the best-routing cycle is still kept, so feedback can only help. Opt-in and experimental. See *Congestion feedback* below. |
@@ -91,7 +92,7 @@ The original file is never modified — a routed copy is written alongside it.
 | `--via-weight W` | Via cost in mm-equivalent (higher ⇒ fewer vias). Default 2.0. |
 | `--search-margin MM` | Bound each connection's A\* search to a box around its two endpoints, grown by `MM` on every side (widening the box and retrying if it can't find a route, ultimately falling back to the whole grid). Speeds up routing — especially the rip-up/reroute annealing loop — on large boards, at a small cost to path optimality (a bounded route may be slightly longer). Unset (the default) searches the whole grid. |
 | `--seed S` | Random seed for the optimiser. |
-| `--snapshots N` | During annealing, save `N` intermediate board snapshots to a `snapshots/` subdir (beside the output), so you can watch the optimisation progress. Requires `--iters` or `--time`. |
+| `--snapshots N` | During annealing, save `N` intermediate board snapshots to a `snapshots/` subdir (beside the output), so you can watch the optimisation progress. Requires `--routing-iters` or `--routing-time`. |
 | `--config FILE` | Read options from an INI settings file (see below). Options given on the command line override it. |
 | `--write-config [FILE]` | Write the effective settings to an INI file and exit. Bare `--write-config` writes `<input>.ini` beside the board — the same file auto-loaded on the next run. |
 | `--log [FILE]` | Write a verbose log of the input parameters and routing/annealing progress. Bare `--log` writes `<output>.log`; `--log FILE` uses the given path. |
@@ -99,7 +100,7 @@ The original file is never modified — a routed copy is written alongside it.
 | `--quiet` | Suppress the live progress display (final summary only). |
 | `--version` | Print the version and exit. (The version is also printed on startup and written to the `--log` header.) |
 
-`--iters` and `--time` are mutually exclusive; if neither is given, the board is
+`--routing-iters` and `--routing-time` are mutually exclusive; if neither is given, the board is
 routed once (greedy order) without annealing.
 
 `--runs N` repeats the whole route + anneal with seeds `seed, seed+1, …` and keeps
@@ -148,7 +149,7 @@ cycle to the previous one, so it runs the cycles **sequentially** (it overrides
 `--jobs`). Example:
 
 ```bash
-pyautoroute MyBoard.kicad_pcb --place --cycles 6 --place-feedback --iters 4000
+pyautoroute MyBoard.kicad_pcb --place --cycles 6 --place-feedback --routing-iters 4000
 ```
 
 ### Examples
@@ -158,18 +159,18 @@ pyautoroute MyBoard.kicad_pcb --place --cycles 6 --place-feedback --iters 4000
 pyautoroute MyBoard.kicad_pcb
 
 # Finer grid + a 2-minute optimisation pass:
-pyautoroute MyBoard.kicad_pcb --grid 0.2 --time 120
+pyautoroute MyBoard.kicad_pcb --grid 0.2 --routing-time 120
 
 # Route everything except power nets, to a named output:
 pyautoroute MyBoard.kicad_pcb --exclude-net GND --exclude-net "/VBUS*" -o routed.kicad_pcb
 
 # Optimise, capturing 10 progress snapshots and a verbose log:
-pyautoroute MyBoard.kicad_pcb --iters 5000 --snapshots 10 --log
+pyautoroute MyBoard.kicad_pcb --routing-iters 5000 --snapshots 10 --log
 # -> snapshots/MyBoard_anneal_01of10.kicad_pcb ... 10of10, and MyBoard_routed.log
 
 # Experimental: place the footprints first (30 s budget), then route:
 # -> MyBoard_placed_routed.kicad_pcb
-pyautoroute MyBoard.kicad_pcb --place --place-time 30 --time 60
+pyautoroute MyBoard.kicad_pcb --place --place-time 30 --routing-time 60
 
 # Place only, no routing: -> MyBoard_placed.kicad_pcb
 pyautoroute MyBoard.kicad_pcb --place-only --place-time 30
@@ -183,7 +184,7 @@ in a small INI file and pass it with `--config`:
 ```ini
 [pyautoroute]
 grid = 0.2
-time_budget = 120
+routing_time = 120
 via_weight = 2.0
 anneal_temps = 4.0, 0.05
 exclude_net = GND, /PWR*
@@ -193,8 +194,8 @@ runs = 4
 ```
 
 Precedence is **defaults < config file < command line** — any option given on the
-command line overrides the file. Keys are the long option names (the `--time`
-budget is stored as `time_budget`); list options like `exclude_net` are
+command line overrides the file. Keys are the long option names (the `--routing-time`
+budget is stored as `routing_time`); list options like `exclude_net` are
 comma-separated, and flags take `true`/`false`. An unknown key or bad value is
 reported as an error.
 
@@ -202,7 +203,7 @@ Generate a starting file with `--write-config` (it dumps every effective setting
 so it doubles as a template):
 
 ```bash
-pyautoroute MyBoard.kicad_pcb --grid 0.2 --time 120 --write-config
+pyautoroute MyBoard.kicad_pcb --grid 0.2 --routing-time 120 --write-config
 # -> MyBoard.ini, then later just:
 pyautoroute MyBoard.kicad_pcb        # MyBoard.ini is auto-loaded
 ```
