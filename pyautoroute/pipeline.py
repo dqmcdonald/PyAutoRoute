@@ -36,7 +36,8 @@ def _call(cb, *args):
 
 def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
                    iters, time_budget, seed, unrouted_weight, anneal_temps,
-                   via_weight, on_route_progress=None, on_anneal_progress=None,
+                   via_weight, stall_patience=0, stall_ratio=0.02,
+                   on_route_progress=None, on_anneal_progress=None,
                    on_snapshot=None, snapshots=0, cancel=None):
     """Run one independent route (+ optional anneal) and return its outcome.
 
@@ -84,7 +85,9 @@ def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
                                  seed=seed + run_idx, snapshots=snapshots,
                                  unrouted_weight=unrouted_weight,
                                  t_start=anneal_temps[0], t_end=anneal_temps[1],
-                                 route_params=params)
+                                 route_params=params,
+                                 stall_patience=stall_patience,
+                                 stall_ratio=stall_ratio)
         aout = anneal.anneal(state, conns, list(result.results), ap,
                              on_progress=on_anneal_progress,
                              on_snapshot=on_snapshot, cancel=cancel)
@@ -535,7 +538,9 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                     seed=seed + k, snapshots=snapshots,
                     unrouted_weight=route_kw["unrouted_weight"],
                     t_start=route_kw["anneal_temps"][0],
-                    t_end=route_kw["anneal_temps"][1], route_params=route_params)
+                    t_end=route_kw["anneal_temps"][1], route_params=route_params,
+                    stall_patience=route_kw.get("stall_patience", 0),
+                    stall_ratio=route_kw.get("stall_ratio", 0.02))
                 aout = anneal.anneal(
                     state, conns, list(result.results), ap,
                     on_progress=on_anneal if h.anneal_progress is not None else None,

@@ -780,7 +780,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     route_kw = dict(annealing=annealing, iters=args.iters,
                     time_budget=args.time_budget,
                     unrouted_weight=args.unrouted_weight,
-                    anneal_temps=args.anneal_temps, via_weight=args.via_weight)
+                    anneal_temps=args.anneal_temps, via_weight=args.via_weight,
+                    stall_patience=args.stall_patience,
+                    stall_ratio=args.stall_ratio)
     _anneal_t0 = [0.0]
 
     def _rt_phase(name):
@@ -922,7 +924,9 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
     route_kw = dict(annealing=bool(args.iters or args.time_budget),
                     iters=args.iters, time_budget=args.time_budget,
                     unrouted_weight=args.unrouted_weight,
-                    anneal_temps=args.anneal_temps, via_weight=args.via_weight)
+                    anneal_temps=args.anneal_temps, via_weight=args.via_weight,
+                    stall_patience=args.stall_patience,
+                    stall_ratio=args.stall_ratio)
     base_seed = args.seed
     jobs = args.jobs if args.jobs and args.jobs > 0 else (os.cpu_count() or 1)
     jobs = max(1, min(jobs, cycles))
@@ -1699,6 +1703,14 @@ def build_parser() -> argparse.ArgumentParser:
                    default=(anneal.AnnealParams.t_start, anneal.AnnealParams.t_end),
                    help="annealing start/end temperature for the geometric cooling "
                         "schedule; START>END>0 (default %(default)s)")
+    p.add_argument("--stall-patience", type=int, default=0, metavar="N",
+                   help="stop annealing early if the accept ratio stays below "
+                        "--stall-ratio for N consecutive windows; 0 = disabled "
+                        "(default). 3–5 is a good starting value with --time.")
+    p.add_argument("--stall-ratio", type=float,
+                   default=anneal.AnnealParams.stall_ratio, metavar="R",
+                   help="accept-ratio threshold for early termination "
+                        "(default %(default)s); only active when --stall-patience > 0")
     p.add_argument("--snapshots", type=int, default=0, metavar="N",
                    help="during annealing, save N board snapshots to a snapshots/ "
                         "subdir (requires --iters or --time)")
