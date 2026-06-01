@@ -34,6 +34,18 @@ def _call(cb, *args):
         cb(*args)
 
 
+def _anneal_summary(aout) -> str:
+    """Build the one-line annealing summary, with a note when the routing was
+    already at the grid optimum (acceptance ≥99% but no energy improvement)."""
+    acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
+    note = ""
+    if acc_pct >= 99 and aout.best_energy >= aout.start_energy - 1e-6:
+        note = "  ← at grid optimum; try a finer --grid"
+    return (f"anneal: {aout.iterations} iters, "
+            f"{aout.accepted} accepted ({acc_pct:.0f}%), "
+            f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}{note}")
+
+
 def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
                    iters, time_budget, seed, unrouted_weight, anneal_temps,
                    via_weight, stall_patience=0, stall_ratio=0.02,
@@ -96,10 +108,7 @@ def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
                        aout.total_length, aout.total_vias)
         run_energy = aout.best_energy
         run_iters = aout.iterations
-        acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
-        summary = (f"anneal: {aout.iterations} iters, "
-                   f"{aout.accepted} accepted ({acc_pct:.0f}%), "
-                   f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
+        summary = _anneal_summary(aout)
     else:
         run_energy = anneal._energy(run_results, via_weight, unrouted_weight)
         run_iters = 0
@@ -552,10 +561,7 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                                aout.total_length, aout.total_vias)
                 run_energy = aout.best_energy
                 run_iters = aout.iterations
-                acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
-                summary = (f"anneal: {aout.iterations} iters, "
-                           f"{aout.accepted} accepted ({acc_pct:.0f}%), "
-                           f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
+                summary = _anneal_summary(aout)
             else:
                 run_energy = anneal._energy(run_results, route_kw["via_weight"],
                                             route_kw["unrouted_weight"])
