@@ -319,6 +319,9 @@ def main(argv=None) -> int:
                    help="annealing seconds per config (default %(default)s)")
     p.add_argument("--seeds", type=int, default=3, metavar="N",
                    help="seeds per config; the median score is used (default %(default)s)")
+    p.add_argument("--save-ini", nargs="?", const="", default=None, metavar="FILE",
+                   help="write optimal settings to an INI file and exit "
+                        "(bare: <first_board>.ini — the file auto-loaded by pyautoroute)")
     args = p.parse_args(argv)
 
     configs = default_grid(time_budget=args.time)
@@ -341,18 +344,48 @@ def main(argv=None) -> int:
         print(f"\r  [{bar}] {done}/{total}{suffix}",
               end="" if done < total else "\n", flush=True)
 
-    reports = []
+    all_scored: list[tuple[Path, list[ConfigScore]]] = []
     for b in args.boards:
         bp = Path(b)
         if len(args.boards) > 1:
             print(f"\n{bp.name}")
-        scored = sweep(pcb.load_board(bp),
-                       load_rules(bp.with_suffix(".kicad_pro")),
-                       configs, seeds=tuple(range(args.seeds)),
+        board = pcb.load_board(bp)
+        rules = load_rules(bp.with_suffix(".kicad_pro"))
+        scored = sweep(board, rules, configs, seeds=tuple(range(args.seeds)),
                        progress=_progress)
         report = _format_report(bp, scored)
         print(report + "\n")
-        reports.append(report)
+        all_scored.append((bp, scored))
+
+    if args.save_ini is not None:
+        # Use the first board as the reference for grid pitch and margin probe.
+        first_bp, first_scored = all_scored[0]
+        first_board = pcb.load_board(first_bp)
+        first_rules = load_rules(first_bp.with_suffix(".kicad_pro"))
+        best = best_config(first_scored)
+        chosen_pitch = round(default_pitch(first_rules) * best.grid_mult, 4)
+
+        print("  probing search margin for best config …", flush=True)
+        suggested_margin = probe_search_margin(first_board, first_rules, best, seed=0)
+
+        ini_path = Path(args.save_ini) if args.save_ini else first_bp.with_suffix(".ini")
+
+        from .autoroute import build_parser, write_config
+        par = build_parser()
+        # Parse a minimal namespace using the first board as input, then
+        # override only the settings the sweep determined.
+        ini_args = par.parse_args([str(first_bp)])
+        ini_args.grid = chosen_pitch
+        ini_args.via_weight = best.via_weight
+        if suggested_margin is not None:
+            ini_args.search_margin = suggested_margin
+
+        write_config(par, ini_args, ini_path)
+        margin_str = f"{suggested_margin} mm" if suggested_margin is not None else "unbounded"
+        print(f"  wrote {ini_path}")
+        print(f"    grid={chosen_pitch} mm  via-weight={best.via_weight}"
+              f"  search-margin={margin_str}")
+
     return 0
 
 
