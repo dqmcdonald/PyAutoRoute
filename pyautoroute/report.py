@@ -98,6 +98,22 @@ def routing_stats(board: "Board", rules=None, exclude=None) -> RoutingStats:
         p2 = ("pos", seg.net, _snap(seg.x2, seg.y2))
         _union(parent, p1, p2)
 
+    # ── proximity union: track endpoints that land inside a pad's copper ─
+    # Hand-routed boards can end a track anywhere within the pad copper,
+    # not necessarily at the pad centre. Build a per-net list of endpoint
+    # positions and union any endpoint within the pad's half-extent.
+    net_endpoints: dict[str, list[tuple[float, float, tuple]]] = {}
+    for seg in board.segments:
+        for x, y in ((seg.x1, seg.y1), (seg.x2, seg.y2)):
+            net_endpoints.setdefault(seg.net, []).append((x, y, _snap(x, y)))
+
+    for pad in board.pads:
+        radius = math.hypot(pad.w, pad.h) / 2  # conservative pad half-extent
+        pad_k = ("pad", id(pad))
+        for ex, ey, esnap in net_endpoints.get(pad.net, []):
+            if math.hypot(ex - pad.cx, ey - pad.cy) <= radius:
+                _union(parent, pad_k, ("pos", pad.net, esnap))
+
     # Count routed connections: both pads must reach the same component.
     n_routed = sum(
         1 for c in conns
