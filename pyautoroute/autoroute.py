@@ -794,13 +794,14 @@ def run(args: argparse.Namespace, _print_version: bool = True,
                       elapsed=time.monotonic() - _anneal_t0[0],
                       budget=args.time_budget or 0.0, overall_best=ob)
 
-    def _rt_run_done(k, n, energy, summary, metrics):
+    def _rt_run_done(k, n, energy, summary, metrics, is_best=False):
         if parallel:                                   # completion-ordered logging
             routed_r, unrouted_r, length_r, vias_r = metrics
             total_r = routed_r + unrouted_r
+            best_tag = "  ★ new best" if is_best else ""
             log_line = (f"run {k + 1}/{n} done: energy {energy:.1f}  "
                         f"{routed_r}/{total_r} routed  {length_r:.1f} mm  "
-                        f"{vias_r} vias")
+                        f"{vias_r} vias{best_tag}")
             rep.log(log_line)
             if not args.quiet:
                 print(f"  {log_line}", flush=True)

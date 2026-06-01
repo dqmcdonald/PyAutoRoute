@@ -315,8 +315,9 @@ class PipelineHooks:
             per rip-up/reroute iteration.
         anneal_snapshot: ``f(board, grid, results, k, n)`` — an annealing snapshot.
         anneal_best: ``f(board, grid, results)`` — a new best routing during anneal.
-        route_run_done: ``f(k, n, energy, summary, metrics)`` — a routing run (or a
-            parallel worker, ``k`` = completion index) finished.
+        route_run_done: ``f(k, n, energy, summary, metrics, is_best)`` — a routing
+            run (or a parallel worker, ``k`` = completion index) finished;
+            ``is_best`` is ``True`` when this run set a new overall-best energy.
         overall_best: ``f(board, grid, results, energy)`` — a new lowest-energy
             routing across runs was adopted.
     """
@@ -476,13 +477,14 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                 futs = [ex.submit(_route_run_worker, p) for p in payloads]
                 for fut in concurrent.futures.as_completed(futs):
                     out = fut.result()
-                    _call(h.route_run_done, done_n, runs, out["energy"],
-                          out["summary"], out["metrics"])
-                    done_n += 1
-                    if out["energy"] < best_energy:
+                    is_best = out["energy"] < best_energy
+                    if is_best:
                         best_energy = out["energy"]
                         final_results = out["results"]
                         routed, unrouted, length, vias = out["metrics"]
+                    _call(h.route_run_done, done_n, runs, out["energy"],
+                          out["summary"], out["metrics"], is_best)
+                    done_n += 1
         except KeyboardInterrupt:
             if final_results is None:
                 raise
@@ -546,11 +548,13 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                 run_energy = anneal._energy(run_results, route_kw["via_weight"],
                                             route_kw["unrouted_weight"])
 
-            _call(h.route_run_done, k, runs, run_energy, summary, run_metrics)
-            if run_energy < best_energy:
+            is_best = run_energy < best_energy
+            if is_best:
                 best_energy = run_energy
                 final_results = run_results
                 routed, unrouted, length, vias = run_metrics
+            _call(h.route_run_done, k, runs, run_energy, summary, run_metrics, is_best)
+            if is_best:
                 _call(h.overall_best, board, grid, final_results, best_energy)
 
     return PipelineResult(board=board, grid=grid, n_conns=len(conns),
