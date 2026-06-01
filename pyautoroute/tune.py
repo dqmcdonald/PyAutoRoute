@@ -66,7 +66,8 @@ class Config:
     search_margin: float | None = None   # A* search box margin (mm); None = unbounded
 
 
-def evaluate(board, rules, cfg: Config, seed: int, grid: Grid | None = None) -> TuneMetrics:
+def evaluate(board, rules, cfg: Config, seed: int, grid: Grid | None = None,
+             exclude: list[str] | None = None) -> TuneMetrics:
     """Route a board under one config + seed and measure it.
 
     Args:
@@ -75,6 +76,7 @@ def evaluate(board, rules, cfg: Config, seed: int, grid: Grid | None = None) -> 
         cfg: the parameter config to evaluate.
         seed: the annealing seed.
         grid: a prebuilt grid for ``cfg.grid_mult`` to reuse (built if `None`).
+        exclude: net name/glob patterns to leave unrouted (e.g. ``["GND"]``).
 
     Returns:
         The `TuneMetrics` for the run.
@@ -82,7 +84,7 @@ def evaluate(board, rules, cfg: Config, seed: int, grid: Grid | None = None) -> 
     pitch = default_pitch(rules) * cfg.grid_mult
     if grid is None:
         grid = Grid(board, rules, pitch)
-    conns = netlist.build_connections(board)
+    conns = netlist.build_connections(board, exclude=exclude or [])
     params = router.RouteParams(via_cost=cfg.via_weight,
                                 search_margin=cfg.search_margin)
     state = router.RoutingState(grid)
@@ -112,6 +114,7 @@ class ConfigScore:
 def sweep(board, rules, configs: list[Config], seeds=(0, 1, 2),
           unrouted_weight: float = 100.0, via_weight: float = 2.0,
           time_weight: float = 0.0,
+          exclude: list[str] | None = None,
           progress=None) -> list[ConfigScore]:
     """Evaluate every config over several seeds on a board, scored by median.
 
@@ -124,6 +127,7 @@ def sweep(board, rules, configs: list[Config], seeds=(0, 1, 2),
         unrouted_weight: scoring weight per unrouted connection.
         via_weight: scoring weight per via.
         time_weight: scoring weight per second.
+        exclude: net name/glob patterns to leave unrouted (e.g. ``["GND"]``).
         progress: optional ``progress(done, total, cfg, cs)`` callback invoked
             after each config is evaluated; ``cs`` is the `ConfigScore` for
             that config (unsorted), or ``None`` on the very first call with
@@ -141,7 +145,8 @@ def sweep(board, rules, configs: list[Config], seeds=(0, 1, 2),
         if cfg.grid_mult not in grids:
             grids[cfg.grid_mult] = Grid(board, rules,
                                         default_pitch(rules) * cfg.grid_mult)
-        ms = [evaluate(board, rules, cfg, s, grid=grids[cfg.grid_mult]) for s in seeds]
+        ms = [evaluate(board, rules, cfg, s, grid=grids[cfg.grid_mult],
+                       exclude=exclude) for s in seeds]
         scores = [score(m, unrouted_weight, via_weight, time_weight) for m in ms]
         cs = ConfigScore(cfg, statistics.median(scores), ms)
         out.append(cs)
@@ -185,7 +190,8 @@ def best_config(scored: list[ConfigScore]) -> Config:
 
 
 def probe_search_margin(board, rules, cfg: Config, seed: int,
-                        tolerance: float = 0.02, progress=None) -> float | None:
+                        tolerance: float = 0.02, progress=None,
+                        exclude: list[str] | None = None) -> float | None:
     """Find the smallest search_margin that matches unbounded routing quality.
 
     Runs the router once with ``search_margin=None`` (unbounded) to establish a
@@ -226,15 +232,12 @@ def probe_search_margin(board, rules, cfg: Config, seed: int,
     base_cfg = Config(grid_mult=cfg.grid_mult, via_weight=cfg.via_weight,
                       iters=cfg.iters, time_budget=cfg.time_budget,
                       search_margin=None)
-    base_metrics = evaluate(board, rules, base_cfg, seed, grid=grid)
-    base_score = score(base_metrics)
-    threshold = base_score * (1 + tolerance)
 
     total = 1 + len(candidates)   # baseline + one per candidate
     done = 0
     if progress:
         progress(done, total, None, None)
-    base_metrics = evaluate(board, rules, base_cfg, seed, grid=grid)
+    base_metrics = evaluate(board, rules, base_cfg, seed, grid=grid, exclude=exclude)
     done += 1
     base_score = score(base_metrics)
     threshold = base_score * (1 + tolerance)
@@ -246,7 +249,7 @@ def probe_search_margin(board, rules, cfg: Config, seed: int,
         test_cfg = Config(grid_mult=cfg.grid_mult, via_weight=cfg.via_weight,
                           iters=cfg.iters, time_budget=cfg.time_budget,
                           search_margin=m)
-        m_metrics = evaluate(board, rules, test_cfg, seed, grid=grid)
+        m_metrics = evaluate(board, rules, test_cfg, seed, grid=grid, exclude=exclude)
         m_score = score(m_metrics)
         done += 1
         if progress:
@@ -319,6 +322,9 @@ def main(argv=None) -> int:
                    help="annealing seconds per config (default %(default)s)")
     p.add_argument("--seeds", type=int, default=3, metavar="N",
                    help="seeds per config; the median score is used (default %(default)s)")
+    p.add_argument("--exclude-net", action="append", default=[], metavar="PATTERN",
+                   help="net name/glob to leave unrouted during tuning (repeatable); "
+                        "use for pour nets like GND that pyautoroute will exclude anyway")
     p.add_argument("--save-ini", nargs="?", const="", default=None, metavar="FILE",
                    help="write optimal settings to an INI file and exit "
                         "(bare: <first_board>.ini — the file auto-loaded by pyautoroute)")
@@ -352,7 +358,7 @@ def main(argv=None) -> int:
         board = pcb.load_board(bp)
         rules = load_rules(bp.with_suffix(".kicad_pro"))
         scored = sweep(board, rules, configs, seeds=tuple(range(args.seeds)),
-                       progress=_progress)
+                       exclude=args.exclude_net or None, progress=_progress)
         report = _format_report(bp, scored)
         print(report + "\n")
         all_scored.append((bp, scored))
@@ -366,7 +372,8 @@ def main(argv=None) -> int:
         chosen_pitch = round(default_pitch(first_rules) * best.grid_mult, 4)
 
         print("  probing search margin for best config …", flush=True)
-        suggested_margin = probe_search_margin(first_board, first_rules, best, seed=0)
+        suggested_margin = probe_search_margin(first_board, first_rules, best, seed=0,
+                                               exclude=args.exclude_net or None)
 
         ini_path = Path(args.save_ini) if args.save_ini else first_bp.with_suffix(".ini")
 
@@ -379,6 +386,8 @@ def main(argv=None) -> int:
         ini_args.via_weight = best.via_weight
         if suggested_margin is not None:
             ini_args.search_margin = suggested_margin
+        if args.exclude_net:
+            ini_args.exclude_net = args.exclude_net
 
         write_config(par, ini_args, ini_path)
         margin_str = f"{suggested_margin} mm" if suggested_margin is not None else "unbounded"

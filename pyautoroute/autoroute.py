@@ -660,7 +660,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
         scored = tune.sweep(board, rules, auto_configs,
                             seeds=(args.seed,), unrouted_weight=args.unrouted_weight,
-                            via_weight=args.via_weight, progress=_sweep_progress)
+                            via_weight=args.via_weight, exclude=args.exclude_net or None,
+                            progress=_sweep_progress)
         best = tune.best_config(scored)
         chosen_pitch = round(default_pitch(rules) * best.grid_mult, 4)
         rep.done()
@@ -687,7 +688,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
                   end="" if done < total_m else "\n", flush=True)
 
         suggested_margin = tune.probe_search_margin(board, rules, best, seed=args.seed,
-                                                    progress=_margin_progress)
+                                                    progress=_margin_progress,
+                                                    exclude=args.exclude_net or None)
         rep.done()
 
         chosen = (f"auto: best probe grid={chosen_pitch} mm (x{best.grid_mult}), "
