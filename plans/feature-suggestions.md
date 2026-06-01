@@ -103,7 +103,43 @@ self-check using the already-parsed `min_hole_to_hole`, and (optionally) treat
 holes as routing obstacles. Closes a real DRC gap with machinery that mostly
 exists.
 
-### 6. Exact custom-pad polygons
+### 6. Auto-add mounting holes (`--mounting-holes`)
+
+A common post-routing task: add NPTH (non-plated through-hole) mounting holes
+at the corners (or other standard positions) of the board outline so the PCB
+can be mechanically fastened.
+
+**What this needs:**
+
+- A `--mounting-holes` flag with sub-options:
+  - `--hole-diameter MM` (e.g. 3.2 mm for M3)
+  - `--hole-margin MM` (inset from board corners / edge; default ~2 mm)
+  - `--hole-pattern {corners|custom}` — `corners` auto-places four holes
+    symmetrically inset from the bounding rectangle corners; `custom` accepts
+    explicit (x, y) positions
+- An NPTH pad node builder: `pcb.make_npth(x, y, drill_mm)` — a
+  `(footprint ...)` node containing a single `np_thru_hole` pad with no net,
+  placed on `Edge.Cuts` + drill layers (same pattern as KiCad's built-in
+  MountingHole footprint). Alternatively emit a bare `(pad "" np_thru_hole
+  circle ...)` at the top level — simpler, though KiCad prefers footprints.
+- **Obstacle registration**: NPTH holes must appear as routing obstacles (a
+  circular keepout with `drill + clearance` radius) so the router doesn't
+  route copper through them. `geometry.board_obstacles` currently ignores
+  `np_thru_hole` pads (`pcb.py:124`); this would fix that gap and link
+  naturally with item 5 (drill geometry DRC).
+- **Placement interaction**: when `--place` is used the holes should be
+  **fixed** obstacles — placed before the annealer runs so footprints are
+  pushed away from them. Simplest: inject the NPTH pads into the board before
+  placement so the grid respects them automatically.
+- **`--keep-outline` compatibility**: when the board outline is fixed, corners
+  are well-defined; when PyAutoRoute generates the outline (`--place` without
+  `--keep-outline`), holes are placed after the outline is finalised.
+
+**Effort:** low-to-medium. `make_npth` is a small node builder; the routing
+obstacle registration is the same fix needed for item 5; the corner-placement
+geometry is trivial. The main complexity is the placement interaction.
+
+### 7. Exact custom-pad polygons
 
 `_base_pad_shape` renders circle/oval/roundrect/trapezoid exactly, but **rect,
 custom, and unknown shapes all fall back to their bounding box**
