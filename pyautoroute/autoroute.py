@@ -544,10 +544,16 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     rules = load_rules(pro_path)
     pitch = args.grid if args.grid else default_pitch(rules)
 
-    if getattr(args, "fix_values", False):
-        n = pcb.fix_value_layers(board)
-        if n:
-            print(f"  fix-values:    moved {n} Value text node(s) to silkscreen")
+    if getattr(args, "silk_labels", False):
+        nv = pcb.move_values_to_silk(board)
+        nr = pcb.move_refs_to_fab(board)
+        if nv or nr:
+            parts = []
+            if nv:
+                parts.append(f"{nv} value(s) → silkscreen")
+            if nr:
+                parts.append(f"{nr} reference(s) → fab")
+            print(f"  silk-labels:   {', '.join(parts)}")
 
     init_stats = routing_stats(board, rules, exclude=args.exclude_net)
     if board.segments:
@@ -1778,8 +1784,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--log", nargs="?", const="", default=None, metavar="FILE",
                    help="write a verbose log of parameters and routing/anneal "
                         "progress (bare --log uses <output>.log)")
-    p.add_argument("--fix-values", action="store_true",
-                   help="move footprint Value text to the silkscreen layer before routing")
+    p.add_argument("--silk-labels", action="store_true",
+                   help="before routing, move footprint Value text to the silkscreen layer "
+                        "and Reference text to the fabrication layer. KiCad libraries often "
+                        "default to placing both on Fab; this puts values where they appear "
+                        "on the physical board and keeps references on fab where they are "
+                        "useful for assembly drawings but out of the way.")
     p.add_argument("--existing-routes", choices=("clear", "preserve"), default="clear",
                    metavar="{clear,preserve}",
                    help="clear (default): strip all existing tracks and vias before routing "

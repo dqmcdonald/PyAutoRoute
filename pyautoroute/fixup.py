@@ -8,10 +8,17 @@ Currently supported operations:
     KiCad often places value text on ``F.Fab``/``B.Fab`` by default; this
     puts it where it will appear on the physical board.
 
+``--refs``
+    Move footprint ``Reference`` text to the appropriate fabrication layer
+    (``F.Fab`` / ``B.Fab``).  Keeps reference designators off the silkscreen
+    so they do not clutter the physical board while remaining visible in
+    assembly drawings.
+
 Usage::
 
     pyautoroute-fix --values board.kicad_pcb
-    pyautoroute-fix --values board.kicad_pcb -o fixed.kicad_pcb
+    pyautoroute-fix --refs board.kicad_pcb
+    pyautoroute-fix --values --refs board.kicad_pcb -o fixed.kicad_pcb
 """
 
 from __future__ import annotations
@@ -32,6 +39,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Output path (default: overwrite input).")
     p.add_argument("--values", action="store_true",
                    help="Move Value text to the appropriate silkscreen layer.")
+    p.add_argument("--refs", action="store_true",
+                   help="Move Reference text to the appropriate fabrication layer.")
     p.add_argument("--dry-run", action="store_true",
                    help="Report what would change without writing the file.")
     return p
@@ -41,8 +50,8 @@ def main(argv=None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if not args.values:
-        parser.error("No fixup selected. Add --values (or another fixup flag).")
+    if not args.values and not args.refs:
+        parser.error("No fixup selected. Add --values, --refs, or both.")
 
     in_path = Path(args.input)
     if not in_path.exists():
@@ -57,12 +66,20 @@ def main(argv=None) -> int:
     total = 0
 
     if args.values:
-        n = pcb.fix_value_layers(board)
+        n = pcb.move_values_to_silk(board)
         total += n
         if n:
             print(f"  values: moved {n} Value text node(s) to silkscreen.")
         else:
             print("  values: all Value text is already on a silkscreen layer.")
+
+    if args.refs:
+        n = pcb.move_refs_to_fab(board)
+        total += n
+        if n:
+            print(f"  refs:   moved {n} Reference text node(s) to fab.")
+        else:
+            print("  refs:   all Reference text is already on a fab layer.")
 
     if total == 0:
         print("No changes needed.")

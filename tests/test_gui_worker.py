@@ -39,7 +39,7 @@ _DEFAULTS = dict(
     place_temps=(PlaceParams.t_start, PlaceParams.t_end),
     place_step=PlaceParams.step, place_rotate=PlaceParams.rotate_mode,
     place_runs=1, cycles=1, place_feedback=False, congestion_weight=5.0,
-    snapshots=0, fix_values=False, keep_outline=False,
+    snapshots=0, silk_labels=False, keep_outline=False,
     ground_plane=False, ground_net=None, ground_plane_layer="B.Cu",
     ground_plane_margin=None, stitch_vias=None)
 

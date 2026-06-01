@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.37.0
+
+- **`--silk-labels` replaces `--fix-values`.** Moves footprint Value text to the silkscreen layer (unchanged) and also moves Reference text to the fabrication layer — keeping refs off the physical board while still available for assembly drawings. The standalone `pyautoroute-fix` tool gains a matching `--refs` flag.
+
 ## 0.36.0
 
 - **`--in-place` flag.** After routing, if the result scores better than the input (same formula used by `--cycles` selection: `unrouted × weight + wirelength + vias × weight`), the input board is backed up to `INPUT.kicad_pcb.bak` and replaced with the routed output. Useful for iterative reruns directly on the working file.

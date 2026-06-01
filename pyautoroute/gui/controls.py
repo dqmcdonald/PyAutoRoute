@@ -97,7 +97,7 @@ class RunConfig:
         "snapshots",
         "quiet", "log",
         "auto", "auto_yes", "auto_probe_time",
-        "fix_values", "keep_outline",
+        "silk_labels", "keep_outline",
         "ground_plane", "ground_net", "ground_plane_layer",
         "ground_plane_margin", "stitch_vias",
         "existing_routes",
@@ -176,7 +176,7 @@ class ControlsPanel(ttk.Frame):
         self._place_ew = tk.StringVar(value="2.0")
         self._snapshots = tk.StringVar(value="0")
         self._auto_probe_time = tk.StringVar(value="3.0")
-        self._fix_values = tk.BooleanVar(value=False)
+        self._silk_labels = tk.BooleanVar(value=False)
         self._keep_outline = tk.BooleanVar(value=False)
         # Ground plane
         self._ground_plane = tk.BooleanVar(value=False)
@@ -499,8 +499,8 @@ class ControlsPanel(ttk.Frame):
         _sv("auto_probe_time", self._auto_probe_time)
         if "quiet" in d:
             self._quiet.set(bool(d["quiet"]))
-        if "fix_values" in d:
-            self._fix_values.set(bool(d["fix_values"]))
+        if "silk_labels" in d:
+            self._silk_labels.set(bool(d["silk_labels"]))
         if "keep_outline" in d:
             self._keep_outline.set(bool(d["keep_outline"]))
         if "ground_plane" in d:
@@ -557,13 +557,13 @@ class ControlsPanel(ttk.Frame):
             e.grid(row=r, column=1, sticky=tk.EW, padx=4, pady=2)
             add_tooltip(e, tip)
 
-        cb_fv = ttk.Checkbutton(f, text="Fix Value layers",
-                                 variable=self._fix_values)
+        cb_fv = ttk.Checkbutton(f, text="Silk labels",
+                                 variable=self._silk_labels)
         cb_fv.grid(row=len(rows), column=0, columnspan=2, sticky=tk.W,
                    padx=4, pady=4)
         add_tooltip(cb_fv,
-                    "Move footprint Value text to the silkscreen layer "
-                    "(F.SilkS / B.SilkS) before routing. Off by default.")
+                    "Move footprint Value text to silkscreen (F.SilkS / B.SilkS) "
+                    "and Reference text to fab (F.Fab / B.Fab) before routing.")
 
         cb_ko = ttk.Checkbutton(f, text="Keep board outline (--place)",
                                 variable=self._keep_outline)
@@ -720,7 +720,7 @@ class ControlsPanel(ttk.Frame):
             auto=False,
             auto_yes=False,
             auto_probe_time=_f(self._auto_probe_time, 3.0),
-            fix_values=self._fix_values.get(),
+            silk_labels=self._silk_labels.get(),
             keep_outline=self._keep_outline.get(),
             ground_plane=self._ground_plane.get(),
             ground_net=self._ground_net.get() or None,
@@ -769,7 +769,7 @@ class ControlsPanel(ttk.Frame):
             auto=False,
             auto_yes=False,
             auto_probe_time=cfg.auto_probe_time or 3.0,
-            fix_values=cfg.fix_values or False,
+            silk_labels=cfg.silk_labels or False,
             keep_outline=cfg.keep_outline or False,
             ground_plane=cfg.ground_plane or False,
             ground_net=cfg.ground_net,

@@ -342,8 +342,9 @@ class Worker:
 
         self._post(Phase("parsing board + rules"))
         board = pcb.load_board(input_path)
-        if getattr(cfg, "fix_values", False):
-            pcb.fix_value_layers(board)
+        if getattr(cfg, "silk_labels", False):
+            pcb.move_values_to_silk(board)
+            pcb.move_refs_to_fab(board)
 
         fill_nets = pcb.zone_fill_nets(board)
         if fill_nets:

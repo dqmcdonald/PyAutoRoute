@@ -127,7 +127,7 @@ def test_writer_appends_segment(tmp_path):
     assert s.net == "GND" and s.layer == "F.Cu"
 
 
-# --- fix_value_layers tests --------------------------------------------------
+# --- move_values_to_silk / move_refs_to_fab tests ----------------------------
 
 def _board_with_value(layer: str, fp_layer: str = "F.Cu", fmt: str = "property") -> pcb.Board:
     """Build a minimal board with a single footprint whose Value text is on *layer*."""
@@ -174,38 +174,38 @@ def _value_layer(board: pcb.Board) -> str | None:
     return None
 
 
-def test_fix_value_layers_moves_fab_to_silk():
+def test_move_values_to_silk_moves_fab_to_silk():
     board = _board_with_value("F.Fab")
-    changed = pcb.fix_value_layers(board)
+    changed = pcb.move_values_to_silk(board)
     assert changed == 1
     assert _value_layer(board) == "F.SilkS"
 
 
-def test_fix_value_layers_back_footprint():
+def test_move_values_to_silk_back_footprint():
     board = _board_with_value("B.Fab", fp_layer="B.Cu")
-    changed = pcb.fix_value_layers(board)
+    changed = pcb.move_values_to_silk(board)
     assert changed == 1
     assert _value_layer(board) == "B.SilkS"
 
 
-def test_fix_value_layers_already_silk_no_change():
+def test_move_values_to_silk_already_silk_no_change():
     board = _board_with_value("F.SilkS")
-    changed = pcb.fix_value_layers(board)
+    changed = pcb.move_values_to_silk(board)
     assert changed == 0
 
 
-def test_fix_value_layers_legacy_fp_text():
+def test_move_values_to_silk_legacy_fp_text():
     board = _board_with_value("F.Fab", fmt="legacy")
-    changed = pcb.fix_value_layers(board)
+    changed = pcb.move_values_to_silk(board)
     assert changed == 1
     assert _value_layer(board) == "F.SilkS"
 
 
 @pytest.mark.skipif(not PCB.exists(), reason="Test1 board not present")
-def test_fix_value_layers_roundtrip_write(tmp_path):
+def test_move_values_to_silk_roundtrip_write(tmp_path):
     """After fixing, no Value text remains on a Fab layer."""
     board = pcb.load_board(PCB)
-    pcb.fix_value_layers(board)
+    pcb.move_values_to_silk(board)
     out = tmp_path / "fixed.kicad_pcb"
     pcb.write_board(board, out, new_nodes=None, strip_free_vias=False)
     reloaded = pcb.load_board(out)
@@ -220,14 +220,89 @@ def test_fix_value_layers_roundtrip_write(tmp_path):
                     f"Value still on {layer} after fix"
 
 
-def test_fix_value_layers_written_to_file(tmp_path):
+def test_move_values_to_silk_written_to_file(tmp_path):
     """After fix, write_board serialises the new silk layer correctly."""
     board = _board_with_value("F.Fab")
-    pcb.fix_value_layers(board)
+    pcb.move_values_to_silk(board)
     out = tmp_path / "fixed.kicad_pcb"
     pcb.write_board(board, out, new_nodes=None, strip_free_vias=False)
     reloaded = pcb.load_board(out)
     assert _value_layer(reloaded) == "F.SilkS"
+
+
+# --- move_refs_to_fab tests --------------------------------------------------
+
+def _board_with_ref(layer: str, fp_layer: str = "F.Cu", fmt: str = "property") -> pcb.Board:
+    """Build a minimal board with a single footprint whose Reference text is on *layer*."""
+    if fmt == "property":
+        txt = (
+            f'(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+            f'  (5 "F.SilkS" user "F.Silkscreen") (7 "B.SilkS" user "B.Silkscreen")'
+            f'  (8 "F.Fab" user) (9 "B.Fab" user))'
+            f' (footprint "Lib:R" (layer "{fp_layer}") (at 0 0)'
+            f'  (property "Reference" "R1"'
+            f'   (at 0 0) (layer "{layer}")'
+            f'   (effects (font (size 1 1))))'
+            f'  (pad "1" smd rect (at -1 0) (size 1 1)'
+            f'   (layers "F.Cu" "F.Mask") (net "A"))))'
+        )
+    else:
+        txt = (
+            f'(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+            f'  (5 "F.SilkS" user "F.Silkscreen") (7 "B.SilkS" user "B.Silkscreen")'
+            f'  (8 "F.Fab" user) (9 "B.Fab" user))'
+            f' (footprint "Lib:R" (layer "{fp_layer}") (at 0 0)'
+            f'  (fp_text reference "R1"'
+            f'   (at 0 0) (layer "{layer}")'
+            f'   (effects (font (size 1 1))))'
+            f'  (pad "1" smd rect (at -1 0) (size 1 1)'
+            f'   (layers "F.Cu" "F.Mask") (net "A"))))'
+        )
+    return _board_from_text(txt)
+
+
+def _ref_layer(board: pcb.Board) -> str | None:
+    """Return the layer of the first Reference property in the board tree."""
+    from pyautoroute.pcb import children, child, strings, atoms_after_head
+    for fp_node in children(board.tree, "footprint"):
+        for prop in children(fp_node, "property"):
+            atoms = atoms_after_head(prop)
+            if atoms and atoms[0].text == "Reference":
+                ls = strings(child(prop, "layer"))
+                return ls[0] if ls else None
+        for txt in children(fp_node, "fp_text"):
+            atoms = atoms_after_head(txt)
+            if atoms and atoms[0].text == "reference":
+                ls = strings(child(txt, "layer"))
+                return ls[0] if ls else None
+    return None
+
+
+def test_move_refs_to_fab_moves_silk_to_fab():
+    board = _board_with_ref("F.SilkS")
+    changed = pcb.move_refs_to_fab(board)
+    assert changed == 1
+    assert _ref_layer(board) == "F.Fab"
+
+
+def test_move_refs_to_fab_back_footprint():
+    board = _board_with_ref("B.SilkS", fp_layer="B.Cu")
+    changed = pcb.move_refs_to_fab(board)
+    assert changed == 1
+    assert _ref_layer(board) == "B.Fab"
+
+
+def test_move_refs_to_fab_already_fab_no_change():
+    board = _board_with_ref("F.Fab")
+    changed = pcb.move_refs_to_fab(board)
+    assert changed == 0
+
+
+def test_move_refs_to_fab_legacy_fp_text():
+    board = _board_with_ref("F.SilkS", fmt="legacy")
+    changed = pcb.move_refs_to_fab(board)
+    assert changed == 1
+    assert _ref_layer(board) == "F.Fab"
 
 
 # --- _rotate_text_nodes tests ------------------------------------------------

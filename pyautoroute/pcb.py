@@ -303,6 +303,38 @@ def _copper_layers(tree: SList) -> list[str]:
     return out or ["F.Cu", "B.Cu"]
 
 
+def _fab_layers(tree: SList) -> tuple[str, str]:
+    """Return the front and back fabrication layer names from the board's layer table.
+
+    Looks for layer entries whose canonical name contains ``Fab`` or
+    ``Fabrication`` (case-insensitive). Falls back to ``"F.Fab"`` / ``"B.Fab"``
+    when the board has no layer table or no matching entries.
+
+    Args:
+        tree: the parsed board tree.
+
+    Returns:
+        A ``(front_fab, back_fab)`` pair, e.g. ``("F.Fab", "B.Fab")``.
+    """
+    layers_node = child(tree, "layers")
+    front = back = ""
+    if layers_node is not None:
+        for entry in layers_node:
+            if not isinstance(entry, SList):
+                continue
+            toks = [it for it in entry]
+            if len(toks) < 2 or not isinstance(toks[1], Atom):
+                continue
+            name = toks[1].text
+            low = name.lower()
+            if "fab" in low or "fabrication" in low:
+                if low.startswith("f."):
+                    front = name
+                elif low.startswith("b."):
+                    back = name
+    return front or "F.Fab", back or "B.Fab"
+
+
 def _silk_layers(tree: SList) -> tuple[str, str]:
     """Return the front and back silkscreen layer names from the board's layer table.
 
@@ -1239,7 +1271,7 @@ def stamp_comment(board: Board, text: str) -> None:
     # All 9 slots occupied — leave unchanged
 
 
-def fix_value_layers(board: Board) -> int:
+def move_values_to_silk(board: Board) -> int:
     """Move footprint ``Value`` text to the matching silkscreen layer.
 
     Scans every footprint in the board tree for ``(property "Value" ...)``
@@ -1264,12 +1296,10 @@ def fix_value_layers(board: Board) -> int:
 
     changed = 0
     for fp_node in children(board.tree, "footprint"):
-        # Determine front vs back from the footprint's (layer ...) child.
         fp_layer_strs = strings(child(fp_node, "layer"))
         fp_layer = fp_layer_strs[0] if fp_layer_strs else "F.Cu"
         target_silk = back_silk if fp_layer.startswith("B.") else front_silk
 
-        # Modern format: (property "Value" ...) with a nested (layer "...").
         for prop_node in children(fp_node, "property"):
             atoms = atoms_after_head(prop_node)
             if not atoms or atoms[0].text != "Value":
@@ -1280,18 +1310,14 @@ def fix_value_layers(board: Board) -> int:
             layer_atoms = atoms_after_head(layer_node)
             if not layer_atoms:
                 continue
-            current = layer_atoms[0].text
-            if current in silk_names:
+            if layer_atoms[0].text in silk_names:
                 continue
-            # Swap the layer atom and invalidate spans so the serialiser
-            # regenerates this node rather than emitting verbatim source.
             layer_node[layer_node.index(layer_atoms[0])] = sexpr.string(target_silk)
             layer_node.span = None
             prop_node.span = None
             fp_node.span = None
             changed += 1
 
-        # Legacy format: (fp_text value ...).
         for txt_node in children(fp_node, "fp_text"):
             atoms = atoms_after_head(txt_node)
             if not atoms or atoms[0].text != "value":
@@ -1302,10 +1328,72 @@ def fix_value_layers(board: Board) -> int:
             layer_atoms = atoms_after_head(layer_node)
             if not layer_atoms:
                 continue
-            current = layer_atoms[0].text
-            if current in silk_names:
+            if layer_atoms[0].text in silk_names:
                 continue
             layer_node[layer_node.index(layer_atoms[0])] = sexpr.string(target_silk)
+            layer_node.span = None
+            txt_node.span = None
+            fp_node.span = None
+            changed += 1
+
+    return changed
+
+
+def move_refs_to_fab(board: Board) -> int:
+    """Move footprint ``Reference`` text to the matching fabrication layer.
+
+    Scans every footprint for ``(property "Reference" ...)`` nodes (KiCad 7+)
+    and ``(fp_text reference ...)`` nodes (KiCad 6 and earlier) whose layer is
+    **not** already a fabrication layer, and reassigns them to the fab layer
+    matching the footprint's side.  Hidden text is moved too.
+
+    Args:
+        board: the board to update in place.
+
+    Returns:
+        The number of text nodes whose layer was changed.
+    """
+    front_fab, back_fab = _fab_layers(board.tree)
+    fab_names = {front_fab, back_fab, "F.Fab", "B.Fab",
+                 "F.Fabrication", "B.Fabrication"}
+
+    changed = 0
+    for fp_node in children(board.tree, "footprint"):
+        fp_layer_strs = strings(child(fp_node, "layer"))
+        fp_layer = fp_layer_strs[0] if fp_layer_strs else "F.Cu"
+        target_fab = back_fab if fp_layer.startswith("B.") else front_fab
+
+        for prop_node in children(fp_node, "property"):
+            atoms = atoms_after_head(prop_node)
+            if not atoms or atoms[0].text != "Reference":
+                continue
+            layer_node = child(prop_node, "layer")
+            if layer_node is None:
+                continue
+            layer_atoms = atoms_after_head(layer_node)
+            if not layer_atoms:
+                continue
+            if layer_atoms[0].text in fab_names:
+                continue
+            layer_node[layer_node.index(layer_atoms[0])] = sexpr.string(target_fab)
+            layer_node.span = None
+            prop_node.span = None
+            fp_node.span = None
+            changed += 1
+
+        for txt_node in children(fp_node, "fp_text"):
+            atoms = atoms_after_head(txt_node)
+            if not atoms or atoms[0].text != "reference":
+                continue
+            layer_node = child(txt_node, "layer")
+            if layer_node is None:
+                continue
+            layer_atoms = atoms_after_head(layer_node)
+            if not layer_atoms:
+                continue
+            if layer_atoms[0].text in fab_names:
+                continue
+            layer_node[layer_node.index(layer_atoms[0])] = sexpr.string(target_fab)
             layer_node.span = None
             txt_node.span = None
             fp_node.span = None
