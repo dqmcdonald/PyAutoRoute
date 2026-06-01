@@ -278,27 +278,52 @@ def default_grid(iters: int | None = None,
 
 
 def _format_report(board_path, scored: list[ConfigScore]) -> str:
-    """Render a short per-board markdown table of the top configs.
+    """Render a plain-text table of the top configs for one board.
 
     Args:
         board_path: the board the sweep ran on.
         scored: the sorted `ConfigScore` list.
 
     Returns:
-        A markdown snippet.
+        A formatted string suitable for terminal output.
     """
-    lines = [f"### {board_path}", "",
-             "| grid_mult | via_w | routed | len(mm) | vias | score |",
-             "|---|---|---|---|---|---|"]
-    for cs in scored[:6]:
+    top = scored[:6]
+    best = best_config(scored)
+
+    # Build rows: (grid, via_w, completion, length, vias, score, is_best)
+    rows = []
+    for cs in top:
         m = cs.metrics[0]
         total = m.routed + m.unrouted
-        lines.append(f"| {cs.config.grid_mult} | {cs.config.via_weight} | "
-                     f"{m.routed}/{total} | {m.length:.0f} | {m.vias} | "
-                     f"{cs.median_score:.0f} |")
-    best = best_config(scored)
-    lines.append("")
-    lines.append(f"**best:** grid_mult={best.grid_mult}, via_weight={best.via_weight}")
+        rows.append((
+            f"×{cs.config.grid_mult}",
+            f"{cs.config.via_weight}",
+            f"{m.routed}/{total}",
+            f"{m.length:.0f}",
+            f"{m.vias}",
+            f"{cs.median_score:.0f}",
+            cs.config is best or (cs.config.grid_mult == best.grid_mult
+                                  and cs.config.via_weight == best.via_weight),
+        ))
+
+    headers = ("grid", "via_w", "completion", "len (mm)", "vias", "score")
+    col_ws = [max(len(h), max(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
+
+    def _hline():
+        return "─┼─".join("─" * w for w in col_ws)
+
+    def _row(cells, marker="  "):
+        return " │ ".join(c.rjust(w) for c, w in zip(cells, col_ws)) + marker
+
+    lines = [str(board_path)]
+    lines.append(" │ ".join(h.rjust(w) for h, w in zip(headers, col_ws)))
+    lines.append(_hline())
+    for r in rows:
+        marker = " ★" if r[-1] else "  "
+        lines.append(_row(r[:-1], marker))
+    lines.append(_hline())
+
+    lines.append(f"  best:  grid×{best.grid_mult}  via-weight={best.via_weight}")
     return "\n".join(lines)
 
 
