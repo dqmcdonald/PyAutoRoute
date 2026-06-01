@@ -201,6 +201,48 @@ The entire `gui/` package is **untested** — no tests touch `Worker`, `RunConfi
 the event protocol, the queue-drain/collapse logic, or the Apply-to-Project
 backup/replace, despite [`gui-plan.md`](gui-plan.md) proposing exactly those.
 
+### 11. Keep the best-N routing and placement results (`--keep-best`)
+
+Today `--runs N` and `--place-runs N` each run N times but discard all but the
+single winner. A `--keep-best [N]` flag (default 3 when bare) would write the
+top N results as ranked sibling files alongside the main output:
+
+```
+board_routed.kicad_pcb          ← rank 1 (best), as today
+board_routed_rank2.kicad_pcb
+board_routed_rank3.kicad_pcb
+```
+
+For placement the same applies to `--place-runs`:
+
+```
+board_placed.kicad_pcb          ← best placement
+board_placed_rank2.kicad_pcb
+board_placed_rank3.kicad_pcb
+```
+
+**What this needs:**
+
+- A `--keep-best` argument (`nargs="?", const=3`) in `build_parser()`.
+- `run_routing()` (pipeline.py) currently tracks only the single best
+  `(energy, results, metrics)`. Add a list that collects every run's result;
+  sort by energy; expose the top-N as a new `all_run_results` field on
+  `PipelineResult`.
+- `run_placement()` similarly — `PlaceResult` already tracks energy; collect
+  per-run placements and expose the top-N.
+- In `autoroute.run()`, after writing the main output, iterate the ranked
+  results and write each with `write_board(..., new_nodes=...)` using a
+  `_rank{k}` suffix on the output stem. Apply ground-plane / zone refill to
+  each (or optionally only to the winner to save time).
+- `--keep-best` is silently capped at `--runs` (can't keep more boards than
+  were routed) and at 1 when `--runs 1` (no-op, since there's only one
+  result).
+
+**Effort:** low-to-medium. The main change is collecting per-run results in
+`pipeline.py` instead of tracking only the winner; the write loop in
+`autoroute.py` is straightforward. The parallel path already receives each
+future's result individually so collection is natural there.
+
 ## Lower-value / polish
 
 - **Expose / default-enable stall detection.** Early-termination is already
