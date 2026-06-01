@@ -46,12 +46,17 @@ class AnnealParams:
     seed: int = 0
     snapshots: int = 0          # number of board snapshots to emit across the run
     route_params: RouteParams = field(default_factory=lambda: RouteParams(max_expansions=400_000))
-    # Early-termination (stall detection): if the windowed accept ratio stays
-    # below `stall_ratio` for `stall_patience` consecutive full accept-windows,
-    # the run stops early. Disabled when `stall_patience <= 0` or
-    # `stall_ratio <= 0` (the default), so the full budget is honoured.
+    # Cold-stall detection: if the windowed accept ratio stays below `stall_ratio`
+    # for `stall_patience` consecutive full accept-windows, stop early.
+    # Disabled when `stall_patience <= 0` (the default).
     stall_ratio: float = 0.02
     stall_patience: int = 0
+    # Flat-landscape detection: if the energy never moves by more than
+    # `flat_tolerance` over `flat_window` consecutive iterations, the routing
+    # is already optimal and further annealing is wasteful.  Disabled when
+    # `flat_window <= 0` (the default).
+    flat_window: int = 0
+    flat_tolerance: float = 1e-6
 
 
 @dataclass
@@ -336,12 +341,15 @@ class _Annealer:
         accepted = 0
         recent = deque(maxlen=_ACCEPT_WINDOW)   # 1/0 per recent move, for the live ratio
 
-        # Stall detection: count consecutive completed accept-windows whose
-        # acceptance ratio stayed below `stall_ratio`; break after
-        # `stall_patience` of them. Disabled when either knob is non-positive.
+        # Cold-stall detection: count consecutive accept-windows with low ratio.
         stall_on = self.p.stall_patience > 0 and self.p.stall_ratio > 0.0
         stall_count = 0
         window_seen = 0
+
+        # Flat-landscape detection: track energy over the last `flat_window`
+        # iterations; stop when the range (max-min) stays below flat_tolerance.
+        flat_on = self.p.flat_window > 0
+        flat_history: deque[float] = deque(maxlen=self.p.flat_window) if flat_on else deque(maxlen=1)
 
         total = self.p.iters if self.p.iters else 1_000_000
         t0 = time.time()
@@ -401,6 +409,13 @@ class _Annealer:
                 else:
                     stall_count = 0
                 window_seen = 0
+
+            if flat_on:
+                flat_history.append(E)
+                if (len(flat_history) == self.p.flat_window
+                        and max(flat_history) - min(flat_history)
+                        <= self.p.flat_tolerance):
+                    break
 
         while n_snap and next_snap <= n_snap:
             on_snapshot(next_snap, n_snap, best)

@@ -35,12 +35,12 @@ def _call(cb, *args):
 
 
 def _anneal_summary(aout) -> str:
-    """Build the one-line annealing summary, with a note when the routing was
-    already at the grid optimum (acceptance ≥99% but no energy improvement)."""
+    """Build the one-line annealing summary, with a diagnostic note when the
+    routing appears already optimal (every reroute produces equal energy)."""
     acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
     note = ""
     if acc_pct >= 99 and aout.best_energy >= aout.start_energy - 1e-6:
-        note = "  ← at grid optimum; try a finer --grid"
+        note = "  ← routing appears already optimal (no reroute improved energy)"
     return (f"anneal: {aout.iterations} iters, "
             f"{aout.accepted} accepted ({acc_pct:.0f}%), "
             f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}{note}")
@@ -48,7 +48,7 @@ def _anneal_summary(aout) -> str:
 
 def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
                    iters, time_budget, seed, unrouted_weight, anneal_temps,
-                   via_weight, stall_patience=0, stall_ratio=0.02,
+                   via_weight, stall_patience=0, stall_ratio=0.02, flat_window=0,
                    on_route_progress=None, on_anneal_progress=None,
                    on_snapshot=None, snapshots=0, cancel=None):
     """Run one independent route (+ optional anneal) and return its outcome.
@@ -99,7 +99,8 @@ def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
                                  t_start=anneal_temps[0], t_end=anneal_temps[1],
                                  route_params=params,
                                  stall_patience=stall_patience,
-                                 stall_ratio=stall_ratio)
+                                 stall_ratio=stall_ratio,
+                                 flat_window=flat_window)
         aout = anneal.anneal(state, conns, list(result.results), ap,
                              on_progress=on_anneal_progress,
                              on_snapshot=on_snapshot, cancel=cancel)
@@ -549,7 +550,8 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                     t_start=route_kw["anneal_temps"][0],
                     t_end=route_kw["anneal_temps"][1], route_params=route_params,
                     stall_patience=route_kw.get("stall_patience", 0),
-                    stall_ratio=route_kw.get("stall_ratio", 0.02))
+                    stall_ratio=route_kw.get("stall_ratio", 0.02),
+                    flat_window=route_kw.get("flat_window", 0))
                 aout = anneal.anneal(
                     state, conns, list(result.results), ap,
                     on_progress=on_anneal if h.anneal_progress is not None else None,

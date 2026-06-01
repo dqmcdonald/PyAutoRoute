@@ -782,7 +782,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
                     unrouted_weight=args.unrouted_weight,
                     anneal_temps=args.anneal_temps, via_weight=args.via_weight,
                     stall_patience=args.stall_patience,
-                    stall_ratio=args.stall_ratio)
+                    stall_ratio=args.stall_ratio,
+                    flat_window=args.flat_window)
     _anneal_t0 = [0.0]
 
     def _rt_phase(name):
@@ -926,7 +927,8 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                     unrouted_weight=args.unrouted_weight,
                     anneal_temps=args.anneal_temps, via_weight=args.via_weight,
                     stall_patience=args.stall_patience,
-                    stall_ratio=args.stall_ratio)
+                    stall_ratio=args.stall_ratio,
+                    flat_window=args.flat_window)
     base_seed = args.seed
     jobs = args.jobs if args.jobs and args.jobs > 0 else (os.cpu_count() or 1)
     jobs = max(1, min(jobs, cycles))
@@ -1711,6 +1713,14 @@ def build_parser() -> argparse.ArgumentParser:
                    default=anneal.AnnealParams.stall_ratio, metavar="R",
                    help="accept-ratio threshold for early termination "
                         "(default %(default)s); only active when --stall-patience > 0")
+    p.add_argument("--flat-window", type=int,
+                   default=anneal.AnnealParams.flat_window, metavar="N",
+                   help="stop annealing early if energy does not change by more "
+                        "than 1e-6 over N consecutive iterations; 0 = disabled "
+                        "(default). Useful when the routing is already optimal and "
+                        "every reroute produces the same result — avoids spending "
+                        "the full --time budget confirming nothing can improve. "
+                        "20–50 is a good starting value.")
     p.add_argument("--snapshots", type=int, default=0, metavar="N",
                    help="during annealing, save N board snapshots to a snapshots/ "
                         "subdir (requires --iters or --time)")
