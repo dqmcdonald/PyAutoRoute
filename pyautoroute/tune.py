@@ -111,7 +111,8 @@ class ConfigScore:
 
 def sweep(board, rules, configs: list[Config], seeds=(0, 1, 2),
           unrouted_weight: float = 100.0, via_weight: float = 2.0,
-          time_weight: float = 0.0) -> list[ConfigScore]:
+          time_weight: float = 0.0,
+          progress=None) -> list[ConfigScore]:
     """Evaluate every config over several seeds on a board, scored by median.
 
     Args:
@@ -123,19 +124,29 @@ def sweep(board, rules, configs: list[Config], seeds=(0, 1, 2),
         unrouted_weight: scoring weight per unrouted connection.
         via_weight: scoring weight per via.
         time_weight: scoring weight per second.
+        progress: optional ``progress(done, total, cfg, cs)`` callback invoked
+            after each config is evaluated; ``cs`` is the `ConfigScore` for
+            that config (unsorted), or ``None`` on the very first call with
+            ``done=0``.
 
     Returns:
         One `ConfigScore` per config, sorted best (lowest median score) first.
     """
     grids: dict[float, Grid] = {}
     out: list[ConfigScore] = []
-    for cfg in configs:
+    total = len(configs)
+    if progress:
+        progress(0, total, None, None)
+    for i, cfg in enumerate(configs):
         if cfg.grid_mult not in grids:
             grids[cfg.grid_mult] = Grid(board, rules,
                                         default_pitch(rules) * cfg.grid_mult)
         ms = [evaluate(board, rules, cfg, s, grid=grids[cfg.grid_mult]) for s in seeds]
         scores = [score(m, unrouted_weight, via_weight, time_weight) for m in ms]
-        out.append(ConfigScore(cfg, statistics.median(scores), ms))
+        cs = ConfigScore(cfg, statistics.median(scores), ms)
+        out.append(cs)
+        if progress:
+            progress(i + 1, total, cfg, cs)
     out.sort(key=lambda cs: cs.median_score)
     return out
 
@@ -174,7 +185,7 @@ def best_config(scored: list[ConfigScore]) -> Config:
 
 
 def probe_search_margin(board, rules, cfg: Config, seed: int,
-                        tolerance: float = 0.02) -> float | None:
+                        tolerance: float = 0.02, progress=None) -> float | None:
     """Find the smallest search_margin that matches unbounded routing quality.
 
     Runs the router once with ``search_margin=None`` (unbounded) to establish a
@@ -219,6 +230,17 @@ def probe_search_margin(board, rules, cfg: Config, seed: int,
     base_score = score(base_metrics)
     threshold = base_score * (1 + tolerance)
 
+    total = 1 + len(candidates)   # baseline + one per candidate
+    done = 0
+    if progress:
+        progress(done, total, None, None)
+    base_metrics = evaluate(board, rules, base_cfg, seed, grid=grid)
+    done += 1
+    base_score = score(base_metrics)
+    threshold = base_score * (1 + tolerance)
+    if progress:
+        progress(done, total, None, base_metrics)
+
     best_margin = None   # None = unbounded is the fallback
     for m in candidates:
         test_cfg = Config(grid_mult=cfg.grid_mult, via_weight=cfg.via_weight,
@@ -226,6 +248,9 @@ def probe_search_margin(board, rules, cfg: Config, seed: int,
                           search_margin=m)
         m_metrics = evaluate(board, rules, test_cfg, seed, grid=grid)
         m_score = score(m_metrics)
+        done += 1
+        if progress:
+            progress(done, total, test_cfg, m_metrics)
         if m_score <= threshold:
             best_margin = m   # this margin is acceptable; try something tighter
 
@@ -297,11 +322,34 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     configs = default_grid(time_budget=args.time)
+    total_evals = len(configs) * args.seeds
+
+    def _progress(done, total, cfg, cs):
+        if done == 0:
+            print(f"  probing {total} configs × {args.seeds} seed(s) "
+                  f"= {total_evals} eval(s) …", flush=True)
+            return
+        bar_w = 20
+        filled = int(bar_w * done / total)
+        bar = "█" * filled + "░" * (bar_w - filled)
+        suffix = ""
+        if cfg is not None and cs is not None:
+            m = cs.metrics[0]
+            suffix = (f"  grid×{cfg.grid_mult} via={cfg.via_weight}"
+                      f"  {m.routed}/{m.routed+m.unrouted} routed"
+                      f"  score={cs.median_score:.0f}")
+        print(f"\r  [{bar}] {done}/{total}{suffix}",
+              end="" if done < total else "\n", flush=True)
+
     reports = []
     for b in args.boards:
         bp = Path(b)
-        scored = sweep_board(bp, bp.with_suffix(".kicad_pro"), configs,
-                             seeds=tuple(range(args.seeds)))
+        if len(args.boards) > 1:
+            print(f"\n{bp.name}")
+        scored = sweep(pcb.load_board(bp),
+                       load_rules(bp.with_suffix(".kicad_pro")),
+                       configs, seeds=tuple(range(args.seeds)),
+                       progress=_progress)
         report = _format_report(bp, scored)
         print(report + "\n")
         reports.append(report)

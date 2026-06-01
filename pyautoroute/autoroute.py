@@ -638,10 +638,29 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     if args.auto:
         from . import tune
         rep.phase("auto: probing grid/via settings")
-        scored = tune.sweep(board, rules,
-                            tune.default_grid(time_budget=args.auto_probe_time),
+        auto_configs = tune.default_grid(time_budget=args.auto_probe_time)
+
+        def _sweep_progress(done, total, cfg, cs):
+            if args.quiet:
+                return
+            if done == 0:
+                print(f"  probing {total} grid/via combinations …", flush=True)
+                return
+            bar_w = 20
+            filled = int(bar_w * done / total)
+            bar = "█" * filled + "░" * (bar_w - filled)
+            suffix = ""
+            if cfg is not None and cs is not None:
+                m = cs.metrics[0]
+                suffix = (f"  grid×{cfg.grid_mult} via={cfg.via_weight}"
+                          f"  {m.routed}/{m.routed+m.unrouted} routed"
+                          f"  score={cs.median_score:.0f}")
+            print(f"\r  [{bar}] {done}/{total}{suffix}",
+                  end="" if done < total else "\n", flush=True)
+
+        scored = tune.sweep(board, rules, auto_configs,
                             seeds=(args.seed,), unrouted_weight=args.unrouted_weight,
-                            via_weight=args.via_weight)
+                            via_weight=args.via_weight, progress=_sweep_progress)
         best = tune.best_config(scored)
         chosen_pitch = round(default_pitch(rules) * best.grid_mult, 4)
         rep.done()
@@ -649,7 +668,26 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         total = bm.routed + bm.unrouted
 
         rep.phase("auto: probing search margin")
-        suggested_margin = tune.probe_search_margin(board, rules, best, seed=args.seed)
+
+        def _margin_progress(done, total_m, cfg, metrics):
+            if args.quiet:
+                return
+            if done == 0:
+                print(f"  probing {total_m} search-margin candidates …", flush=True)
+                return
+            bar_w = 20
+            filled = int(bar_w * done / total_m)
+            bar = "█" * filled + "░" * (bar_w - filled)
+            suffix = ""
+            if cfg is not None and metrics is not None:
+                margin_str = f"{cfg.search_margin}mm" if cfg.search_margin else "unbounded"
+                suffix = (f"  margin={margin_str}"
+                          f"  {metrics.routed}/{metrics.routed+metrics.unrouted} routed")
+            print(f"\r  [{bar}] {done}/{total_m}{suffix}",
+                  end="" if done < total_m else "\n", flush=True)
+
+        suggested_margin = tune.probe_search_margin(board, rules, best, seed=args.seed,
+                                                    progress=_margin_progress)
         rep.done()
 
         chosen = (f"auto: best probe grid={chosen_pitch} mm (x{best.grid_mult}), "
