@@ -85,7 +85,7 @@ The original file is never modified unless you pass `--in-place` — a routed co
 | `--cycles N` | **With `--place`:** run `N` independent place+route cycles and keep the one that *routes* best — fewest unrouted, then lowest energy — selecting on the true objective rather than placement energy alone (default 1). Parallelised by `--jobs`. See *Best-of-cycles* below. |
 | `--place-feedback` | **With `--cycles N`:** feed each cycle's routing back into the next placement as a *congestion field*, spreading footprints out of the cells where routing struggled (PathFinder-style). Cycles then run sequentially; the best-routing cycle is still kept, so feedback can only help. Opt-in and experimental. See *Congestion feedback* below. |
 | `--congestion-weight W` | With `--place-feedback`: how hard to spread parts out of the routed hot zones (mm-cost per unit congestion at a footprint centroid; default 5.0). |
-| `--auto` | Probe a few grid/via settings on this board, pick the best, and (on a terminal) ask to confirm before routing with them. `--auto-yes` skips the prompt; `--auto-probe-time S` sets the budget per probed setting. |
+| `--auto` | Probe a few grid/via settings on this board, pick the best, and (on a terminal) ask to confirm before routing with them. `--auto-yes` skips the prompt; `--auto-probe-time S` sets the budget per probed setting; `--auto-time-weight W` (default 1.0) adds a score penalty per second of routing time so that a marginally finer grid doesn't automatically win over a faster coarser one — set to 0 to rank by quality only. |
 | `--unrouted-weight W` | Annealing energy penalty per unrouted connection (default 100). Higher ⇒ the optimiser tries harder to complete every connection, at the expense of wirelength/vias; lower ⇒ it tolerates leaving hard nets for manual routing. |
 | `--anneal-temps START END` | Start/end temperature of the geometric cooling schedule (default `4.0 0.05`); `START > END > 0`. Higher `START` explores more (better escape from local minima, slower convergence); lower `END` exploits harder at the finish. |
 | `--exclude-net PATTERN` | Leave matching nets un-routed (repeatable; glob, e.g. `GND` or `"/PWR*"`). Their pads still act as obstacles. |
@@ -355,11 +355,16 @@ as attached to the pad and keeps it connected when you move the footprint.
 Results depend on a few knobs (grid pitch, via weight, schedule, budget).
 `pyautoroute-tune` sweeps the critical parameters over one or more boards, scores
 each routing with a single objective (completion, then wirelength, then vias, with
-an optional runtime tiebreaker), and reports the best setting per board:
+a runtime tiebreaker), and reports the best setting per board:
 
 ```bash
 pyautoroute-tune MyBoard.kicad_pcb --time 5 --seeds 3
 ```
+
+`--time-weight W` (default 1.0) controls the runtime penalty per second: at the
+default a grid that takes 3 s longer needs to save 3 mm of track to win. Set to
+0 to rank by route quality only; increase it to prefer coarser/faster grids when
+quality differences are small.
 
 The opt-in `--auto` flag is the online version: it runs a quick probe on the board
 in front of it, picks the best grid/via setting, and (on a terminal) asks you to

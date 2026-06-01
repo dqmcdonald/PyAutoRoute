@@ -667,7 +667,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
         scored = tune.sweep(board, rules, auto_configs,
                             seeds=(args.seed,), unrouted_weight=args.unrouted_weight,
-                            via_weight=args.via_weight, exclude=args.exclude_net or None,
+                            via_weight=args.via_weight,
+                            time_weight=args.auto_time_weight,
+                            exclude=args.exclude_net or None,
                             progress=_sweep_progress)
         best = tune.best_config(scored)
         chosen_pitch = round(default_pitch(rules) * best.grid_mult, 4)
@@ -1729,6 +1731,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --auto, apply the chosen settings without prompting")
     p.add_argument("--auto-probe-time", type=float, default=3.0, metavar="S",
                    help="annealing seconds per probed setting under --auto (default %(default)s)")
+    p.add_argument("--auto-time-weight", type=float, default=1.0, metavar="W",
+                   help="score penalty per second of routing runtime during --auto probing "
+                        "(default %(default)s). Penalises slower (finer) grids so that a "
+                        "marginally shorter route doesn't always win over a faster one. "
+                        "Set to 0 to rank purely by route quality.")
     p.add_argument("--exclude-net", action="append", default=[], metavar="PATTERN",
                    help="net name/glob to leave un-routed (repeatable)")
     p.add_argument("--ground-plane", action="store_true",

@@ -350,6 +350,10 @@ def main(argv=None) -> int:
     p.add_argument("--exclude-net", action="append", default=[], metavar="PATTERN",
                    help="net name/glob to leave unrouted during tuning (repeatable); "
                         "use for pour nets like GND that pyautoroute will exclude anyway")
+    p.add_argument("--time-weight", type=float, default=1.0, metavar="W",
+                   help="score penalty per second of routing runtime (default %(default)s). "
+                        "A non-zero value breaks ties in favour of faster (coarser) grids "
+                        "when quality differences are small. Set to 0 to ignore runtime.")
     p.add_argument("--save-ini", nargs="?", const="", default=None, metavar="FILE",
                    help="write optimal settings to an INI file and exit "
                         "(bare: <first_board>.ini — the file auto-loaded by pyautoroute)")
@@ -383,6 +387,7 @@ def main(argv=None) -> int:
         board = pcb.load_board(bp)
         rules = load_rules(bp.with_suffix(".kicad_pro"))
         scored = sweep(board, rules, configs, seeds=tuple(range(args.seeds)),
+                       time_weight=args.time_weight,
                        exclude=args.exclude_net or None, progress=_progress)
         report = _format_report(bp, scored)
         print(report + "\n")

@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.37.1
+
+- **`--auto-time-weight` / `--time-weight` (default 1.0).** Adds a runtime penalty to the auto-probe and tune scoring so that a marginally finer grid no longer automatically wins when quality is essentially equal. Each extra second of routing costs 1 score unit; raise the weight to prefer coarser/faster grids more strongly, or set to 0 to rank by quality only.
+
 ## 0.37.0
 
 - **`--silk-labels` replaces `--fix-values`.** Moves footprint Value text to the silkscreen layer (unchanged) and also moves Reference text to the fabrication layer — keeping refs off the physical board while still available for assembly drawings. The standalone `pyautoroute-fix` tool gains a matching `--refs` flag.
