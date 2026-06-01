@@ -796,8 +796,14 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
     def _rt_run_done(k, n, energy, summary, metrics):
         if parallel:                                   # completion-ordered logging
-            rep.log(f"run {k + 1}/{n} done: energy {energy:.1f}"
-                    + (f"  ({summary})" if summary else ""))
+            routed_r, unrouted_r, length_r, vias_r = metrics
+            total_r = routed_r + unrouted_r
+            log_line = (f"run {k + 1}/{n} done: energy {energy:.1f}  "
+                        f"{routed_r}/{total_r} routed  {length_r:.1f} mm  "
+                        f"{vias_r} vias")
+            rep.log(log_line)
+            if not args.quiet:
+                print(f"  {log_line}", flush=True)
         elif summary:                                  # sequential annealing summary
             line = f"{rep.tag}{summary}"
             rep.log(line)
