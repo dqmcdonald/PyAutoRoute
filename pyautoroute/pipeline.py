@@ -447,6 +447,9 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
         The `PipelineResult` (``place_stats`` is ``None``; the caller fills it).
     """
     h = hooks or PipelineHooks()
+    if seed is None:
+        import time as _time
+        seed = int(_time.time()) & 0x7FFF_FFFF
     if conns is None:
         _call(h.phase, "building netlist (MST rats-nest)")
         conns = netlist.build_connections(board, exclude=exclude or [])

@@ -43,7 +43,7 @@ def test_cli_overrides_config(tmp_path):
     a = _parse_with_config(cfg, ["b.kicad_pcb", "--grid", "0.5"])
     assert a.grid == 0.5                 # CLI wins
     assert a.via_weight == 4.0           # config value kept
-    assert a.seed == 0                   # default when in neither
+    assert a.seed is None                # default (resolved to clock at runtime)
 
 
 def test_config_unknown_key_errors(tmp_path):

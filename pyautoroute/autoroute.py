@@ -1628,7 +1628,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stitch-vias", type=float, nargs="?", const=5.0, metavar="PITCH",
                    help="add stitching vias at PITCH mm intervals (default 5.0 mm; "
                         "most useful with --ground-plane-layer both)")
-    p.add_argument("--seed", type=int, default=0, help="random seed")
+    p.add_argument("--seed", type=int, default=None,
+                   help="random seed (default: seconds since epoch, printed in the log "
+                        "so results are reproducible)")
     p.add_argument("--via-weight", type=float, default=2.0, help="via cost (mm-equiv)")
     p.add_argument("--search-margin", type=float, default=None, metavar="MM",
                    help="bound each connection's A* search to a box around its "
@@ -1705,6 +1707,13 @@ def main(argv=None) -> int:
         parser.set_defaults(**cfg_values)
 
     args = parser.parse_args(argv)
+
+    # Resolve seed: None means "not set by user or config" — pick from the clock
+    # so repeated bare invocations explore different solutions. The resolved value
+    # is logged so any run can be reproduced with --seed N.
+    if args.seed is None:
+        import time as _time
+        args.seed = int(_time.time()) & 0x7FFF_FFFF  # keep it a positive 31-bit int
 
     # CLI-only namespace (no ini defaults) used for source detection in header.
     args_cli = build_parser().parse_args(argv)
