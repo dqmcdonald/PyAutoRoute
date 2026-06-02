@@ -486,12 +486,12 @@ class ControlsPanel(ttk.Frame):
         _sv = lambda key, var: var.set(str(d[key])) if key in d and d[key] is not None else None
         _sv("grid", self._grid)
         _sv("runs", self._runs)
-        if "iters" in d and d["iters"]:
+        if "routing_iters" in d and d["routing_iters"]:
             self._budget_kind.set("iters")
-            self._budget_val.set(str(d["iters"]))
-        if "time_budget" in d and d["time_budget"]:
+            self._budget_val.set(str(d["routing_iters"]))
+        if "routing_time" in d and d["routing_time"]:
             self._budget_kind.set("time")
-            self._budget_val.set(str(d["time_budget"]))
+            self._budget_val.set(str(d["routing_time"]))
         if "exclude_net" in d and d["exclude_net"]:
             self._exclude_net.set(", ".join(d["exclude_net"]))
         _sv("place_runs", self._place_runs)
@@ -802,8 +802,8 @@ class ControlsPanel(ttk.Frame):
             place=cfg.place,
             place_only=cfg.place_only,
             grid=cfg.grid,
-            iters=cfg.iters,
-            time_budget=cfg.time_budget,
+            routing_iters=cfg.iters,
+            routing_time=cfg.time_budget,
             runs=cfg.runs or 1,
             exclude_net=cfg.exclude_net or [],
             via_weight=cfg.via_weight or 2.0,
