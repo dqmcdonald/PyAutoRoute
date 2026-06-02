@@ -12,15 +12,21 @@ back for their own residual TODOs.
 
 > **Recently landed** (see `CHANGES.md`):
 > - **Bounded A\* search** (`--search-margin`) — shipped in 0.25.0.
-> - **Vectorised A\* overlay** — shipped in 0.25.3; the profiling that motivated
->   it points to caching the static free mask / heuristic field across reroutes as
->   the next perf step.
->
-> **In design:**
-> - **Edge-aware placement + place↔route coupling** — see
->   [`placement-improvements-plan.md`](placement-improvements-plan.md): edge-affinity
->   for connectors, a `--keep-outline` mode, best-of-cycles selection on the routed
->   result, and congestion feedback into re-placement.
+> - **Vectorised A\* overlay** — shipped in 0.25.3.
+> - **Ground plane** (`--ground-plane`, `--stitch-vias`, `--ground-plane-layer`) —
+>   shipped; see [`ground-plane-plan.md`](ground-plane-plan.md).
+> - **Board comparison** (`pyautoroute-compare`) — shipped; see
+>   [`board-comparison-plan.md`](board-comparison-plan.md).
+> - **Partial / incremental re-routing** (`--existing-routes preserve`) — shipped;
+>   keeps existing copper, detects pre-routed connections via union-find, routes
+>   only the remainder. Fixes the doubled-tracks bug on re-route (`clear` mode
+>   now also strips segments, not just vias). Closes item #3 below.
+> - **Edge-aware placement + place↔route coupling** — shipped; see
+>   [`placement-improvements-plan.md`](placement-improvements-plan.md).
+> - **Interactive footprint constraints** (GUI click-to-set edge/lock/overlap) —
+>   shipped; see [`footprint-interaction-plan.md`](footprint-interaction-plan.md).
+> - **Differential pair routing** (`--diff-pairs`, `--diff-pair-gap`) — shipped in
+>   0.38.0; see [`diffpair-plan.md`](diffpair-plan.md). Closes item #2 below.
 
 ## Context
 
@@ -48,27 +54,27 @@ and target, expanding the box and retrying on failure. The heuristic field is
 already precomputed (`router.py:310-327`), so clamping the frontier is a
 localized change. Biggest performance win; explicitly intended future work.
 
-### 2. Differential pair routing
+### 2. ✅ Differential pair routing (`--diff-pairs`) — **shipped in 0.38.0**
 
-A common real-world need with **no support at any layer**: `diff_pair_width` /
-`diff_pair_gap` are not even parsed in `rules.py` (only per-class `clearance`,
-`track_width`, `via_diameter`, `via_drill` are), and `netlist.py` has no
-awareness of `+`/`-` net-name suffixes — `greedy_order` keys purely on geometric
-length (`netlist.py:101-102`). KiCad encodes diff pairs by net-name suffix and
-net-class width/gap. Detect pairs in `netlist.py`, parse the two class fields in
-`rules.py`, then route the partner under a coupling constraint in the A\* cost
-model. High value; large but self-contained.
+Detects paired nets by naming convention (`+`/`-`, `P`/`N`, `_P`/`_N`) via
+`netlist.find_diff_pairs()`; routes them with a coupled A* in `diffpair.py` that
+advances both traces simultaneously using a fixed grid-node offset — guaranteeing
+zero length skew by construction. Diff pair copper is baked into the grid's static
+`owner` array after the pre-routing pass so the annealing loop needs no changes.
+`rules.dp_gap_for()` reads `differential_pair_gap` from the net class (falling back
+to clearance). After routing, a per-pair table reports length, skew, vias, and
+estimated differential impedance (IPC-2141A microstrip) using substrate parameters
+from the new `Board.stackup` (parsed from the PCB file's `(setup (stackup …))`
+block). See [`diffpair-plan.md`](diffpair-plan.md) for the full design record.
 
-### 3. Incremental / partial re-routing ("route only these nets")
+### 3. ✅ Incremental / partial re-routing (`--existing-routes preserve`) — **shipped**
 
-Today the writer strips all free vias and reroutes everything. A
-`--keep-existing` / `--nets PATTERN` mode would lock already-routed segments as
-obstacles and route only the named/unrouted nets, making the tool usable
-iteratively on a partly hand-routed board. The grid already supports static
-obstacles from existing copper (`geometry.board_obstacles`, `grid.py:246-259`),
-and `RoutingState` already keys occupancy per connection with exact rip-up
-(`router.py:124-197`), so the foundations exist. Biggest workflow win, moderate
-architectural risk.
+`--existing-routes {clear,preserve}` (default `clear`). In `preserve` mode: keep
+existing copper, run a layer-aware union-find over segments/vias/THT pads to
+classify each MST connection as pre-routed or unrouted, pass only unrouted
+connections to the router, and treat all existing copper as obstacles. `clear` mode
+(the new default) also strips segments before writing — fixing the doubled-tracks
+bug that occurred when re-routing an already-routed board.
 
 ### 4. Per-net-class clearance masks
 
@@ -101,7 +107,43 @@ self-check using the already-parsed `min_hole_to_hole`, and (optionally) treat
 holes as routing obstacles. Closes a real DRC gap with machinery that mostly
 exists.
 
-### 6. Exact custom-pad polygons
+### 6. Auto-add mounting holes (`--mounting-holes`)
+
+A common post-routing task: add NPTH (non-plated through-hole) mounting holes
+at the corners (or other standard positions) of the board outline so the PCB
+can be mechanically fastened.
+
+**What this needs:**
+
+- A `--mounting-holes` flag with sub-options:
+  - `--hole-diameter MM` (e.g. 3.2 mm for M3)
+  - `--hole-margin MM` (inset from board corners / edge; default ~2 mm)
+  - `--hole-pattern {corners|custom}` — `corners` auto-places four holes
+    symmetrically inset from the bounding rectangle corners; `custom` accepts
+    explicit (x, y) positions
+- An NPTH pad node builder: `pcb.make_npth(x, y, drill_mm)` — a
+  `(footprint ...)` node containing a single `np_thru_hole` pad with no net,
+  placed on `Edge.Cuts` + drill layers (same pattern as KiCad's built-in
+  MountingHole footprint). Alternatively emit a bare `(pad "" np_thru_hole
+  circle ...)` at the top level — simpler, though KiCad prefers footprints.
+- **Obstacle registration**: NPTH holes must appear as routing obstacles (a
+  circular keepout with `drill + clearance` radius) so the router doesn't
+  route copper through them. `geometry.board_obstacles` currently ignores
+  `np_thru_hole` pads (`pcb.py:124`); this would fix that gap and link
+  naturally with item 5 (drill geometry DRC).
+- **Placement interaction**: when `--place` is used the holes should be
+  **fixed** obstacles — placed before the annealer runs so footprints are
+  pushed away from them. Simplest: inject the NPTH pads into the board before
+  placement so the grid respects them automatically.
+- **`--keep-outline` compatibility**: when the board outline is fixed, corners
+  are well-defined; when PyAutoRoute generates the outline (`--place` without
+  `--keep-outline`), holes are placed after the outline is finalised.
+
+**Effort:** low-to-medium. `make_npth` is a small node builder; the routing
+obstacle registration is the same fix needed for item 5; the corner-placement
+geometry is trivial. The main complexity is the placement interaction.
+
+### 7. Exact custom-pad polygons
 
 `_base_pad_shape` renders circle/oval/roundrect/trapezoid exactly, but **rect,
 custom, and unknown shapes all fall back to their bounding box**
@@ -163,6 +205,48 @@ The entire `gui/` package is **untested** — no tests touch `Worker`, `RunConfi
 the event protocol, the queue-drain/collapse logic, or the Apply-to-Project
 backup/replace, despite [`gui-plan.md`](gui-plan.md) proposing exactly those.
 
+### 11. Keep the best-N routing and placement results (`--keep-best`)
+
+Today `--runs N` and `--place-runs N` each run N times but discard all but the
+single winner. A `--keep-best [N]` flag (default 3 when bare) would write the
+top N results as ranked sibling files alongside the main output:
+
+```
+board_routed.kicad_pcb          ← rank 1 (best), as today
+board_routed_rank2.kicad_pcb
+board_routed_rank3.kicad_pcb
+```
+
+For placement the same applies to `--place-runs`:
+
+```
+board_placed.kicad_pcb          ← best placement
+board_placed_rank2.kicad_pcb
+board_placed_rank3.kicad_pcb
+```
+
+**What this needs:**
+
+- A `--keep-best` argument (`nargs="?", const=3`) in `build_parser()`.
+- `run_routing()` (pipeline.py) currently tracks only the single best
+  `(energy, results, metrics)`. Add a list that collects every run's result;
+  sort by energy; expose the top-N as a new `all_run_results` field on
+  `PipelineResult`.
+- `run_placement()` similarly — `PlaceResult` already tracks energy; collect
+  per-run placements and expose the top-N.
+- In `autoroute.run()`, after writing the main output, iterate the ranked
+  results and write each with `write_board(..., new_nodes=...)` using a
+  `_rank{k}` suffix on the output stem. Apply ground-plane / zone refill to
+  each (or optionally only to the winner to save time).
+- `--keep-best` is silently capped at `--runs` (can't keep more boards than
+  were routed) and at 1 when `--runs 1` (no-op, since there's only one
+  result).
+
+**Effort:** low-to-medium. The main change is collecting per-run results in
+`pipeline.py` instead of tracking only the winner; the write loop in
+`autoroute.py` is straightforward. The parallel path already receives each
+future's result individually so collection is natural there.
+
 ## Lower-value / polish
 
 - **Expose / default-enable stall detection.** Early-termination is already
@@ -188,9 +272,13 @@ backup/replace, despite [`gui-plan.md`](gui-plan.md) proposing exactly those.
 
 If implementation effort is to be prioritized:
 
-1. **Bounded A\* search** — biggest performance win; `architecture.md:459` already
-   names it the highest-value next optimisation.
-2. **Partial re-routing (`--nets` / `--keep-existing`)** — biggest workflow win,
-   built on existing per-connection occupancy.
-3. **Differential pairs** — biggest "real PCB" capability gap; unsupported
-   end-to-end today.
+1. ~~**Differential pairs**~~ — **shipped in 0.38.0** (see item #2 above).
+2. **Per-net-class clearance masks** — routes denser mixed-rule boards; the grid
+   currently uses a single worst-case margin across all net classes.
+3. **Drill geometry + hole-to-hole DRC** — closes a real self-check gap;
+   `min_hole_to_hole` is already parsed and `Pad.drill` is already modelled,
+   so most of the scaffolding exists.
+4. **Diff pair annealing integration** — current implementation pre-routes pairs
+   once and bakes them as fixed obstacles; integrating them into the rip-up/reroute
+   annealing loop (treating each pair as an atomic unit) would allow global
+   optimisation across single-ended and diff pair nets together.

@@ -1,7 +1,8 @@
 # Plan: placement quality — edge-aware placement + place↔route coupling
 
-> **Status: 📐 Design (not yet implemented).** This plans two requested
-> placement improvements. It follows the same plan-doc convention as
+> **Status: ✅ Implemented.** Both Part A (edge-aware placement: `Footprint.edge_affinity`,
+> `--keep-outline`, `--place-edge-weight`) and Part B (place↔route coupling: `--cycles`,
+> `--place-feedback`, `--congestion-weight`, `--jobs`) are shipped. See `CHANGES.md`. It follows the same plan-doc convention as
 > [`place-feature-plan.md`](place-feature-plan.md) and
 > [`gui-plan.md`](gui-plan.md): a design artefact reviewed before code, then
 > implemented in phases, each shipping with docs + a version bump + a `CHANGES.md`

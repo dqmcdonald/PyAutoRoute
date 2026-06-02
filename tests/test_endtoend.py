@@ -96,7 +96,7 @@ def test_cli_writes_snapshots_and_log(tmp_path):
     # annealing parameters (including --unrouted-weight / --anneal-temps)
     out = tmp_path / "out.kicad_pcb"
     args = autoroute.build_parser().parse_args(
-        [str(_TEST_BOARD), "-o", str(out), "--iters", "30", "--snapshots", "3",
+        [str(_TEST_BOARD), "-o", str(out), "--routing-iters", "30", "--snapshots", "3",
          "--unrouted-weight", "60", "--anneal-temps", "5", "0.1", "--log", "--quiet"])
     rc = autoroute.run(args)
     assert rc == 0
@@ -176,7 +176,7 @@ def test_cli_place_only_writes_placed_board(tmp_path):
 
 def test_cli_place_only_rejects_routing_flags():
     with pytest.raises(SystemExit):
-        autoroute.main(["b.kicad_pcb", "--place-only", "--iters", "10"])
+        autoroute.main(["b.kicad_pcb", "--place-only", "--routing-iters", "10"])
 
 
 def test_cli_placement_control_flags_parse():
@@ -216,7 +216,7 @@ def test_cli_runs_flags_parse_and_validate():
 def test_cli_multi_run_routes_clean(tmp_path):
     out = tmp_path / "out.kicad_pcb"
     args = autoroute.build_parser().parse_args(
-        [str(_TEST_BOARD), "-o", str(out), "--iters", "40", "--runs", "3",
+        [str(_TEST_BOARD), "-o", str(out), "--routing-iters", "40", "--runs", "3",
          "--log", "--quiet"])
     assert autoroute.run(args) == 0                 # best-of-3, clean self-check
     text = out.with_suffix(".log").read_text()
@@ -238,7 +238,7 @@ def test_cli_parallel_runs_routes_clean(tmp_path):
     # best-of-N across worker processes: valid, DRC-clean result, best line logged
     out = tmp_path / "out.kicad_pcb"
     args = autoroute.build_parser().parse_args(
-        [str(_TEST_BOARD), "-o", str(out), "--iters", "40", "--runs", "2",
+        [str(_TEST_BOARD), "-o", str(out), "--routing-iters", "40", "--runs", "2",
          "--jobs", "2", "--log", "--quiet"])
     assert autoroute.run(args) == 0
     assert out.exists()

@@ -97,9 +97,10 @@ class RunConfig:
         "snapshots",
         "quiet", "log",
         "auto", "auto_yes", "auto_probe_time",
-        "fix_values", "keep_outline",
+        "silk_labels", "keep_outline",
         "ground_plane", "ground_net", "ground_plane_layer",
         "ground_plane_margin", "stitch_vias",
+        "existing_routes",
     )
 
     def __init__(self, **kw):
@@ -146,6 +147,7 @@ class ControlsPanel(ttk.Frame):
         self._budget_val = tk.StringVar(value="")
         self._runs = tk.StringVar(value="1")
         self._exclude_net = tk.StringVar(value="")
+        self._existing_routes = tk.StringVar(value="clear")
         # Placement
         self._place_budget_kind = tk.StringVar(value="iters")
         self._place_budget_val = tk.StringVar(value="")
@@ -174,7 +176,7 @@ class ControlsPanel(ttk.Frame):
         self._place_ew = tk.StringVar(value="2.0")
         self._snapshots = tk.StringVar(value="0")
         self._auto_probe_time = tk.StringVar(value="3.0")
-        self._fix_values = tk.BooleanVar(value=False)
+        self._silk_labels = tk.BooleanVar(value=False)
         self._keep_outline = tk.BooleanVar(value=False)
         # Ground plane
         self._ground_plane = tk.BooleanVar(value=False)
@@ -246,6 +248,16 @@ class ControlsPanel(ttk.Frame):
         _row(rf, 4, "Exclude net:", excl_e,
              "Comma-separated net names or glob patterns to leave un-routed "
              "(e.g. GND, PWR_*).")
+        er_row = ttk.Frame(rf)
+        er_row.grid(row=5, column=0, columnspan=2, sticky=tk.EW, padx=4, pady=2)
+        ttk.Label(er_row, text="Existing routes:").pack(side=tk.LEFT)
+        for val, lbl in (("clear", "Clear"), ("preserve", "Preserve")):
+            ttk.Radiobutton(er_row, text=lbl,
+                            variable=self._existing_routes,
+                            value=val).pack(side=tk.LEFT, padx=4)
+        add_tooltip(er_row,
+                    "Clear: strip all existing tracks/vias before routing (default). "
+                    "Preserve: keep existing copper and only route unconnected nets.")
 
         # Placement section
         self._place_frame = pf = _section(p, "Placement")
@@ -402,9 +414,11 @@ class ControlsPanel(ttk.Frame):
     def _save_settings(self):
         inp = self._full_input_path()
         init = str(Path(inp).with_suffix(".ini")) if inp else ""
+        # Pass the stem only — defaultextension adds ".ini" so the dialog
+        # doesn't show "myboard.ini" and then append another ".ini" on save.
         path = filedialog.asksaveasfilename(
             title="Save settings",
-            initialfile=Path(init).name if init else "",
+            initialfile=Path(init).stem if init else "",
             initialdir=str(Path(init).parent) if init else ".",
             defaultextension=".ini",
             filetypes=[("INI config", "*.ini"),
@@ -485,8 +499,8 @@ class ControlsPanel(ttk.Frame):
         _sv("auto_probe_time", self._auto_probe_time)
         if "quiet" in d:
             self._quiet.set(bool(d["quiet"]))
-        if "fix_values" in d:
-            self._fix_values.set(bool(d["fix_values"]))
+        if "silk_labels" in d:
+            self._silk_labels.set(bool(d["silk_labels"]))
         if "keep_outline" in d:
             self._keep_outline.set(bool(d["keep_outline"]))
         if "ground_plane" in d:
@@ -496,6 +510,8 @@ class ControlsPanel(ttk.Frame):
             self._ground_plane_layer.set(d["ground_plane_layer"])
         _sv("ground_plane_margin", self._ground_plane_margin)
         _sv("stitch_vias", self._stitch_vias)
+        if "existing_routes" in d and d["existing_routes"] in ("clear", "preserve"):
+            self._existing_routes.set(d["existing_routes"])
 
     # ── advanced dialog ───────────────────────────────────────────────
 
@@ -541,13 +557,13 @@ class ControlsPanel(ttk.Frame):
             e.grid(row=r, column=1, sticky=tk.EW, padx=4, pady=2)
             add_tooltip(e, tip)
 
-        cb_fv = ttk.Checkbutton(f, text="Fix Value layers",
-                                 variable=self._fix_values)
+        cb_fv = ttk.Checkbutton(f, text="Silk labels",
+                                 variable=self._silk_labels)
         cb_fv.grid(row=len(rows), column=0, columnspan=2, sticky=tk.W,
                    padx=4, pady=4)
         add_tooltip(cb_fv,
-                    "Move footprint Value text to the silkscreen layer "
-                    "(F.SilkS / B.SilkS) before routing. Off by default.")
+                    "Move footprint Value text to silkscreen (F.SilkS / B.SilkS) "
+                    "and Reference text to fab (F.Fab / B.Fab) before routing.")
 
         cb_ko = ttk.Checkbutton(f, text="Keep board outline (--place)",
                                 variable=self._keep_outline)
@@ -704,13 +720,14 @@ class ControlsPanel(ttk.Frame):
             auto=False,
             auto_yes=False,
             auto_probe_time=_f(self._auto_probe_time, 3.0),
-            fix_values=self._fix_values.get(),
+            silk_labels=self._silk_labels.get(),
             keep_outline=self._keep_outline.get(),
             ground_plane=self._ground_plane.get(),
             ground_net=self._ground_net.get() or None,
             ground_plane_layer=self._ground_plane_layer.get(),
             ground_plane_margin=_f(self._ground_plane_margin),
             stitch_vias=_f(self._stitch_vias),
+            existing_routes=self._existing_routes.get() or "clear",
         )
 
     def _to_namespace(self, parser) -> argparse.Namespace:
@@ -752,11 +769,12 @@ class ControlsPanel(ttk.Frame):
             auto=False,
             auto_yes=False,
             auto_probe_time=cfg.auto_probe_time or 3.0,
-            fix_values=cfg.fix_values or False,
+            silk_labels=cfg.silk_labels or False,
             keep_outline=cfg.keep_outline or False,
             ground_plane=cfg.ground_plane or False,
             ground_net=cfg.ground_net,
             ground_plane_layer=cfg.ground_plane_layer or "B.Cu",
             ground_plane_margin=cfg.ground_plane_margin,
             stitch_vias=cfg.stitch_vias,
+            existing_routes=cfg.existing_routes or "clear",
         )

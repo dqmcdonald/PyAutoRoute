@@ -52,7 +52,7 @@ def compare(paths: list[str], *, pro: str | None = None, labels: list[str] | Non
     boards = [pcb.load_board(p) for p in paths]
 
     # Load design rules from shared .kicad_pro
-    pro_path = _resolve_pro(pro, paths[0])
+    pro_path = _resolve_pro(pro, paths)
     rules = rules_mod.load_rules(pro_path)
 
     # Collect copper-pour nets from all boards (union across all)
@@ -79,22 +79,36 @@ def compare(paths: list[str], *, pro: str | None = None, labels: list[str] | Non
     )
 
 
-def _resolve_pro(pro: str | None, first_path: str) -> str | None:
+def _resolve_pro(pro: str | None, board_paths: list[str]) -> str | None:
     """Resolve the project file path.
 
-    If `pro` is given, return it. Otherwise, try first_path's sibling `.kicad_pro`,
-    then with the same stem. Return None if not found.
+    Tries (in order):
+    1. The explicit ``--pro`` argument.
+    2. Each board path with its suffix replaced by ``.kicad_pro``.
+    3. Any ``.kicad_pro`` file in the same directory as the first board.
+    Returns None if nothing is found (caller falls back to default rules).
     """
     if pro is not None:
         return pro
-    p = Path(first_path)
-    with_suffix = p.with_suffix(".kicad_pro")
-    if with_suffix.exists():
-        return str(with_suffix)
-    with_stem = p.with_name(p.stem + ".kicad_pro")
-    if with_stem.exists():
-        return str(with_stem)
-    return None
+    # Try exact-name match for each supplied board path
+    for bp in board_paths:
+        candidate = Path(bp).with_suffix(".kicad_pro")
+        if candidate.exists():
+            return str(candidate)
+    # Scan the directory of the first board for any .kicad_pro
+    first_dir = Path(board_paths[0]).parent
+    try:
+        pros = list(first_dir.glob("*.kicad_pro"))
+    except (OSError, ValueError):
+        pros = []
+    if len(pros) == 1:
+        return str(pros[0])
+    # Multiple .kicad_pro files — prefer the one whose stem matches any board stem
+    board_stems = {Path(bp).stem for bp in board_paths}
+    for candidate in pros:
+        if candidate.stem in board_stems:
+            return str(candidate)
+    return str(pros[0]) if pros else None
 
 
 def _auto_labels(paths: list[str]) -> list[str]:
@@ -150,128 +164,124 @@ def _score(s: RoutingStats, via_weight: float, unrouted_weight: float) -> float:
 
 
 def format_report(result: CompareResult) -> str:
-    """Format the comparison result as a plain-text report."""
+    """Format the comparison result as a plain-text table."""
+    scores = [_score(s, result.via_weight, result.unrouted_weight) for s in result.stats]
+    ranked = _rank_boards(result, scores)
+
     lines = []
     lines.append("PyAutoRoute board comparison")
-
-    # Header
-    pro_label = "(no project file)"  # We don't have path info in CompareResult
-    lines.append(f"  design:  {pro_label}  ({len(result.labels)} boards, "
-                 f"{result.stats[0].total} connections)")
-
+    n_boards = len(result.labels)
+    n_conns = result.stats[0].total if result.stats else 0
+    lines.append(f"  {n_boards} boards  ·  {n_conns} connections")
     if result.excluded_nets:
         lines.append(f"  ignored: {', '.join(result.excluded_nets)}  (copper-pour nets)")
-
     for warning in result.design_warnings:
-        lines.append(f"  ⚠ {warning}")
+        lines.append(f"  ⚠  {warning}")
 
-    # Metrics table
-    lines.append("")
-    labels = result.labels
+    # ── Build metric rows as (name, [cell_value, ...], [is_best, ...]) ──────
+    Row = tuple  # (metric_name: str, values: list[str], bests: list[bool])
 
-    # Column widths
-    metric_width = 18
-    col_width = 16
+    def _best_marker(bests: list[bool]) -> list[str]:
+        return ["*" if b else " " for b in bests]
 
-    # Header row
-    header_parts = [""]  # metric column
-    for label in labels:
-        header_parts.append(label.ljust(col_width))
-    lines.append("".join(header_parts))
+    rows: list[Row] = []
 
-    # Completion
-    completion_line = ["completion".ljust(metric_width)]
+    # completion
     best_routed = max(s.routed for s in result.stats)
-    for s in result.stats:
-        pct = 100 * s.routed / s.total if s.total > 0 else 0
-        marker = "[best]" if s.routed == best_routed else ""
-        val = f"{s.routed}/{s.total} {pct:.0f}% {marker}".ljust(col_width)
-        completion_line.append(val)
-    lines.append("".join(completion_line))
-
-    # DRC violations
-    drc_line = ["DRC".ljust(metric_width)]
-    for s in result.stats:
-        if s.violations:
-            val = f"{len(s.violations)} ✗".ljust(col_width)
-        else:
-            val = "clean".ljust(col_width)
-        drc_line.append(val)
-    lines.append("".join(drc_line))
-
-    # Wirelength
-    wirelength_line = ["wirelength (mm)".ljust(metric_width)]
-    best_length = min(s.length for s in result.stats)
-    for s in result.stats:
-        marker = "[best]" if s.length == best_length else ""
-        val = f"{s.length:.1f} {marker}".ljust(col_width)
-        wirelength_line.append(val)
-    lines.append("".join(wirelength_line))
-
-    # Directness
-    directness_line = ["directness (×ideal)".ljust(metric_width)]
-    best_directness = min(
-        s.length / s.ideal_length if s.ideal_length > 0 else float('inf')
+    rows.append(("completion", [
+        f"{s.routed}/{s.total}  ({100*s.routed/s.total:.0f}%)" if s.total else "0/0"
         for s in result.stats
-    )
-    for s in result.stats:
-        if s.ideal_length > 0:
-            directness = s.length / s.ideal_length
-            marker = "[best]" if directness == best_directness else ""
-            val = f"{directness:.2f}× {marker}".ljust(col_width)
-        else:
-            val = "N/A".ljust(col_width)
-        directness_line.append(val)
-    lines.append("".join(directness_line))
+    ], [s.routed == best_routed for s in result.stats]))
 
-    # Vias
-    vias_line = ["vias".ljust(metric_width)]
+    # DRC
+    rows.append(("DRC", [
+        f"{len(s.violations)} violation(s)" if s.violations else "clean"
+        for s in result.stats
+    ], [not s.violations for s in result.stats]))
+
+    # wirelength
+    best_len = min(s.length for s in result.stats)
+    rows.append(("wirelength (mm)", [
+        f"{s.length:.1f}" for s in result.stats
+    ], [s.length == best_len for s in result.stats]))
+
+    # directness
+    directnesses = [
+        s.length / s.ideal_length if s.ideal_length > 0 else None
+        for s in result.stats
+    ]
+    best_dir = min((d for d in directnesses if d is not None), default=None)
+    rows.append(("directness (×ideal)", [
+        f"{d:.2f}×" if d is not None else "N/A" for d in directnesses
+    ], [d is not None and d == best_dir for d in directnesses]))
+
+    # vias (two sub-rows)
     best_vias = min(s.vias for s in result.stats)
-    for s in result.stats:
-        per_conn = s.vias / s.total if s.total > 0 else 0
-        marker = "[best]" if s.vias == best_vias else ""
-        val = f"{s.vias} ({per_conn:.2f}/conn) {marker}".ljust(col_width)
-        vias_line.append(val)
-    lines.append("".join(vias_line))
+    rows.append(("vias", [
+        str(s.vias) for s in result.stats
+    ], [s.vias == best_vias for s in result.stats]))
+    rows.append(("  per connection", [
+        f"{s.vias / s.total:.2f}" if s.total else "N/A"
+        for s in result.stats
+    ], [s.vias == best_vias for s in result.stats]))
 
-    # Layers (length by layer)
-    layers_by_name = _layer_breakdown(result)
-    if layers_by_name:
-        for layer_name in sorted(layers_by_name.keys()):
-            layer_line = [f"  {layer_name}".ljust(metric_width)]
-            for lengths in layers_by_name[layer_name]:
-                val = f"{lengths:.0f} mm".ljust(col_width)
-                layer_line.append(val)
-            lines.append("".join(layer_line))
-
-    # Score
-    scores = [_score(s, result.via_weight, result.unrouted_weight) for s in result.stats]
+    # score — DRC-dirty boards flagged with †
     best_score = min(scores)
-    score_line = ["score".ljust(metric_width)]
-    for s, score in zip(result.stats, scores):
-        # Flag boards with DRC violations
-        drc_marker = " *" if s.violations else ""
-        marker = "[best]" if score == best_score else ""
-        val = f"{score:.1f}{drc_marker} {marker}".ljust(col_width)
-        score_line.append(val)
-    lines.append("".join(score_line))
+    rows.append(("score", [
+        f"{sc:.1f}" + (" †" if s.violations else "")
+        for s, sc in zip(result.stats, scores)
+    ], [sc == best_score and not s.violations
+        for s, sc in zip(result.stats, scores)]))
 
-    # Ranking
+    # ── Compute column widths from content ────────────────────────────────
+    # Metric column: max metric name + 1 padding
+    metric_w = max(len(r[0]) for r in rows) + 1
+
+    # Data columns: max(label, widest cell value) + 2 padding; +2 for " *" marker
+    col_ws = []
+    for i, label in enumerate(result.labels):
+        max_val = max(len(r[1][i]) for r in rows)
+        col_ws.append(max(len(label), max_val) + 2)
+
+    # ── Render ────────────────────────────────────────────────────────────
+    def _hline(mid: str = "─") -> str:
+        parts = ["─" * (metric_w + 1)]
+        for w in col_ws:
+            parts.append("─" * (w + 3))  # " │ " = 3 extra chars
+        return "┼".join(parts)
+
+    def _row(metric: str, vals: list[str], markers: list[str]) -> str:
+        line = metric.ljust(metric_w)
+        for val, mk, w in zip(vals, markers, col_ws):
+            cell = f" {val.rjust(w)}{mk}"  # right-align value, marker on right
+            line += f" │{cell}"
+        return line
+
+    # header
     lines.append("")
-    ranked = _rank_boards(result, scores)
-    ranking_str = "  ranking: " + "  ".join(ranked)
-    lines.append(ranking_str)
+    header = " " * (metric_w + 1)
+    for label, w in zip(result.labels, col_ws):
+        header += f" │ {label.center(w)} "
+    lines.append(header)
+    lines.append(_hline())
 
-    if result.design_warnings:
-        lines.append("  (* board has design/netlist inconsistencies)")
+    for metric, vals, bests in rows:
+        lines.append(_row(metric, vals, _best_marker(bests)))
+
+    lines.append(_hline())
+
+    # footnotes
+    if any(r[2].count(True) > 1 for r in rows):
+        pass  # tied values all get * — no footnote needed
     if any(s.violations for s in result.stats):
-        lines.append("  (* board has DRC violations — excluded from ranking)")
+        lines.append("  † board has DRC violations — excluded from ranking")
 
-    # Analysis
+    # ranking + analysis
+    lines.append("")
+    lines.append("  ranking:  " + "   ".join(ranked))
     lines.append("")
     lines.append("  analysis:")
-    analysis = _generate_analysis(result, scores, ranked)
-    for bullet in analysis:
+    for bullet in _generate_analysis(result, scores, ranked):
         lines.append(f"  - {bullet}")
 
     return "\n".join(lines)

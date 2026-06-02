@@ -155,6 +155,7 @@ class Segment:
     width: float
     layer: str
     net: str
+    node: "SList | None" = None   # source node, so write_board can strip it
 
 
 @dataclass
@@ -210,6 +211,18 @@ class Footprint:
 
 
 @dataclass
+class Stackup:
+    """Substrate parameters parsed from the board's ``(setup (stackup ...))`` block.
+
+    Used for differential-pair impedance estimates. Defaults match a standard
+    1.6 mm two-layer FR4 board with 1 oz copper when no stackup is present.
+    """
+    copper_thickness: float = 0.035   # mm (1 oz Cu)
+    dielectric_h: float = 1.6        # mm (core height)
+    epsilon_r: float = 4.5           # relative permittivity (FR4)
+
+
+@dataclass
 class Board:
     tree: SList
     copper_layers: list[str]               # ordered; [0] is the preferred front
@@ -222,6 +235,7 @@ class Board:
     name_only_nets: bool = True
     footprints: list[Footprint] = field(default_factory=list)
     outline_synthesized: bool = False   # True when no Edge.Cuts found and a default was generated
+    stackup: Stackup = field(default_factory=Stackup)
 
     @property
     def front_layer(self) -> str:
@@ -300,6 +314,38 @@ def _copper_layers(tree: SList) -> list[str]:
             if name.endswith(".Cu"):
                 out.append(name)
     return out or ["F.Cu", "B.Cu"]
+
+
+def _fab_layers(tree: SList) -> tuple[str, str]:
+    """Return the front and back fabrication layer names from the board's layer table.
+
+    Looks for layer entries whose canonical name contains ``Fab`` or
+    ``Fabrication`` (case-insensitive). Falls back to ``"F.Fab"`` / ``"B.Fab"``
+    when the board has no layer table or no matching entries.
+
+    Args:
+        tree: the parsed board tree.
+
+    Returns:
+        A ``(front_fab, back_fab)`` pair, e.g. ``("F.Fab", "B.Fab")``.
+    """
+    layers_node = child(tree, "layers")
+    front = back = ""
+    if layers_node is not None:
+        for entry in layers_node:
+            if not isinstance(entry, SList):
+                continue
+            toks = [it for it in entry]
+            if len(toks) < 2 or not isinstance(toks[1], Atom):
+                continue
+            name = toks[1].text
+            low = name.lower()
+            if "fab" in low or "fabrication" in low:
+                if low.startswith("f."):
+                    front = name
+                elif low.startswith("b."):
+                    back = name
+    return front or "F.Fab", back or "B.Fab"
 
 
 def _silk_layers(tree: SList) -> tuple[str, str]:
@@ -630,6 +676,7 @@ def _parse_segments(tree: SList, numbered: dict[int, str]) -> list[Segment]:
                 width=w[0] if w else 0.2,
                 layer=lay[0] if lay else "F.Cu",
                 net=_net_name(child(it, "net"), numbered),
+                node=it,
             ))
     return out
 
@@ -680,6 +727,52 @@ def _numbered_net_table(tree: SList) -> dict[int, str]:
 
 
 # --- public API --------------------------------------------------------------
+
+def _parse_stackup(tree: SList) -> Stackup:
+    """Extract substrate parameters from the board's stackup block.
+
+    Looks for the first dielectric layer (type ``core`` or ``prepreg``) to get
+    the height and permittivity, and the first copper layer for thickness.
+    Falls back to FR4 defaults when the block is absent or fields are missing.
+
+    Args:
+        tree: the root s-expression of the ``.kicad_pcb`` file.
+
+    Returns:
+        A `Stackup` with parsed (or default) values.
+    """
+    result = Stackup()
+    setup = child(tree, "setup")
+    if setup is None:
+        return result
+    stackup_node = child(setup, "stackup")
+    if stackup_node is None:
+        return result
+
+    for layer_node in children(stackup_node, "layer"):
+        type_node = child(layer_node, "type")
+        if type_node is None:
+            continue
+        type_atoms = atoms_after_head(type_node)
+        if not type_atoms:
+            continue
+        layer_type = type_atoms[0].text.strip('"')
+
+        thickness_node = child(layer_node, "thickness")
+        thickness = floats(thickness_node)
+
+        if layer_type == "copper" and thickness:
+            result.copper_thickness = thickness[0]
+        elif layer_type in ("core", "prepreg") and thickness:
+            result.dielectric_h = thickness[0]
+            er_node = child(layer_node, "epsilon_r")
+            er_vals = floats(er_node)
+            if er_vals:
+                result.epsilon_r = er_vals[0]
+            break   # use the first dielectric layer only
+
+    return result
+
 
 def load_board(pcb_path: str | Path) -> Board:
     """Parse a ``.kicad_pcb`` file into a `Board` model.
@@ -741,6 +834,7 @@ def load_board(pcb_path: str | Path) -> Board:
         numbered_nets=numbered,
         name_only_nets=name_only,
         footprints=footprints,
+        stackup=_parse_stackup(tree),
     )
     ensure_outline(board)
     return board
@@ -913,6 +1007,10 @@ def make_zone_node(board: Board, layer: str, net: str,
     for x, y in pts:
         pts_node.append(SList([sexpr.sym("xy"), sexpr.number(x), sexpr.number(y)]))
 
+    # Thermal bridge spokes must be at least as wide as min_thickness, otherwise
+    # KiCad's fill algorithm silently drops the thermal reliefs for affected pads.
+    thermal_bridge = max(clearance, min_thickness)
+
     return SList([
         sexpr.sym("zone"),
         _net_ref_node(board, net),
@@ -927,7 +1025,7 @@ def make_zone_node(board: Board, layer: str, net: str,
         SList([
             sexpr.sym("fill"), sexpr.sym("yes"),
             SList([sexpr.sym("thermal_gap"), sexpr.number(clearance)]),
-            SList([sexpr.sym("thermal_bridge_width"), sexpr.number(clearance)]),
+            SList([sexpr.sym("thermal_bridge_width"), sexpr.number(thermal_bridge)]),
             SList([sexpr.sym("island_removal_mode"), sexpr.number(0)])
         ]),
         SList([sexpr.sym("polygon"), pts_node]),
@@ -1233,7 +1331,7 @@ def stamp_comment(board: Board, text: str) -> None:
     # All 9 slots occupied — leave unchanged
 
 
-def fix_value_layers(board: Board) -> int:
+def move_values_to_silk(board: Board) -> int:
     """Move footprint ``Value`` text to the matching silkscreen layer.
 
     Scans every footprint in the board tree for ``(property "Value" ...)``
@@ -1258,12 +1356,10 @@ def fix_value_layers(board: Board) -> int:
 
     changed = 0
     for fp_node in children(board.tree, "footprint"):
-        # Determine front vs back from the footprint's (layer ...) child.
         fp_layer_strs = strings(child(fp_node, "layer"))
         fp_layer = fp_layer_strs[0] if fp_layer_strs else "F.Cu"
         target_silk = back_silk if fp_layer.startswith("B.") else front_silk
 
-        # Modern format: (property "Value" ...) with a nested (layer "...").
         for prop_node in children(fp_node, "property"):
             atoms = atoms_after_head(prop_node)
             if not atoms or atoms[0].text != "Value":
@@ -1274,18 +1370,14 @@ def fix_value_layers(board: Board) -> int:
             layer_atoms = atoms_after_head(layer_node)
             if not layer_atoms:
                 continue
-            current = layer_atoms[0].text
-            if current in silk_names:
+            if layer_atoms[0].text in silk_names:
                 continue
-            # Swap the layer atom and invalidate spans so the serialiser
-            # regenerates this node rather than emitting verbatim source.
             layer_node[layer_node.index(layer_atoms[0])] = sexpr.string(target_silk)
             layer_node.span = None
             prop_node.span = None
             fp_node.span = None
             changed += 1
 
-        # Legacy format: (fp_text value ...).
         for txt_node in children(fp_node, "fp_text"):
             atoms = atoms_after_head(txt_node)
             if not atoms or atoms[0].text != "value":
@@ -1296,8 +1388,7 @@ def fix_value_layers(board: Board) -> int:
             layer_atoms = atoms_after_head(layer_node)
             if not layer_atoms:
                 continue
-            current = layer_atoms[0].text
-            if current in silk_names:
+            if layer_atoms[0].text in silk_names:
                 continue
             layer_node[layer_node.index(layer_atoms[0])] = sexpr.string(target_silk)
             layer_node.span = None
@@ -1308,10 +1399,74 @@ def fix_value_layers(board: Board) -> int:
     return changed
 
 
+def move_refs_to_fab(board: Board) -> int:
+    """Move footprint ``Reference`` text to the matching fabrication layer.
+
+    Scans every footprint for ``(property "Reference" ...)`` nodes (KiCad 7+)
+    and ``(fp_text reference ...)`` nodes (KiCad 6 and earlier) whose layer is
+    **not** already a fabrication layer, and reassigns them to the fab layer
+    matching the footprint's side.  Hidden text is moved too.
+
+    Args:
+        board: the board to update in place.
+
+    Returns:
+        The number of text nodes whose layer was changed.
+    """
+    front_fab, back_fab = _fab_layers(board.tree)
+    fab_names = {front_fab, back_fab, "F.Fab", "B.Fab",
+                 "F.Fabrication", "B.Fabrication"}
+
+    changed = 0
+    for fp_node in children(board.tree, "footprint"):
+        fp_layer_strs = strings(child(fp_node, "layer"))
+        fp_layer = fp_layer_strs[0] if fp_layer_strs else "F.Cu"
+        target_fab = back_fab if fp_layer.startswith("B.") else front_fab
+
+        for prop_node in children(fp_node, "property"):
+            atoms = atoms_after_head(prop_node)
+            if not atoms or atoms[0].text != "Reference":
+                continue
+            layer_node = child(prop_node, "layer")
+            if layer_node is None:
+                continue
+            layer_atoms = atoms_after_head(layer_node)
+            if not layer_atoms:
+                continue
+            if layer_atoms[0].text in fab_names:
+                continue
+            layer_node[layer_node.index(layer_atoms[0])] = sexpr.string(target_fab)
+            layer_node.span = None
+            prop_node.span = None
+            fp_node.span = None
+            changed += 1
+
+        for txt_node in children(fp_node, "fp_text"):
+            atoms = atoms_after_head(txt_node)
+            if not atoms or atoms[0].text != "reference":
+                continue
+            layer_node = child(txt_node, "layer")
+            if layer_node is None:
+                continue
+            layer_atoms = atoms_after_head(layer_node)
+            if not layer_atoms:
+                continue
+            if layer_atoms[0].text in fab_names:
+                continue
+            layer_node[layer_node.index(layer_atoms[0])] = sexpr.string(target_fab)
+            layer_node.span = None
+            txt_node.span = None
+            fp_node.span = None
+            changed += 1
+
+    return changed
+
+
 def write_board(board: Board, out_path: str | Path,
                 new_nodes: list[SList] | None = None,
-                strip_free_vias: bool = True) -> None:
-    """Serialize a routed copy: drop free vias, append new segment/via nodes.
+                strip_free_vias: bool = True,
+                strip_segments: bool = False) -> None:
+    """Serialize a routed copy: drop free vias/segments, append new routing nodes.
 
     Clones the parsed tree (untouched subtrees keep their source spans, so the
     diff against the input stays limited to the routing edits).
@@ -1323,8 +1478,14 @@ def write_board(board: Board, out_path: str | Path,
             append (from `make_segment` / `make_via`); `None` for none.
         strip_free_vias: when True, omit the board's dangling free vias from the
             output.
+        strip_segments: when True, omit all existing ``(segment ...)`` tracks
+            from the output (use for a clean re-route so tracks are not doubled).
     """
-    strip_ids = {id(v.node) for v in board.free_vias} if strip_free_vias else set()
+    strip_ids: set[int] = set()
+    if strip_free_vias:
+        strip_ids.update(id(v.node) for v in board.free_vias if v.node is not None)
+    if strip_segments:
+        strip_ids.update(id(s.node) for s in board.segments if s.node is not None)
     new_root = SList()
     for ch in board.tree:
         if isinstance(ch, SList) and id(ch) in strip_ids:

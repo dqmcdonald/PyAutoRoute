@@ -136,6 +136,27 @@ class DesignRules:
         """
         return max(self.clearance_for(net_a), self.clearance_for(net_b))
 
+    def dp_gap_for(self, net_p: str, net_n: str) -> float:
+        """Inner-edge spacing to use between the two traces of a differential pair.
+
+        KiCad net classes can carry a ``differential_pair_gap`` field; if neither
+        net's class defines one, falls back to the inter-net clearance
+        (``pair_clearance``), which is a conservative but DRC-safe default.
+
+        Args:
+            net_p: the positive net name (e.g. ``"USB_D+"``).
+            net_n: the negative net name (e.g. ``"USB_D-"``).
+
+        Returns:
+            The intra-pair gap in mm.
+        """
+        for net in (net_p, net_n):
+            cls = self.class_for(net)
+            gap = getattr(cls, "differential_pair_gap", None)
+            if gap is not None:
+                return float(gap)
+        return self.pair_clearance(net_p, net_n)
+
 
 def _net_class_from_dict(d: dict) -> NetClass:
     """Build a `NetClass` from a ``.kicad_pro`` net-class dict, filling defaults.
@@ -175,15 +196,17 @@ def default_rules() -> DesignRules:
     )
 
 
-def load_rules(pro_path: str | Path) -> DesignRules:
+def load_rules(pro_path: str | Path | None) -> DesignRules:
     """Parse a ``.kicad_pro`` file into `DesignRules`.
 
     Args:
-        pro_path: path to the project ``.kicad_pro`` file.
+        pro_path: path to the project ``.kicad_pro`` file, or ``None`` to use defaults.
 
     Returns:
-        The parsed `DesignRules`, or `default_rules()` if the file is missing.
+        The parsed `DesignRules`, or `default_rules()` if the file is missing or None.
     """
+    if pro_path is None:
+        return default_rules()
     pro_path = Path(pro_path)
     if not pro_path.exists():
         return default_rules()

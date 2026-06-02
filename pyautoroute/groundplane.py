@@ -15,7 +15,8 @@ def build(board: Board, rules: DesignRules, *,
           net: str | None = None,
           layer: str = "B.Cu",
           margin: float | None = None,
-          stitch_pitch: float | None = None) -> tuple[list[SList], list[str]]:
+          stitch_pitch: float | None = None,
+          routed_nodes: list | None = None) -> tuple[list[SList], list[str]]:
     """Build ground-plane zone node(s) and connecting vias.
 
     Args:
@@ -25,6 +26,9 @@ def build(board: Board, rules: DesignRules, *,
         layer: zone layer ("B.Cu", "F.Cu", or pass multiple times for each).
         margin: outline inset margin (mm); if None, uses board default clearance.
         stitch_pitch: optional pitch (mm) for stitching vias between layers; if None, no stitching.
+        routed_nodes: freshly-generated routing SList nodes (segments + vias) not yet
+            applied to *board*; included in the pour-layer obstacle check so that
+            connectivity vias aren't placed where new routing already exists.
 
     Returns:
         (list of zone/via nodes, list of warning strings). Empty list if skipped.
@@ -97,7 +101,8 @@ def build(board: Board, rules: DesignRules, *,
 
     # ── Connectivity vias (for SMD-only islands) ──────────────────────────────
     connectivity_vias = _add_connectivity_vias(
-        board, rules, gnd_net, layer, inset_poly, clearance
+        board, rules, gnd_net, layer, inset_poly, clearance,
+        routed_nodes=routed_nodes or []
     )
     nodes.extend(connectivity_vias)
 
@@ -111,19 +116,151 @@ def build(board: Board, rules: DesignRules, *,
     return (nodes, warnings)
 
 
+def _node_head(node) -> str:
+    """Return the head symbol of an SList node (e.g. 'segment', 'via')."""
+    from . import sexpr as sx
+    if node and isinstance(node[0], sx.Atom):
+        return node[0].raw  # raw gives the unquoted symbol name
+    return ""
+
+
+def _child(node, key: str):
+    """Return the first child SList of *node* whose head symbol matches *key*."""
+    from . import sexpr as sx
+    for child in node:
+        if isinstance(child, sx.SList) and _node_head(child) == key:
+            return child
+    return None
+
+
+def _atom_text(node, idx: int) -> str:
+    """Return atom at *idx* in *node* as a plain string (quotes stripped)."""
+    from . import sexpr as sx
+    if node is None or idx >= len(node):
+        return ""
+    tok = node[idx]
+    return tok.text if isinstance(tok, sx.Atom) else ""
+
+
+def _float(node, idx: int) -> float:
+    """Return atom at *idx* in *node* as a float."""
+    from . import sexpr as sx
+    if node is None or idx >= len(node):
+        return 0.0
+    tok = node[idx]
+    if isinstance(tok, sx.Atom):
+        try:
+            return float(tok.text)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _obstacles_from_nodes(nodes: list, layer: str, gnd_net: str):
+    """Extract Obstacle objects for *layer* from freshly-built routing SList nodes.
+
+    Parses ``(segment ...)`` and ``(via ...)`` nodes — the same format produced by
+    ``pcb.make_segment`` / ``pcb.make_via`` — and returns `geometry.Obstacle` objects
+    for copper on *layer* whose net differs from *gnd_net*.
+    """
+    from . import geometry, sexpr as sx
+    from shapely.geometry import LineString, Point
+
+    obs = []
+    for node in nodes:
+        if not isinstance(node, sx.SList) or not node:
+            continue
+        head = _node_head(node)
+
+        if head == "segment":
+            # (segment (start x1 y1) (end x2 y2) (width w) (layer "L") (net "N") ...)
+            start_n = _child(node, "start")
+            end_n   = _child(node, "end")
+            width_n = _child(node, "width")
+            layer_n = _child(node, "layer")
+            net_n   = _child(node, "net")
+            if not all([start_n, end_n, width_n, layer_n]):
+                continue
+            seg_layer = _atom_text(layer_n, 1)
+            if seg_layer != layer:
+                continue
+            net = _atom_text(net_n, 1) if net_n else ""
+            if net == gnd_net:
+                continue
+            x1, y1 = _float(start_n, 1), _float(start_n, 2)
+            x2, y2 = _float(end_n, 1),   _float(end_n, 2)
+            w       = _float(width_n, 1)
+            line = LineString([(x1, y1), (x2, y2)]).buffer(w / 2)
+            obs.append(geometry.Obstacle(line, net, seg_layer))
+
+        elif head == "via":
+            # (via (at x y) (size d) (layers "F.Cu" "B.Cu") (net "N") ...)
+            at_n     = _child(node, "at")
+            size_n   = _child(node, "size")
+            layers_n = _child(node, "layers")
+            net_n    = _child(node, "net")
+            if not all([at_n, size_n, layers_n]):
+                continue
+            via_layers = [_atom_text(layers_n, i) for i in range(1, len(layers_n))]
+            if layer not in via_layers:
+                continue
+            net = _atom_text(net_n, 1) if net_n else ""
+            if net == gnd_net:
+                continue
+            cx, cy = _float(at_n, 1), _float(at_n, 2)
+            d = _float(size_n, 1)
+            obs.append(geometry.Obstacle(Point(cx, cy).buffer(d / 2), net, layer))
+
+    return obs
+
+
 def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer: str,
-                           pour_poly, clearance: float) -> list[SList]:
+                           pour_poly, clearance: float,
+                           routed_nodes: list | None = None) -> list[SList]:
     """Add vias to connect GND islands that don't reach the pour layer.
 
     For each connected GND component that doesn't have copper on the pour layer:
     place a via at a point inside the pour polygon to tie the component in.
     """
-    from . import pcb
+    from . import pcb, geometry
     from shapely.geometry import Point
+    from shapely.strtree import STRtree
 
     vias = []
 
-    # Union-find over GND copper (pads + segments + vias)
+    # Build an obstacle index for the pour layer so we can reject via positions
+    # that would create a short with other-net copper already routed there.
+    # Include both copper already in the board AND freshly-routed nodes that
+    # haven't been applied to the board object yet.
+    via_size = rules.via_diameter_for(gnd_net) if rules else 0.6
+    via_drill = rules.via_drill_for(gnd_net) if rules else 0.3
+    via_radius = via_size / 2.0
+
+    pour_layer_obstacles = [
+        o for o in geometry.board_obstacles(board)
+        if o.layer == layer and o.net != gnd_net and o.net
+    ]
+    if routed_nodes:
+        pour_layer_obstacles.extend(
+            _obstacles_from_nodes(routed_nodes, layer, gnd_net)
+        )
+    if pour_layer_obstacles:
+        _obs_tree = STRtree([o.geom for o in pour_layer_obstacles])
+    else:
+        _obs_tree = None
+
+    def _via_clear(x: float, y: float) -> bool:
+        """Return True if a via centred at (x, y) has no clearance conflict on the pour layer."""
+        if _obs_tree is None:
+            return True
+        ring = Point(x, y).buffer(via_radius + clearance)
+        for idx in _obs_tree.query(ring):
+            obs = pour_layer_obstacles[idx]
+            if Point(x, y).buffer(via_radius).distance(obs.geom) < clearance - 1e-6:
+                return False
+        return True
+
+    # Union-find over GND copper (pads + segments)
     parent: dict = {}
 
     def _find(k):
@@ -136,7 +273,6 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     def _union(a, b):
         parent[_find(a)] = _find(b)
 
-    # Helper to snap a point to 0.01 mm grid
     SNAP_MM = 0.01
     def _snap(x, y):
         return (round(x / SNAP_MM), round(y / SNAP_MM))
@@ -149,13 +285,12 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         if pad.net != gnd_net:
             continue
         snap_pos = _snap(pad.cx, pad.cy)
-        # Through-hole pads reach all layers
-        if "Via" in pad.pad_type or all(layer in pad.copper_layers for layer in ["F.Cu", "B.Cu"]):
-            component_layers.setdefault(snap_pos, set()).update(["F.Cu", "B.Cu"])
+        if "Via" in pad.pad_type or all(lyr in pad.copper_layers for lyr in ["F.Cu", "B.Cu"]):
+            component_layers[snap_pos] = {"F.Cu", "B.Cu"}
         else:
-            component_layers.setdefault(snap_pos, set()).add(
+            component_layers[snap_pos] = {
                 pad.copper_layers[0] if pad.copper_layers else "F.Cu"
-            )
+            }
         _union(("pad", id(pad)), snap_pos)
 
     # Register GND segments
@@ -168,53 +303,74 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         component_layers.setdefault(p2, set()).add(seg.layer)
         _union(p1, p2)
 
-    # Register GND vias (they bridge layers)
-    for via in board.free_vias:
-        if via.net != gnd_net:
-            continue
-        snap_pos = _snap(via.cx, via.cy)
-        component_layers.setdefault(snap_pos, set()).update(via.layers)
-        _union(("via", id(via)), snap_pos)
-
-    # Find components that don't reach the pour layer
-    roots_needing_via: set = set()
+    # Aggregate layers per component root, then find components lacking the pour layer.
+    # Checking per-position would incorrectly flag a component as needing a via whenever
+    # any segment endpoint in it lacks the pour layer, even if a THT pad in the same
+    # component already provides full-layer coverage.
+    root_layers: dict = {}
     for snap_pos, layers in component_layers.items():
-        if layer not in layers:
-            roots_needing_via.add(_find(snap_pos))
+        root = _find(snap_pos)
+        root_layers.setdefault(root, set()).update(layers)
 
-    # For each component needing a via, find a point inside the pour polygon
-    for root in roots_needing_via:
-        # Find a pad or segment point in this component that's inside the pour
-        via_point = None
+    roots_needing_via: set = {
+        root for root, layers in root_layers.items()
+        if layer not in layers
+    }
+
+    # For each component needing a via, find a conflict-free point inside the pour polygon.
+    # Try candidate positions in order: GND pad centres, GND segment midpoints, any snap pos.
+    # Skip any position where the via annular ring on the pour layer would overlap other-net
+    # copper (which the router may have placed there).
+    def _candidate_positions(root):
         for pad in board.pads:
             if pad.net != gnd_net:
                 continue
             if _find(_snap(pad.cx, pad.cy)) == root and Point(pad.cx, pad.cy).within(pour_poly):
-                via_point = (pad.cx, pad.cy)
-                break
-        if via_point is None:
-            for seg in board.segments:
-                if seg.net != gnd_net:
-                    continue
-                mid_x = (seg.x1 + seg.x2) / 2
-                mid_y = (seg.y1 + seg.y2) / 2
-                if _find(_snap(mid_x, mid_y)) == root and Point(mid_x, mid_y).within(pour_poly):
-                    via_point = (mid_x, mid_y)
-                    break
+                yield (pad.cx, pad.cy)
+        for seg in board.segments:
+            if seg.net != gnd_net:
+                continue
+            mid_x = (seg.x1 + seg.x2) / 2
+            mid_y = (seg.y1 + seg.y2) / 2
+            if _find(_snap(mid_x, mid_y)) == root and Point(mid_x, mid_y).within(pour_poly):
+                yield (mid_x, mid_y)
+        for snap_pos in component_layers.keys():
+            if _find(snap_pos) == root:
+                x = snap_pos[0] * SNAP_MM
+                y = snap_pos[1] * SNAP_MM
+                if Point(x, y).within(pour_poly):
+                    yield (x, y)
 
-        if via_point is None:
-            # Try any position in the component
-            for snap_pos in component_layers.keys():
-                if _find(snap_pos) == root:
-                    x = snap_pos[0] * 0.01
-                    y = snap_pos[1] * 0.01
-                    if Point(x, y).within(pour_poly):
-                        via_point = (x, y)
-                        break
+    def _spiral_search(cx: float, cy: float) -> tuple[float, float] | None:
+        """Search for a conflict-free via position near (cx, cy) in expanding rings."""
+        step = via_size + clearance
+        for ring in range(1, 6):
+            r = ring * step
+            n = max(4, ring * 4)
+            import math
+            for i in range(n):
+                angle = 2 * math.pi * i / n
+                x = cx + r * math.cos(angle)
+                y = cy + r * math.sin(angle)
+                if Point(x, y).within(pour_poly) and _via_clear(x, y):
+                    return (x, y)
+        return None
+
+    for root in roots_needing_via:
+        via_point = None
+        first_candidate = None
+        for (x, y) in _candidate_positions(root):
+            if first_candidate is None:
+                first_candidate = (x, y)
+            if _via_clear(x, y):
+                via_point = (x, y)
+                break
+
+        # If every exact candidate conflicts, search outward from the first candidate.
+        if via_point is None and first_candidate is not None:
+            via_point = _spiral_search(first_candidate[0], first_candidate[1])
 
         if via_point:
-            via_size = rules.via_diameter_for(gnd_net) if rules else 0.5
-            via_drill = rules.via_drill_for(gnd_net) if rules else 0.25
             via_node = pcb.make_via(
                 board, via_point[0], via_point[1], via_size, via_drill,
                 "F.Cu", "B.Cu", gnd_net

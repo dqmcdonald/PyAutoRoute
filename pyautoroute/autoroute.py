@@ -14,13 +14,15 @@ import concurrent.futures
 import configparser
 import datetime
 import os
+import shutil
 import textwrap
 import sys
 import time
 from dataclasses import replace
 from pathlib import Path
 
-from . import __version__, anneal, geometry, netlist, pcb, placement, router
+from . import __version__, anneal, diffpair, geometry, netlist, pcb, placement, router
+from .report import routing_stats
 from .grid import Grid
 from .pipeline import (
     CycleHooks, PipelineHooks, _cycle_worker, run_cycle,
@@ -434,11 +436,11 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
     rep.log(f"seed           {args.seed}")
     if args.exclude_net:
         rep.log(f"exclude nets   {', '.join(args.exclude_net)}")
-    if args.iters:
-        rep.log(f"anneal iters   {args.iters}")
-    if args.time_budget:
-        rep.log(f"anneal time    {args.time_budget} s")
-    if args.iters or args.time_budget:
+    if args.routing_iters:
+        rep.log(f"anneal iters   {args.routing_iters}")
+    if args.routing_time:
+        rep.log(f"anneal time    {args.routing_time} s")
+    if args.routing_iters or args.routing_time:
         rep.log(f"unrouted wt    {args.unrouted_weight}")
         rep.log(f"anneal temps   {args.anneal_temps[0]} -> {args.anneal_temps[1]}")
         if args.runs > 1:
@@ -542,15 +544,20 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     rules = load_rules(pro_path)
     pitch = args.grid if args.grid else default_pitch(rules)
 
-    if getattr(args, "fix_values", False):
-        n = pcb.fix_value_layers(board)
-        if n:
-            print(f"  fix-values:    moved {n} Value text node(s) to silkscreen")
+    if getattr(args, "silk_labels", False):
+        nv = pcb.move_values_to_silk(board)
+        nr = pcb.move_refs_to_fab(board)
+        if nv or nr:
+            parts = []
+            if nv:
+                parts.append(f"{nv} value(s) → silkscreen")
+            if nr:
+                parts.append(f"{nr} reference(s) → fab")
+            print(f"  silk-labels:   {', '.join(parts)}")
 
+    init_stats = routing_stats(board, rules, exclude=args.exclude_net)
     if board.segments:
-        from pyautoroute.report import routing_stats
-        init = routing_stats(board, rules)
-        print(f"  initial board: {init.summary()}")
+        print(f"  initial board: {init_stats.summary()}")
 
     _print_footprint_constraints(board)
     _log_footprint_constraints(rep, board)
@@ -570,7 +577,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         args.place_feedback = False
     if cycles > 1:
         return _run_cycles(args, rep, input_path, out_path, rules, pitch,
-                           board, fill_nets, cycles)
+                           board, fill_nets, cycles, init_stats=init_stats)
 
     if args.place or args.place_only:
         pp, keep_outline = _place_params_from_args(args, board, rules, rep)
@@ -618,7 +625,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     if args.place_only:
         rep.phase("writing placed board")
         _stamp(board, "placed")
-        pcb.write_board(board, out_path, new_nodes=None, strip_free_vias=True)
+        # Placement always clears existing routing (moved footprints invalidate old tracks).
+        pcb.write_board(board, out_path, new_nodes=None,
+                        strip_free_vias=True, strip_segments=True)
         if fill_nets or args.ground_plane:
             ok = pcb.try_refill_zones(out_path)
             if ok:
@@ -636,18 +645,66 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     if args.auto:
         from . import tune
         rep.phase("auto: probing grid/via settings")
-        scored = tune.sweep(board, rules,
-                            tune.default_grid(time_budget=args.auto_probe_time),
+        auto_configs = tune.default_grid(time_budget=args.auto_probe_time)
+
+        def _sweep_progress(done, total, cfg, cs):
+            if args.quiet:
+                return
+            if done == 0:
+                print(f"  probing {total} grid/via combinations …", flush=True)
+                return
+            bar_w = 20
+            filled = int(bar_w * done / total)
+            bar = "█" * filled + "░" * (bar_w - filled)
+            suffix = ""
+            if cfg is not None and cs is not None:
+                m = cs.metrics[0]
+                suffix = (f"  grid×{cfg.grid_mult} via={cfg.via_weight}"
+                          f"  {m.routed}/{m.routed+m.unrouted} routed"
+                          f"  score={cs.median_score:.0f}")
+            print(f"\r  [{bar}] {done}/{total}{suffix}",
+                  end="" if done < total else "\n", flush=True)
+
+        scored = tune.sweep(board, rules, auto_configs,
                             seeds=(args.seed,), unrouted_weight=args.unrouted_weight,
-                            via_weight=args.via_weight)
+                            via_weight=args.via_weight,
+                            time_weight=args.auto_time_weight,
+                            exclude=args.exclude_net or None,
+                            progress=_sweep_progress)
         best = tune.best_config(scored)
         chosen_pitch = round(default_pitch(rules) * best.grid_mult, 4)
         rep.done()
         bm = scored[0].metrics[0]
         total = bm.routed + bm.unrouted
+
+        rep.phase("auto: probing search margin")
+
+        def _margin_progress(done, total_m, cfg, metrics):
+            if args.quiet:
+                return
+            if done == 0:
+                print(f"  probing {total_m} search-margin candidates …", flush=True)
+                return
+            bar_w = 20
+            filled = int(bar_w * done / total_m)
+            bar = "█" * filled + "░" * (bar_w - filled)
+            suffix = ""
+            if cfg is not None and metrics is not None:
+                margin_str = f"{cfg.search_margin}mm" if cfg.search_margin else "unbounded"
+                suffix = (f"  margin={margin_str}"
+                          f"  {metrics.routed}/{metrics.routed+metrics.unrouted} routed")
+            print(f"\r  [{bar}] {done}/{total_m}{suffix}",
+                  end="" if done < total_m else "\n", flush=True)
+
+        suggested_margin = tune.probe_search_margin(board, rules, best, seed=args.seed,
+                                                    progress=_margin_progress,
+                                                    exclude=args.exclude_net or None)
+        rep.done()
+
         chosen = (f"auto: best probe grid={chosen_pitch} mm (x{best.grid_mult}), "
-                  f"via-weight={best.via_weight} -> {bm.routed}/{total} routed, "
-                  f"{bm.length:.0f} mm, {bm.vias} vias")
+                  f"via-weight={best.via_weight}, "
+                  f"search-margin={suggested_margin if suggested_margin is not None else 'unbounded'}"
+                  f" -> {bm.routed}/{total} routed, {bm.length:.0f} mm, {bm.vias} vias")
         print(f"\n  {chosen}")
         rep.log(chosen)
         apply_auto = True
@@ -656,20 +713,39 @@ def run(args: argparse.Namespace, _print_version: bool = True,
                 in ("", "y", "yes")
         if apply_auto:
             args.grid, args.via_weight, pitch = chosen_pitch, best.via_weight, chosen_pitch
+            if suggested_margin is not None:
+                args.search_margin = suggested_margin
         else:
             print("  auto: keeping the given settings")
+
+    existing_routes = getattr(args, "existing_routes", "clear")
+    if existing_routes == "preserve" and (args.place or args.place_only):
+        print("  note: --existing-routes preserve is ignored with --place "
+              "(placement invalidates existing routing); using clear")
+        existing_routes = "clear"
 
     rep.phase("building netlist (MST rats-nest)")
     conns = netlist.build_connections(board, exclude=args.exclude_net)
     excluded = sorted({p.net for p in board.pads if p.net
                        and netlist.is_excluded(p.net, args.exclude_net)})
 
+    n_pre_routed = 0
+    if existing_routes == "preserve":
+        pre_routed, conns = netlist.pre_routed_connections(board, conns)
+        n_pre_routed = len(pre_routed)
+        if n_pre_routed:
+            rep.log(f"pre-routed:    {n_pre_routed} connection(s) already satisfied "
+                    f"by existing copper (skipped)")
+            if not args.quiet:
+                print(f"  pre-routed:    {n_pre_routed} connection(s) preserved, "
+                      f"{len(conns)} remaining")
+
     rep.phase(f"building {pitch}mm routing grid")
     grid = Grid(board, rules, pitch)
 
     runs = max(1, args.runs)
-    if runs > 1 and not (args.iters or args.time_budget):
-        print("  note: --runs > 1 has no effect without --iters/--time "
+    if runs > 1 and not (args.routing_iters or args.routing_time):
+        print("  note: --runs > 1 has no effect without --routing-iters/--routing-time "
               "(greedy routing is deterministic); using 1 run")
         runs = 1
     # Worker count for parallel best-of-N: --jobs 0 means "use as many workers
@@ -680,8 +756,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     parallel = runs > 1 and jobs > 1
     # snapshots only make sense during a single annealing run
     snap_n = args.snapshots
-    if snap_n and not (args.iters or args.time_budget):
-        print("  note: --snapshots needs --iters or --time (annealing); ignoring")
+    if snap_n and not (args.routing_iters or args.routing_time):
+        print("  note: --snapshots needs --routing-iters or --routing-time (annealing); ignoring")
         snap_n = 0
     if snap_n and runs > 1:
         print("  note: --snapshots needs a single run; ignoring with --runs > 1")
@@ -693,7 +769,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     def on_snapshot(k, n, results):
         sp = snap_dir / f"{input_path.stem}_anneal_{k:02d}of{n:02d}.kicad_pcb"
         pcb.write_board(board, sp, new_nodes=_results_to_nodes(board, grid, results),
-                        strip_free_vias=True)
+                        strip_free_vias=(existing_routes == "clear"),
+                        strip_segments=(existing_routes == "clear"))
         nrouted = sum(1 for r in results if r is not None)
         rep.log(f"snapshot {k}/{n} -> {sp}  routed={nrouted}/{len(results)}")
 
@@ -707,12 +784,55 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
     params = router.RouteParams(via_cost=args.via_weight,
                                 search_margin=args.search_margin)
+
+    # --- differential pair pre-routing ----------------------------------------
+    # Detect and route diff pairs first so their copper appears as static
+    # obstacles to the single-ended routing that follows.
+    dp_conn_list: list[netlist.DiffPairConnection] = []
+    dp_route_results: list[tuple[netlist.DiffPairConnection,
+                                 router.RouteResult, router.RouteResult]] = []
+    if getattr(args, "diff_pairs", False):
+        rep.phase("detecting differential pairs")
+        dp_specs = netlist.find_diff_pairs(board, exclude=args.exclude_net)
+        dp_conn_list = netlist.build_diff_pair_connections(board, dp_specs)
+        if dp_conn_list:
+            rep.log(f"diff pairs:    {len(dp_specs)} pair(s), "
+                    f"{len(dp_conn_list)} connection(s)")
+            if not args.quiet:
+                print(f"  diff pairs:    {len(dp_specs)} pair(s) detected "
+                      f"({len(dp_conn_list)} connection(s))")
+            rep.phase("routing differential pairs")
+            dp_state = router.RoutingState(grid)
+            dp_routed = 0
+            for k, dp_conn in enumerate(dp_conn_list):
+                gap = (args.diff_pair_gap
+                       if args.diff_pair_gap is not None
+                       else rules.dp_gap_for(dp_conn.net_p, dp_conn.net_n))
+                pair = diffpair.route_diff_pair(dp_state, dp_conn, gap, params)
+                if pair is not None:
+                    rp, rn = pair
+                    dp_state.commit(k * 2,     rp)
+                    dp_state.commit(k * 2 + 1, rn)
+                    dp_route_results.append((dp_conn, rp, rn))
+                    dp_routed += 1
+            if not args.quiet:
+                print(f"  diff pairs:    {dp_routed}/{len(dp_conn_list)} routed")
+            # Bake diff pair copper into the static grid so run_routing() respects it
+            diffpair.bake_routing_state(dp_state, grid)
+            # Remove diff pair nets from the single-ended connection list
+            dp_nets = ({spec.net_p for spec in dp_specs}
+                       | {spec.net_n for spec in dp_specs})
+            conns = [c for c in conns if c.net not in dp_nets]
+
     order = netlist.greedy_order(conns)
-    annealing = bool(args.iters or args.time_budget)
-    route_kw = dict(annealing=annealing, iters=args.iters,
-                    time_budget=args.time_budget,
+    annealing = bool(args.routing_iters or args.routing_time)
+    route_kw = dict(annealing=annealing, iters=args.routing_iters,
+                    time_budget=args.routing_time,
                     unrouted_weight=args.unrouted_weight,
-                    anneal_temps=args.anneal_temps, via_weight=args.via_weight)
+                    anneal_temps=args.anneal_temps, via_weight=args.via_weight,
+                    stall_patience=args.stall_patience,
+                    stall_ratio=args.stall_ratio,
+                    flat_window=args.flat_window)
     _anneal_t0 = [0.0]
 
     def _rt_phase(name):
@@ -724,12 +844,20 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     def _rt_anneal(it, total, r, u, energy, best, temp, accept, ob):
         rep.annealing(it, total, r, u, energy, best, temp, accept,
                       elapsed=time.monotonic() - _anneal_t0[0],
-                      budget=args.time_budget or 0.0, overall_best=ob)
+                      budget=args.routing_time or 0.0, overall_best=ob)
 
-    def _rt_run_done(k, n, energy, summary, metrics):
+    def _rt_run_done(k, n, energy, summary, metrics, is_best=False, iters=0):
         if parallel:                                   # completion-ordered logging
-            rep.log(f"run {k + 1}/{n} done: energy {energy:.1f}"
-                    + (f"  ({summary})" if summary else ""))
+            routed_r, unrouted_r, length_r, vias_r = metrics
+            total_r = routed_r + unrouted_r
+            iters_str = f"  {iters} iters" if iters else ""
+            best_tag = "  ★ new best" if is_best else ""
+            log_line = (f"run {k + 1}/{n} done: energy {energy:.1f}  "
+                        f"{routed_r}/{total_r} routed  {length_r:.1f} mm  "
+                        f"{vias_r} vias{iters_str}{best_tag}")
+            rep.log(log_line)
+            if not args.quiet:
+                print(f"  {log_line}", flush=True)
         elif summary:                                  # sequential annealing summary
             line = f"{rep.tag}{summary}"
             rep.log(line)
@@ -780,7 +908,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         for layer in layers:
             gp_nodes, gp_warns = groundplane.build(
                 board, rules, net=args.ground_net, layer=layer, margin=margin,
-                stitch_pitch=args.stitch_vias
+                stitch_pitch=args.stitch_vias, routed_nodes=new_nodes
             )
             new_nodes.extend(gp_nodes)
             for w in gp_warns:
@@ -789,7 +917,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
     pcb.write_board(board, out_path,
                     new_nodes=new_nodes,
-                    strip_free_vias=True)
+                    strip_free_vias=(existing_routes == "clear"),
+                    strip_segments=(existing_routes == "clear"))
 
     if fill_nets or args.ground_plane:
         ok = pcb.try_refill_zones(out_path)
@@ -803,15 +932,32 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     # reload the written board and self-check clearances
     routed_board = pcb.load_board(out_path)
     violations = geometry.clearance_violations(routed_board, rules)
+    final_stats = routing_stats(routed_board, rules, exclude=args.exclude_net)
     rep.done()
 
-    _report(rep, out_path, len(conns), routed, unrouted, length, vias,
-            violations, excluded)
+    total_conns = len(conns) + n_pre_routed
+    _report(rep, out_path, total_conns, routed + n_pre_routed, unrouted, length, vias,
+            violations, excluded, init_stats=init_stats, final_stats=final_stats,
+            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
+
+    if dp_route_results:
+        from .report import diff_pair_stats, format_diff_pair_table
+        from .pcb import Stackup as _Stackup
+        su = routed_board.stackup
+        assumed = (su.epsilon_r == _Stackup().epsilon_r
+                   and su.dielectric_h == _Stackup().dielectric_h)
+        dp_stats = diff_pair_stats(dp_route_results, rules, su)
+        table = format_diff_pair_table(dp_stats, stackup_assumed=assumed)
+        if table and not args.quiet:
+            print(f"\n{table}")
+        rep.log(table)
+
+    _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
     return _finish(rep, args, out_path, routed_board, violations)
 
 
 def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
-                cycles) -> int:
+                cycles, init_stats=None) -> int:
     """Best-of-cycles: keep the best-*routing* of N independent place+route runs.
 
     Each cycle re-loads the board and runs one placement + one routing through
@@ -839,10 +985,13 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
     pp, _keep = _place_params_from_args(args, board, rules, rep)
     route_params = router.RouteParams(via_cost=args.via_weight,
                                       search_margin=args.search_margin)
-    route_kw = dict(annealing=bool(args.iters or args.time_budget),
-                    iters=args.iters, time_budget=args.time_budget,
+    route_kw = dict(annealing=bool(args.routing_iters or args.routing_time),
+                    iters=args.routing_iters, time_budget=args.routing_time,
                     unrouted_weight=args.unrouted_weight,
-                    anneal_temps=args.anneal_temps, via_weight=args.via_weight)
+                    anneal_temps=args.anneal_temps, via_weight=args.via_weight,
+                    stall_patience=args.stall_patience,
+                    stall_ratio=args.stall_ratio,
+                    flat_window=args.flat_window)
     base_seed = args.seed
     jobs = args.jobs if args.jobs and args.jobs > 0 else (os.cpu_count() or 1)
     jobs = max(1, min(jobs, cycles))
@@ -945,14 +1094,15 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
         for layer in layers:
             gp_nodes, gp_warns = groundplane.build(
                 sel_board, rules, net=args.ground_net, layer=layer, margin=margin,
-                stitch_pitch=args.stitch_vias
+                stitch_pitch=args.stitch_vias, routed_nodes=new_nodes
             )
             new_nodes.extend(gp_nodes)
             for w in gp_warns:
                 rep.log(f"ground-plane: {w}")
                 print(f"  ⚠ ground-plane: {w}")
+    # cycles always uses --place, which forces clear mode
     pcb.write_board(sel_board, out_path, new_nodes=new_nodes,
-                    strip_free_vias=True)
+                    strip_free_vias=True, strip_segments=True)
 
     if fill_nets or args.ground_plane:
         ok = pcb.try_refill_zones(out_path)
@@ -965,11 +1115,57 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
 
     routed_board = pcb.load_board(out_path)
     violations = geometry.clearance_violations(routed_board, rules)
+    final_stats = routing_stats(routed_board, rules, exclude=args.exclude_net)
     rep.done()
 
     _report(rep, out_path, best.n_conns, best.routed, best.unrouted, best.length,
-            best.vias, violations, excluded)
+            best.vias, violations, excluded, init_stats=init_stats, final_stats=final_stats,
+            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
+    _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
     return _finish(rep, args, out_path, routed_board, violations)
+
+
+def _maybe_replace_in_place(
+    args, input_path: Path, out_path: Path,
+    init_stats, final_stats, rep: Reporter,
+) -> None:
+    """If --in-place and the result is better, back up the input and replace it.
+
+    Args:
+        args: the parsed CLI namespace.
+        input_path: the original input board path.
+        out_path: the written output board path.
+        init_stats: `RoutingStats` for the input board before routing.
+        final_stats: `RoutingStats` for the written output board.
+        rep: the reporter (for mirroring the message to the log).
+    """
+    if not getattr(args, "in_place", False):
+        return
+    if init_stats is None or final_stats is None:
+        return
+
+    via_w = args.via_weight
+    unr_w = args.unrouted_weight
+
+    def _score(s):
+        return unr_w * s.unrouted + s.length + via_w * s.vias
+
+    before = _score(init_stats)
+    after = _score(final_stats)
+
+    if after < before:
+        bak_path = input_path.with_suffix(input_path.suffix + ".bak")
+        shutil.copy2(input_path, bak_path)
+        shutil.copy2(out_path, input_path)
+        msg = (f"in-place:      score {before:.0f} → {after:.0f}; "
+               f"backed up to {bak_path.name}, replaced {input_path.name}")
+        print(f"  {msg}")
+        rep.log(msg)
+    else:
+        msg = (f"in-place:      result score {after:.0f} ≥ input score {before:.0f}"
+               f" — keeping {out_path.name} only")
+        print(f"  {msg}")
+        rep.log(msg)
 
 
 def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
@@ -998,7 +1194,8 @@ def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
 
 
 def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
-            violations, excluded) -> None:
+            violations, excluded, *, init_stats=None, final_stats=None,
+            via_weight: float = 2.0, unrouted_weight: float = 100.0) -> None:
     """Print the final metrics summary and mirror it to the log.
 
     Args:
@@ -1009,9 +1206,12 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
         unrouted: connections not routed.
         length: total wirelength (mm).
         vias: total via count.
-        violations: clearance-violation tuples from the self-check (empty ==
-            clean).
+        violations: clearance-violation tuples from the self-check (empty == clean).
         excluded: net names excluded from routing.
+        init_stats: `RoutingStats` for the input board (for the improvement summary).
+        final_stats: `RoutingStats` reloaded from the written output board.
+        via_weight: via cost coefficient (for score computation).
+        unrouted_weight: unrouted penalty coefficient (for score computation).
     """
     pct = 100.0 * routed / n_conns if n_conns else 100.0
     lines = [
@@ -1033,6 +1233,42 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
     for ln in lines:
         print(f"  {ln}")
         rep.log(ln)
+
+    # ── Improvement summary ──────────────────────────────────────────────────
+    if init_stats is not None and final_stats is not None:
+        def _score(s):
+            return unrouted_weight * s.unrouted + s.length + via_weight * s.vias
+
+        i, f = init_stats, final_stats
+        i_score, f_score = _score(i), _score(f)
+        delta_score = f_score - i_score
+        pct_change = (delta_score / i_score * 100) if i_score else 0.0
+
+        def _fmt_delta(val, fmt="+.1f", good_negative=True):
+            sign = "↓" if (val < 0) == good_negative else "↑"
+            return f"{sign}{abs(val):{fmt}}"
+
+        i_pct = 100 * i.routed / i.total if i.total else 100.0
+        f_pct = 100 * f.routed / f.total if f.total else 100.0
+
+        d_len  = f.length - i.length
+        d_vias = f.vias - i.vias
+        cmp_lines = [
+            "improvement:   before → after",
+            (f"  connections  {i.routed}/{i.total} ({i_pct:.0f}%)"
+             f" → {f.routed}/{f.total} ({f_pct:.0f}%)"),
+            (f"  wirelength   {i.length:.1f} mm → {f.length:.1f} mm"
+             + (f"  ({_fmt_delta(d_len, '.1f')})" if i.length else "")),
+            (f"  vias         {i.vias} → {f.vias}"
+             + (f"  ({_fmt_delta(d_vias, 'd')})" if i.vias else "")),
+            (f"  score        {i_score:.0f} → {f_score:.0f}"
+             f"  ({_fmt_delta(delta_score, '.0f')},"
+             f" {abs(pct_change):.0f}% {'better' if delta_score < 0 else 'worse'})"),
+        ]
+        print()
+        for ln in cmp_lines:
+            print(f"  {ln}")
+            rep.log(ln)
 
 
 def _report_placed(rep: Reporter, out_path, board, violations) -> None:
@@ -1451,6 +1687,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pro", help="project .kicad_pro (default: sibling)")
     p.add_argument("-o", "--output", help="output .kicad_pcb (default: INPUT_routed, "
                                           "or _placed_routed / _placed when placing)")
+    p.add_argument("--in-place", action="store_true",
+                   help="if the routed result is better than the input (scored as "
+                        "unrouted × --unrouted-weight + wirelength + vias × --via-weight), "
+                        "back up the input to INPUT.kicad_pcb.bak and replace it with the "
+                        "routed output. The output file is always written first.")
     p.add_argument("--grid", type=float, help="grid pitch in mm (default derived from rules)")
     p.add_argument("--place", action="store_true",
                    help="experimental: place footprints (simulated annealing) before "
@@ -1506,12 +1747,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="run placement N times (different seeds) and keep the "
                         "lowest-energy placement (default 1)")
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--iters", type=int, help="optimisation iteration budget")
-    g.add_argument("--time", type=float, dest="time_budget", help="optimisation time budget (s)")
+    g.add_argument("--routing-iters", type=int, help="optimisation iteration budget")
+    g.add_argument("--routing-time", type=float, help="optimisation time budget (s)")
     p.add_argument("--runs", type=int, default=1, metavar="N",
                    help="route N times with different annealing seeds and keep the "
                         "lowest-energy result (default 1; only varies with "
-                        "--iters/--time)")
+                        "--routing-iters/--routing-time)")
     p.add_argument("--cycles", type=int, default=1, metavar="N",
                    help="with --place: run N independent place+route cycles and "
                         "keep the one that *routes* best (fewest unrouted, then "
@@ -1543,8 +1784,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --auto, apply the chosen settings without prompting")
     p.add_argument("--auto-probe-time", type=float, default=3.0, metavar="S",
                    help="annealing seconds per probed setting under --auto (default %(default)s)")
+    p.add_argument("--auto-time-weight", type=float, default=1.0, metavar="W",
+                   help="score penalty per second of routing runtime during --auto probing "
+                        "(default %(default)s). Penalises slower (finer) grids so that a "
+                        "marginally shorter route doesn't always win over a faster one. "
+                        "Set to 0 to rank purely by route quality.")
     p.add_argument("--exclude-net", action="append", default=[], metavar="PATTERN",
                    help="net name/glob to leave un-routed (repeatable)")
+    p.add_argument("--diff-pairs", action="store_true",
+                   help="detect and route differential pairs (nets sharing a +/- or "
+                        "P/N suffix) using a coupled A* before single-ended nets")
+    p.add_argument("--diff-pair-gap", type=float, default=None, metavar="MM",
+                   help="inner-edge spacing between the two traces of a pair "
+                        "(default: from design rules / net-class clearance)")
     p.add_argument("--ground-plane", action="store_true",
                    help="add a GND copper pour zone after routing")
     p.add_argument("--ground-net", default=None, metavar="NET",
@@ -1557,7 +1809,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stitch-vias", type=float, nargs="?", const=5.0, metavar="PITCH",
                    help="add stitching vias at PITCH mm intervals (default 5.0 mm; "
                         "most useful with --ground-plane-layer both)")
-    p.add_argument("--seed", type=int, default=0, help="random seed")
+    p.add_argument("--seed", type=int, default=None,
+                   help="random seed (default: seconds since epoch, printed in the log "
+                        "so results are reproducible)")
     p.add_argument("--via-weight", type=float, default=2.0, help="via cost (mm-equiv)")
     p.add_argument("--search-margin", type=float, default=None, metavar="MM",
                    help="bound each connection's A* search to a box around its "
@@ -1574,14 +1828,41 @@ def build_parser() -> argparse.ArgumentParser:
                    default=(anneal.AnnealParams.t_start, anneal.AnnealParams.t_end),
                    help="annealing start/end temperature for the geometric cooling "
                         "schedule; START>END>0 (default %(default)s)")
+    p.add_argument("--stall-patience", type=int, default=0, metavar="N",
+                   help="stop annealing early if the accept ratio stays below "
+                        "--stall-ratio for N consecutive windows; 0 = disabled "
+                        "(default). 3–5 is a good starting value with --routing-time.")
+    p.add_argument("--stall-ratio", type=float,
+                   default=anneal.AnnealParams.stall_ratio, metavar="R",
+                   help="accept-ratio threshold for early termination "
+                        "(default %(default)s); only active when --stall-patience > 0")
+    p.add_argument("--flat-window", type=int,
+                   default=anneal.AnnealParams.flat_window, metavar="N",
+                   help="stop annealing early if energy does not change by more "
+                        "than 1e-6 over N consecutive iterations; 0 = disabled "
+                        "(default). Useful when the routing is already optimal and "
+                        "every reroute produces the same result — avoids spending "
+                        "the full --routing-time budget confirming nothing can improve. "
+                        "20–50 is a good starting value.")
     p.add_argument("--snapshots", type=int, default=0, metavar="N",
                    help="during annealing, save N board snapshots to a snapshots/ "
-                        "subdir (requires --iters or --time)")
+                        "subdir (requires --routing-iters or --routing-time)")
     p.add_argument("--log", nargs="?", const="", default=None, metavar="FILE",
                    help="write a verbose log of parameters and routing/anneal "
                         "progress (bare --log uses <output>.log)")
-    p.add_argument("--fix-values", action="store_true",
-                   help="move footprint Value text to the silkscreen layer before routing")
+    p.add_argument("--silk-labels", action="store_true",
+                   help="before routing, move footprint Value text to the silkscreen layer "
+                        "and Reference text to the fabrication layer. KiCad libraries often "
+                        "default to placing both on Fab; this puts values where they appear "
+                        "on the physical board and keeps references on fab where they are "
+                        "useful for assembly drawings but out of the way.")
+    p.add_argument("--existing-routes", choices=("clear", "preserve"), default="clear",
+                   metavar="{clear,preserve}",
+                   help="clear (default): strip all existing tracks and vias before routing "
+                        "so re-routing a board never doubles tracks. "
+                        "preserve: keep existing copper, detect which connections are already "
+                        "satisfied, route only the remainder, treating existing copper as "
+                        "obstacles — enabling partial routing of a partially hand-routed board.")
     p.add_argument("--quiet", action="store_true", help="suppress live progress display")
     return p
 
@@ -1628,6 +1909,13 @@ def main(argv=None) -> int:
 
     args = parser.parse_args(argv)
 
+    # Resolve seed: None means "not set by user or config" — pick from the clock
+    # so repeated bare invocations explore different solutions. The resolved value
+    # is logged so any run can be reproduced with --seed N.
+    if args.seed is None:
+        import time as _time
+        args.seed = int(_time.time()) & 0x7FFF_FFFF  # keep it a positive 31-bit int
+
     # CLI-only namespace (no ini defaults) used for source detection in header.
     args_cli = build_parser().parse_args(argv)
 
@@ -1662,8 +1950,8 @@ def main(argv=None) -> int:
         parser.error("--place-runs must be >= 1")
     if (args.place_iters or args.place_time) and not (args.place or args.place_only):
         parser.error("--place-iters/--place-time require --place or --place-only")
-    if args.place_only and (args.iters or args.time_budget):
-        parser.error("--place-only does not route; drop --iters/--time")
+    if args.place_only and (args.routing_iters or args.routing_time):
+        parser.error("--place-only does not route; drop --routing-iters/--routing-time")
     _print_settings_header(args, args_cli, parser, pure_defaults,
                            proj_ini_path, cfg_path,
                            proj_ini_values, cfg_values)

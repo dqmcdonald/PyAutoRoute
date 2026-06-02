@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 from pyautoroute import netlist, sexpr
-from pyautoroute.pcb import Board, Pad
+from pyautoroute.pcb import Board, Pad, Segment, Via
 
 
-def _pad(net, cx, cy):
+def _pad(net, cx, cy, layers=None):
     return Pad(net=net, pad_type="smd", shape="rect", cx=cx, cy=cy, w=1, h=1,
-              angle=0.0, copper_layers=["F.Cu"])
+              angle=0.0, copper_layers=layers or ["F.Cu"])
 
 
-def _board(pads):
+def _tht_pad(net, cx, cy):
+    return Pad(net=net, pad_type="thru_hole", shape="circle", cx=cx, cy=cy, w=1, h=1,
+              angle=0.0, copper_layers=["F.Cu", "B.Cu"])
+
+
+def _board(pads, segments=None, free_vias=None):
     return Board(tree=sexpr.SList(), copper_layers=["F.Cu", "B.Cu"], pads=pads,
-                 free_vias=[], segments=[], zones=[], outline=[])
+                 free_vias=free_vias or [], segments=segments or [],
+                 zones=[], outline=[])
 
 
 def test_two_pad_net_one_connection():
@@ -52,3 +58,63 @@ def test_greedy_order_shortest_first():
     conns = netlist.build_connections(_board(pads))
     order = netlist.greedy_order(conns)
     assert conns[order[0]].est_length <= conns[order[-1]].est_length
+
+
+# ── pre_routed_connections ─────────────────────────────────────────────────────
+
+def test_pre_routed_no_existing_copper():
+    """No existing segments → all connections are unrouted."""
+    pads = [_pad("A", 0, 0), _pad("A", 5, 0)]
+    board = _board(pads)
+    conns = netlist.build_connections(board)
+    pre, unrouted = netlist.pre_routed_connections(board, conns)
+    assert pre == []
+    assert len(unrouted) == 1
+
+
+def test_pre_routed_segment_joins_pads():
+    """A segment connecting two pads marks their connection as pre-routed."""
+    pads = [_pad("A", 0, 0), _pad("A", 5, 0)]
+    seg = Segment(x1=0, y1=0, x2=5, y2=0, width=0.2, layer="F.Cu", net="A")
+    board = _board(pads, segments=[seg])
+    conns = netlist.build_connections(board)
+    pre, unrouted = netlist.pre_routed_connections(board, conns)
+    assert len(pre) == 1
+    assert unrouted == []
+
+
+def test_pre_routed_via_bridges_layers():
+    """A via at the right position bridges F.Cu → B.Cu, satisfying the connection."""
+    pad_f = _pad("A", 0, 0, layers=["F.Cu"])
+    pad_b = _pad("A", 0, 0, layers=["B.Cu"])  # same position, different layer
+    via = Via(cx=0, cy=0, size=0.6, drill=0.3, layers=("F.Cu", "B.Cu"), net="A")
+    board = _board([pad_f, pad_b], free_vias=[via])
+    conns = netlist.build_connections(board)
+    pre, unrouted = netlist.pre_routed_connections(board, conns)
+    assert len(pre) == 1
+    assert unrouted == []
+
+
+def test_pre_routed_partial_three_pads():
+    """One segment satisfies one of two MST connections; the other remains."""
+    pads = [_pad("A", 0, 0), _pad("A", 5, 0), _pad("A", 10, 0)]
+    # Segment only joining pads at x=0 and x=5
+    seg = Segment(x1=0, y1=0, x2=5, y2=0, width=0.2, layer="F.Cu", net="A")
+    board = _board(pads, segments=[seg])
+    conns = netlist.build_connections(board)
+    pre, unrouted = netlist.pre_routed_connections(board, conns)
+    assert len(pre) + len(unrouted) == len(conns)
+    assert len(pre) >= 1
+    assert len(unrouted) >= 1
+
+
+def test_pre_routed_tht_pad_bridges_layers():
+    """A THT pad (F.Cu + B.Cu) connects its position across both layers."""
+    tht = _tht_pad("A", 5, 0)
+    smd = _pad("A", 0, 0, layers=["B.Cu"])
+    seg = Segment(x1=0, y1=0, x2=5, y2=0, width=0.2, layer="B.Cu", net="A")
+    board = _board([tht, smd], segments=[seg])
+    conns = netlist.build_connections(board)
+    pre, unrouted = netlist.pre_routed_connections(board, conns)
+    assert len(pre) == 1
+    assert unrouted == []

@@ -34,9 +34,22 @@ def _call(cb, *args):
         cb(*args)
 
 
+def _anneal_summary(aout) -> str:
+    """Build the one-line annealing summary, with a diagnostic note when the
+    routing appears already optimal (every reroute produces equal energy)."""
+    acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
+    note = ""
+    if acc_pct >= 99 and aout.best_energy >= aout.start_energy - 1e-6:
+        note = "  ← routing appears already optimal (no reroute improved energy)"
+    return (f"anneal: {aout.iterations} iters, "
+            f"{aout.accepted} accepted ({acc_pct:.0f}%), "
+            f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}{note}")
+
+
 def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
                    iters, time_budget, seed, unrouted_weight, anneal_temps,
-                   via_weight, on_route_progress=None, on_anneal_progress=None,
+                   via_weight, stall_patience=0, stall_ratio=0.02, flat_window=0,
+                   on_route_progress=None, on_anneal_progress=None,
                    on_snapshot=None, snapshots=0, cancel=None):
     """Run one independent route (+ optional anneal) and return its outcome.
 
@@ -65,10 +78,11 @@ def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
         cancel: optional cancellation `Event`.
 
     Returns:
-        A dict ``{energy, results, metrics, summary}`` where ``metrics`` is
-        ``(routed, unrouted, length, vias)`` and ``summary`` is a log line (or
-        ``None``). All values are picklable so the dict can cross a process
-        boundary.
+        A dict ``{energy, results, metrics, summary, iters}`` where ``metrics``
+        is ``(routed, unrouted, length, vias)``, ``summary`` is a log line (or
+        ``None``), and ``iters`` is the number of annealing iterations completed
+        (0 when not annealing). All values are picklable so the dict can cross
+        a process boundary.
     """
     state = router.RoutingState(grid)
     result = router.route_all(state, conns, order, params,
@@ -83,7 +97,10 @@ def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
                                  seed=seed + run_idx, snapshots=snapshots,
                                  unrouted_weight=unrouted_weight,
                                  t_start=anneal_temps[0], t_end=anneal_temps[1],
-                                 route_params=params)
+                                 route_params=params,
+                                 stall_patience=stall_patience,
+                                 stall_ratio=stall_ratio,
+                                 flat_window=flat_window)
         aout = anneal.anneal(state, conns, list(result.results), ap,
                              on_progress=on_anneal_progress,
                              on_snapshot=on_snapshot, cancel=cancel)
@@ -91,15 +108,14 @@ def _route_one_run(grid, conns, order, params, run_idx, *, annealing,
         run_metrics = (aout.routed, aout.unrouted,
                        aout.total_length, aout.total_vias)
         run_energy = aout.best_energy
-        acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
-        summary = (f"anneal: {aout.iterations} iters, "
-                   f"{aout.accepted} accepted ({acc_pct:.0f}%), "
-                   f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
+        run_iters = aout.iterations
+        summary = _anneal_summary(aout)
     else:
         run_energy = anneal._energy(run_results, via_weight, unrouted_weight)
+        run_iters = 0
 
     return {"energy": run_energy, "results": run_results,
-            "metrics": run_metrics, "summary": summary}
+            "metrics": run_metrics, "summary": summary, "iters": run_iters}
 
 
 def _route_run_worker(payload):
@@ -315,8 +331,11 @@ class PipelineHooks:
             per rip-up/reroute iteration.
         anneal_snapshot: ``f(board, grid, results, k, n)`` — an annealing snapshot.
         anneal_best: ``f(board, grid, results)`` — a new best routing during anneal.
-        route_run_done: ``f(k, n, energy, summary, metrics)`` — a routing run (or a
-            parallel worker, ``k`` = completion index) finished.
+        route_run_done: ``f(k, n, energy, summary, metrics, is_best, iters)`` — a
+            routing run (or a parallel worker, ``k`` = completion index) finished;
+            ``is_best`` is ``True`` when this run set a new overall-best energy;
+            ``iters`` is the number of annealing iterations completed (0 if
+            no annealing was run).
         overall_best: ``f(board, grid, results, energy)`` — a new lowest-energy
             routing across runs was adopted.
     """
@@ -447,6 +466,9 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
         The `PipelineResult` (``place_stats`` is ``None``; the caller fills it).
     """
     h = hooks or PipelineHooks()
+    if seed is None:
+        import time as _time
+        seed = int(_time.time()) & 0x7FFF_FFFF
     if conns is None:
         _call(h.phase, "building netlist (MST rats-nest)")
         conns = netlist.build_connections(board, exclude=exclude or [])
@@ -473,13 +495,15 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                 futs = [ex.submit(_route_run_worker, p) for p in payloads]
                 for fut in concurrent.futures.as_completed(futs):
                     out = fut.result()
-                    _call(h.route_run_done, done_n, runs, out["energy"],
-                          out["summary"], out["metrics"])
-                    done_n += 1
-                    if out["energy"] < best_energy:
+                    is_best = out["energy"] < best_energy
+                    if is_best:
                         best_energy = out["energy"]
                         final_results = out["results"]
                         routed, unrouted, length, vias = out["metrics"]
+                    _call(h.route_run_done, done_n, runs, out["energy"],
+                          out["summary"], out["metrics"], is_best,
+                          out.get("iters", 0))
+                    done_n += 1
         except KeyboardInterrupt:
             if final_results is None:
                 raise
@@ -524,7 +548,10 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                     seed=seed + k, snapshots=snapshots,
                     unrouted_weight=route_kw["unrouted_weight"],
                     t_start=route_kw["anneal_temps"][0],
-                    t_end=route_kw["anneal_temps"][1], route_params=route_params)
+                    t_end=route_kw["anneal_temps"][1], route_params=route_params,
+                    stall_patience=route_kw.get("stall_patience", 0),
+                    stall_ratio=route_kw.get("stall_ratio", 0.02),
+                    flat_window=route_kw.get("flat_window", 0))
                 aout = anneal.anneal(
                     state, conns, list(result.results), ap,
                     on_progress=on_anneal if h.anneal_progress is not None else None,
@@ -535,19 +562,21 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                 run_metrics = (aout.routed, aout.unrouted,
                                aout.total_length, aout.total_vias)
                 run_energy = aout.best_energy
-                acc_pct = 100 * aout.accepted / max(aout.iterations, 1)
-                summary = (f"anneal: {aout.iterations} iters, "
-                           f"{aout.accepted} accepted ({acc_pct:.0f}%), "
-                           f"energy {aout.start_energy:.1f} -> {aout.best_energy:.1f}")
+                run_iters = aout.iterations
+                summary = _anneal_summary(aout)
             else:
                 run_energy = anneal._energy(run_results, route_kw["via_weight"],
                                             route_kw["unrouted_weight"])
+                run_iters = 0
 
-            _call(h.route_run_done, k, runs, run_energy, summary, run_metrics)
-            if run_energy < best_energy:
+            is_best = run_energy < best_energy
+            if is_best:
                 best_energy = run_energy
                 final_results = run_results
                 routed, unrouted, length, vias = run_metrics
+            _call(h.route_run_done, k, runs, run_energy, summary, run_metrics,
+                  is_best, run_iters)
+            if is_best:
                 _call(h.overall_best, board, grid, final_results, best_energy)
 
     return PipelineResult(board=board, grid=grid, n_conns=len(conns),
