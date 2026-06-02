@@ -522,6 +522,10 @@ class Worker:
                 + (f", {cr.unrouted} unrouted" if cr.unrouted else "")))
             self._post(BoardSnap(dataclasses.replace(cr.board),
                                  results=cr.results, grid=cr.grid))
+            if select_best(results) is cr:
+                self._post(BoardSnap(dataclasses.replace(cr.board),
+                                     results=cr.results, grid=cr.grid,
+                                     kind="overall_best"))
             if feedback and k + 1 < cycles and not self._cancel.is_set():
                 new_field = router.congestion_heatmap(cr.conns, cr.results,
                                                       cr.grid, frame)
