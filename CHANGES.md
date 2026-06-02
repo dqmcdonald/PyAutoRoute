@@ -5,6 +5,11 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.38.0
+
+- **Differential pair routing (`--diff-pairs`).** Detects paired nets by naming convention (`+`/`-`, `P`/`N`, `_P`/`_N`) and routes them with a coupled A* that advances both traces simultaneously — guaranteeing zero length skew and constant spacing. Add `--diff-pair-gap MM` to override the intra-pair spacing (default: from design-rule clearance). After routing, prints a per-pair table showing length, skew, vias, and estimated differential impedance (IPC-2141A microstrip formula using the board's stackup).
+- **Stackup parsing.** The board's `(setup (stackup …))` block is now read into `Board.stackup` (copper thickness, dielectric height, and ε_r) and used for impedance estimates.
+
 ## 0.37.1
 
 - **`--auto-time-weight` / `--time-weight` (default 1.0).** Adds a runtime penalty to the auto-probe and tune scoring so that a marginally finer grid no longer automatically wins when quality is essentially equal. Each extra second of routing costs 1 score unit; raise the weight to prefer coarser/faster grids more strongly, or set to 0 to rank by quality only.

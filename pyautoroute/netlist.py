@@ -5,12 +5,18 @@ spanning tree over the pad centroids, so routing every connection joins all of
 the net's pads with the least total rats-nest length. Nets matching an
 ``--exclude-net`` pattern are dropped (their pads still act as obstacles via the
 grid, but no connections are generated for them).
+
+Differential-pair support: ``find_diff_pairs`` detects +/- or P/N net pairs by
+name convention; ``build_diff_pair_connections`` produces ``DiffPairConnection``
+objects whose two traces are always routed together by the coupled A* in
+``diffpair.py``.
 """
 
 from __future__ import annotations
 
 import fnmatch
 import math
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -30,6 +36,163 @@ class Connection:
     def est_length(self) -> float:
         """Straight-line distance between the two pad centres (mm)."""
         return math.hypot(self.a.cx - self.b.cx, self.a.cy - self.b.cy)
+
+
+# ---------------------------------------------------------------------------
+# Differential pair support
+# ---------------------------------------------------------------------------
+
+# Ordered by specificity: longer suffixes checked first to avoid false matches
+# (e.g. "_P"/"_N" before bare "P"/"N").
+_DP_SUFFIX_PAIRS: list[tuple[str, str]] = [
+    ("+", "-"),
+    ("_P", "_N"),
+    ("_p", "_n"),
+    ("P", "N"),
+    ("p", "n"),
+]
+
+
+@dataclass
+class DiffPairSpec:
+    """Names of a detected differential pair."""
+    net_p: str   # positive net (e.g. "USB_D+")
+    net_n: str   # negative net (e.g. "USB_D-")
+
+
+@dataclass
+class DiffPairConnection:
+    """A two-pin routing job for both traces of a differential pair.
+
+    ``src_p``/``src_n`` are the source pads (from the same component) and
+    ``dst_p``/``dst_n`` are the destination pads.  The coupled A* routes both
+    traces simultaneously, guaranteeing equal length and constant spacing.
+    """
+    net_p: str
+    net_n: str
+    src_p: Pad
+    src_n: Pad
+    dst_p: Pad
+    dst_n: Pad
+
+    @property
+    def est_length(self) -> float:
+        """Average straight-line length of the two rats-nest segments (mm)."""
+        lp = math.hypot(self.src_p.cx - self.dst_p.cx, self.src_p.cy - self.dst_p.cy)
+        ln = math.hypot(self.src_n.cx - self.dst_n.cx, self.src_n.cy - self.dst_n.cy)
+        return (lp + ln) / 2
+
+
+def find_diff_pairs(board: Board, exclude: list[str] | None = None) -> list[DiffPairSpec]:
+    """Detect differential pairs in the board's netlist by naming convention.
+
+    Checks each net name for the positive suffixes in ``+``, ``_P``, ``P``
+    (case variants included); if the companion net with the negative suffix
+    also exists, both are paired.  Each pair is returned exactly once.
+
+    Args:
+        board: the board whose net names are inspected.
+        exclude: glob patterns for nets to skip (same as ``build_connections``).
+
+    Returns:
+        One `DiffPairSpec` per detected pair, in sorted net-name order.
+    """
+    exclude = exclude or []
+    nets = set(board.pads_by_net().keys())
+    seen: set[frozenset[str]] = set()
+    pairs: list[DiffPairSpec] = []
+
+    for net in sorted(nets):
+        if is_excluded(net, exclude):
+            continue
+        for pos_sfx, neg_sfx in _DP_SUFFIX_PAIRS:
+            if net.endswith(pos_sfx):
+                stem = net[: -len(pos_sfx)]
+                if not stem:
+                    continue
+                companion = stem + neg_sfx
+                if companion in nets and not is_excluded(companion, exclude):
+                    key = frozenset((net, companion))
+                    if key not in seen:
+                        seen.add(key)
+                        pairs.append(DiffPairSpec(net_p=net, net_n=companion))
+                break   # stop checking suffixes once one matches
+
+    return pairs
+
+
+def _match_dp_pads(pads_p: list[Pad], pads_n: list[Pad]) -> list[tuple[Pad, Pad]]:
+    """Greedily match + pads to − pads, preferring pads on the same footprint.
+
+    Args:
+        pads_p: pads belonging to the positive net.
+        pads_n: pads belonging to the negative net.
+
+    Returns:
+        A list of ``(pad_p, pad_n)`` tuples, one per matched pair, ordered by
+        the positive-net pad's position in *pads_p*.
+    """
+    matched: list[tuple[Pad, Pad]] = []
+    remaining_n = list(pads_n)
+
+    for pp in pads_p:
+        if not remaining_n:
+            break
+        # Same footprint first; fall back to nearest globally
+        same_fp = [pn for pn in remaining_n if pn.fp_ref == pp.fp_ref]
+        pool = same_fp if same_fp else remaining_n
+        pn = min(pool, key=lambda p: math.hypot(p.cx - pp.cx, p.cy - pp.cy))
+        matched.append((pp, pn))
+        remaining_n.remove(pn)
+
+    return matched
+
+
+def build_diff_pair_connections(
+    board: Board,
+    pairs: list[DiffPairSpec],
+) -> list[DiffPairConnection]:
+    """Build the coupled two-pin connection list for all diff pairs.
+
+    For a pair whose nets each have exactly two pads, one `DiffPairConnection`
+    is produced.  For more pads, the matched pad-pairs are reduced via an MST
+    over their midpoint positions, producing N-1 connections for N pairs.
+
+    Args:
+        board: the board whose pads supply the netlist.
+        pairs: the diff pairs to process (from `find_diff_pairs`).
+
+    Returns:
+        All `DiffPairConnection` objects ready to pass to the coupled router.
+    """
+    pads_by_net = board.pads_by_net()
+    conns: list[DiffPairConnection] = []
+
+    for spec in pairs:
+        pads_p = pads_by_net.get(spec.net_p, [])
+        pads_n = pads_by_net.get(spec.net_n, [])
+        if len(pads_p) < 2 or len(pads_n) < 2:
+            continue
+
+        matched = _match_dp_pads(pads_p, pads_n)
+        if len(matched) < 2:
+            continue
+
+        if len(matched) == 2:
+            (sp, sn), (dp, dn) = matched
+            conns.append(DiffPairConnection(spec.net_p, spec.net_n, sp, sn, dp, dn))
+        else:
+            # MST over midpoints of each matched pad-pair
+            mids = np.array([((pp.cx + pn.cx) / 2, (pp.cy + pn.cy) / 2)
+                             for pp, pn in matched])
+            dist = squareform(pdist(mids))
+            mst = minimum_spanning_tree(dist).tocoo()
+            for i, j in zip(mst.row, mst.col):
+                sp, sn = matched[int(i)]
+                dp, dn = matched[int(j)]
+                conns.append(DiffPairConnection(spec.net_p, spec.net_n, sp, sn, dp, dn))
+
+    return conns
 
 
 def is_excluded(net: str, patterns: list[str]) -> bool:

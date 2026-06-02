@@ -604,3 +604,31 @@ def test_write_board_preserves_segments_by_default(tmp_path):
 
     reloaded = pcb.load_board(out)
     assert len(reloaded.segments) == 1
+
+
+# --- stackup parsing ---------------------------------------------------------
+
+TEST4_PCB = REPO / "TestProjects" / "Test4" / "Test4_routed.kicad_pcb"
+
+
+@pytest.mark.skipif(not TEST4_PCB.exists(), reason="Test4 board not present")
+def test_stackup_parsed_from_test4():
+    """Test4_routed.kicad_pcb has a stackup block; values must be parsed correctly."""
+    board = pcb.load_board(TEST4_PCB)
+    su = board.stackup
+    assert su.epsilon_r == pytest.approx(4.5, rel=1e-3)
+    assert su.copper_thickness == pytest.approx(0.035, rel=1e-3)
+    # dielectric thickness from the file is 1.51 mm
+    assert su.dielectric_h == pytest.approx(1.51, rel=1e-2)
+
+
+def test_stackup_defaults_when_no_stackup():
+    """A board without a stackup block gets FR4 defaults."""
+    from pyautoroute.pcb import Stackup
+    defaults = Stackup()
+    assert defaults.epsilon_r == pytest.approx(4.5)
+    assert defaults.copper_thickness == pytest.approx(0.035)
+    assert defaults.dielectric_h == pytest.approx(1.6)
+    # The Test1 board has no stackup → should fall back to defaults
+    board = pcb.load_board(PCB)
+    assert board.stackup.epsilon_r == pytest.approx(4.5)

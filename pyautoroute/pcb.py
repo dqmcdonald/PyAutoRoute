@@ -211,6 +211,18 @@ class Footprint:
 
 
 @dataclass
+class Stackup:
+    """Substrate parameters parsed from the board's ``(setup (stackup ...))`` block.
+
+    Used for differential-pair impedance estimates. Defaults match a standard
+    1.6 mm two-layer FR4 board with 1 oz copper when no stackup is present.
+    """
+    copper_thickness: float = 0.035   # mm (1 oz Cu)
+    dielectric_h: float = 1.6        # mm (core height)
+    epsilon_r: float = 4.5           # relative permittivity (FR4)
+
+
+@dataclass
 class Board:
     tree: SList
     copper_layers: list[str]               # ordered; [0] is the preferred front
@@ -223,6 +235,7 @@ class Board:
     name_only_nets: bool = True
     footprints: list[Footprint] = field(default_factory=list)
     outline_synthesized: bool = False   # True when no Edge.Cuts found and a default was generated
+    stackup: Stackup = field(default_factory=Stackup)
 
     @property
     def front_layer(self) -> str:
@@ -715,6 +728,52 @@ def _numbered_net_table(tree: SList) -> dict[int, str]:
 
 # --- public API --------------------------------------------------------------
 
+def _parse_stackup(tree: SList) -> Stackup:
+    """Extract substrate parameters from the board's stackup block.
+
+    Looks for the first dielectric layer (type ``core`` or ``prepreg``) to get
+    the height and permittivity, and the first copper layer for thickness.
+    Falls back to FR4 defaults when the block is absent or fields are missing.
+
+    Args:
+        tree: the root s-expression of the ``.kicad_pcb`` file.
+
+    Returns:
+        A `Stackup` with parsed (or default) values.
+    """
+    result = Stackup()
+    setup = child(tree, "setup")
+    if setup is None:
+        return result
+    stackup_node = child(setup, "stackup")
+    if stackup_node is None:
+        return result
+
+    for layer_node in children(stackup_node, "layer"):
+        type_node = child(layer_node, "type")
+        if type_node is None:
+            continue
+        type_atoms = atoms_after_head(type_node)
+        if not type_atoms:
+            continue
+        layer_type = type_atoms[0].text.strip('"')
+
+        thickness_node = child(layer_node, "thickness")
+        thickness = floats(thickness_node)
+
+        if layer_type == "copper" and thickness:
+            result.copper_thickness = thickness[0]
+        elif layer_type in ("core", "prepreg") and thickness:
+            result.dielectric_h = thickness[0]
+            er_node = child(layer_node, "epsilon_r")
+            er_vals = floats(er_node)
+            if er_vals:
+                result.epsilon_r = er_vals[0]
+            break   # use the first dielectric layer only
+
+    return result
+
+
 def load_board(pcb_path: str | Path) -> Board:
     """Parse a ``.kicad_pcb`` file into a `Board` model.
 
@@ -775,6 +834,7 @@ def load_board(pcb_path: str | Path) -> Board:
         numbered_nets=numbered,
         name_only_nets=name_only,
         footprints=footprints,
+        stackup=_parse_stackup(tree),
     )
     ensure_outline(board)
     return board

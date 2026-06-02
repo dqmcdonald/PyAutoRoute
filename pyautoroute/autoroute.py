@@ -21,7 +21,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from . import __version__, anneal, geometry, netlist, pcb, placement, router
+from . import __version__, anneal, diffpair, geometry, netlist, pcb, placement, router
 from .report import routing_stats
 from .grid import Grid
 from .pipeline import (
@@ -784,6 +784,46 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
     params = router.RouteParams(via_cost=args.via_weight,
                                 search_margin=args.search_margin)
+
+    # --- differential pair pre-routing ----------------------------------------
+    # Detect and route diff pairs first so their copper appears as static
+    # obstacles to the single-ended routing that follows.
+    dp_conn_list: list[netlist.DiffPairConnection] = []
+    dp_route_results: list[tuple[netlist.DiffPairConnection,
+                                 router.RouteResult, router.RouteResult]] = []
+    if getattr(args, "diff_pairs", False):
+        rep.phase("detecting differential pairs")
+        dp_specs = netlist.find_diff_pairs(board, exclude=args.exclude_net)
+        dp_conn_list = netlist.build_diff_pair_connections(board, dp_specs)
+        if dp_conn_list:
+            rep.log(f"diff pairs:    {len(dp_specs)} pair(s), "
+                    f"{len(dp_conn_list)} connection(s)")
+            if not args.quiet:
+                print(f"  diff pairs:    {len(dp_specs)} pair(s) detected "
+                      f"({len(dp_conn_list)} connection(s))")
+            rep.phase("routing differential pairs")
+            dp_state = router.RoutingState(grid)
+            dp_routed = 0
+            for k, dp_conn in enumerate(dp_conn_list):
+                gap = (args.diff_pair_gap
+                       if args.diff_pair_gap is not None
+                       else rules.dp_gap_for(dp_conn.net_p, dp_conn.net_n))
+                pair = diffpair.route_diff_pair(dp_state, dp_conn, gap, params)
+                if pair is not None:
+                    rp, rn = pair
+                    dp_state.commit(k * 2,     rp)
+                    dp_state.commit(k * 2 + 1, rn)
+                    dp_route_results.append((dp_conn, rp, rn))
+                    dp_routed += 1
+            if not args.quiet:
+                print(f"  diff pairs:    {dp_routed}/{len(dp_conn_list)} routed")
+            # Bake diff pair copper into the static grid so run_routing() respects it
+            diffpair.bake_routing_state(dp_state, grid)
+            # Remove diff pair nets from the single-ended connection list
+            dp_nets = ({spec.net_p for spec in dp_specs}
+                       | {spec.net_n for spec in dp_specs})
+            conns = [c for c in conns if c.net not in dp_nets]
+
     order = netlist.greedy_order(conns)
     annealing = bool(args.routing_iters or args.routing_time)
     route_kw = dict(annealing=annealing, iters=args.routing_iters,
@@ -899,6 +939,19 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     _report(rep, out_path, total_conns, routed + n_pre_routed, unrouted, length, vias,
             violations, excluded, init_stats=init_stats, final_stats=final_stats,
             via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
+
+    if dp_route_results:
+        from .report import diff_pair_stats, format_diff_pair_table
+        from .pcb import Stackup as _Stackup
+        su = routed_board.stackup
+        assumed = (su.epsilon_r == _Stackup().epsilon_r
+                   and su.dielectric_h == _Stackup().dielectric_h)
+        dp_stats = diff_pair_stats(dp_route_results, rules, su)
+        table = format_diff_pair_table(dp_stats, stackup_assumed=assumed)
+        if table and not args.quiet:
+            print(f"\n{table}")
+        rep.log(table)
+
     _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
     return _finish(rep, args, out_path, routed_board, violations)
 
@@ -1738,6 +1791,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "Set to 0 to rank purely by route quality.")
     p.add_argument("--exclude-net", action="append", default=[], metavar="PATTERN",
                    help="net name/glob to leave un-routed (repeatable)")
+    p.add_argument("--diff-pairs", action="store_true",
+                   help="detect and route differential pairs (nets sharing a +/- or "
+                        "P/N suffix) using a coupled A* before single-ended nets")
+    p.add_argument("--diff-pair-gap", type=float, default=None, metavar="MM",
+                   help="inner-edge spacing between the two traces of a pair "
+                        "(default: from design rules / net-class clearance)")
     p.add_argument("--ground-plane", action="store_true",
                    help="add a GND copper pour zone after routing")
     p.add_argument("--ground-net", default=None, metavar="NET",
