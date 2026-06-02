@@ -190,12 +190,16 @@ class Worker:
             post(BoardSnap(dataclasses.replace(b), results=list(results), grid=g,
                            kind="overall_best"))
 
+        def route_run_done(k, n, energy, summary, metrics, is_best=False, iters=0):
+            if summary:
+                post(Phase(f"{st['tag']}{summary}"))
+
         return pipeline.PipelineHooks(
             phase=phase, place_run=place_run, place_progress=place_progress,
             placed=placed, route_run=route_run, route_progress=route_progress,
             route_partial=route_partial, anneal_progress=anneal_progress,
             anneal_snapshot=anneal_snapshot, anneal_best=anneal_best,
-            overall_best=overall_best)
+            overall_best=overall_best, route_run_done=route_run_done)
 
     def _ground_plane_nodes(self, cfg, board, rules, out_path):
         """Build ground plane zone nodes if configured.
