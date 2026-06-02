@@ -755,6 +755,7 @@ def _parse_zones(tree: SList, numbered: dict[int, str]) -> list[dict]:
             "layers": strings(child(it, "layers")) or strings(child(it, "layer")),
             "polygon": _pts(child(child(it, "polygon"), "pts") if child(it, "polygon") else None),
             "fill_enabled": fill_enabled,
+            "node": it,
         })
     return out
 

@@ -34,14 +34,10 @@ def build(board: Board, rules: DesignRules, *,
         (list of zone/via nodes, list of warning strings). Empty list if skipped.
     """
     from . import pcb, geometry
+    from pyautoroute.sexpr import SList as _SList
 
     nodes: list[SList] = []
     warnings: list[str] = []
-
-    # ── Guard: existing pour ──────────────────────────────────────────────────
-    if pcb.zone_fill_nets(board):
-        warnings.append("Board already has a copper pour; not adding ground plane")
-        return ([], warnings)
 
     # ── GND auto-detect ───────────────────────────────────────────────────────
     gnd_net = net
@@ -67,6 +63,28 @@ def build(board: Board, rules: DesignRules, *,
             else:
                 warnings.append("No ground net found; use --ground-net to specify")
                 return ([], warnings)
+
+    # ── Guard: existing pour ──────────────────────────────────────────────────
+    # Check only zones on the requested layer: other-net fills block us; same-net
+    # fills get stripped and replaced so re-running always gives a clean result.
+    layer_zones = [z for z in board.zones if layer in z.get("layers", [])]
+    blocking = [z for z in layer_zones
+                if z.get("fill_enabled") and z.get("net") != gnd_net]
+    if blocking:
+        nets = ", ".join(sorted({z["net"] for z in blocking}))
+        warnings.append(
+            f"{layer} already has a filled copper pour ({nets}); "
+            "not adding ground plane")
+        return ([], warnings)
+    same_net = [z for z in layer_zones if z.get("net") == gnd_net]
+    if same_net:
+        warnings.append(f"Replacing existing {gnd_net} zone on {layer}")
+        strip_ids = {id(z["node"]) for z in same_net if z.get("node") is not None}
+        board.tree[:] = [ch for ch in board.tree
+                         if not (isinstance(ch, _SList) and id(ch) in strip_ids)]
+        board.zones = [z for z in board.zones
+                       if not (layer in z.get("layers", [])
+                               and z.get("net") == gnd_net)]
 
     # ── Pour polygon (outline inset by margin) ────────────────────────────────
     if margin is None:
