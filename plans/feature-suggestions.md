@@ -25,6 +25,8 @@ back for their own residual TODOs.
 >   [`placement-improvements-plan.md`](placement-improvements-plan.md).
 > - **Interactive footprint constraints** (GUI click-to-set edge/lock/overlap) —
 >   shipped; see [`footprint-interaction-plan.md`](footprint-interaction-plan.md).
+> - **Differential pair routing** (`--diff-pairs`, `--diff-pair-gap`) — shipped in
+>   0.38.0; see [`diffpair-plan.md`](diffpair-plan.md). Closes item #2 below.
 
 ## Context
 
@@ -52,16 +54,18 @@ and target, expanding the box and retrying on failure. The heuristic field is
 already precomputed (`router.py:310-327`), so clamping the frontier is a
 localized change. Biggest performance win; explicitly intended future work.
 
-### 2. Differential pair routing
+### 2. ✅ Differential pair routing (`--diff-pairs`) — **shipped in 0.38.0**
 
-A common real-world need with **no support at any layer**: `diff_pair_width` /
-`diff_pair_gap` are not even parsed in `rules.py` (only per-class `clearance`,
-`track_width`, `via_diameter`, `via_drill` are), and `netlist.py` has no
-awareness of `+`/`-` net-name suffixes — `greedy_order` keys purely on geometric
-length (`netlist.py:101-102`). KiCad encodes diff pairs by net-name suffix and
-net-class width/gap. Detect pairs in `netlist.py`, parse the two class fields in
-`rules.py`, then route the partner under a coupling constraint in the A\* cost
-model. High value; large but self-contained.
+Detects paired nets by naming convention (`+`/`-`, `P`/`N`, `_P`/`_N`) via
+`netlist.find_diff_pairs()`; routes them with a coupled A* in `diffpair.py` that
+advances both traces simultaneously using a fixed grid-node offset — guaranteeing
+zero length skew by construction. Diff pair copper is baked into the grid's static
+`owner` array after the pre-routing pass so the annealing loop needs no changes.
+`rules.dp_gap_for()` reads `differential_pair_gap` from the net class (falling back
+to clearance). After routing, a per-pair table reports length, skew, vias, and
+estimated differential impedance (IPC-2141A microstrip) using substrate parameters
+from the new `Board.stackup` (parsed from the PCB file's `(setup (stackup …))`
+block). See [`diffpair-plan.md`](diffpair-plan.md) for the full design record.
 
 ### 3. ✅ Incremental / partial re-routing (`--existing-routes preserve`) — **shipped**
 
@@ -268,11 +272,13 @@ future's result individually so collection is natural there.
 
 If implementation effort is to be prioritized:
 
-1. **Differential pairs** — biggest "real PCB" capability gap; unsupported
-   end-to-end today (rules not parsed, no net-name pair detection, no coupling
-   constraint in A*).
+1. ~~**Differential pairs**~~ — **shipped in 0.38.0** (see item #2 above).
 2. **Per-net-class clearance masks** — routes denser mixed-rule boards; the grid
    currently uses a single worst-case margin across all net classes.
 3. **Drill geometry + hole-to-hole DRC** — closes a real self-check gap;
    `min_hole_to_hole` is already parsed and `Pad.drill` is already modelled,
    so most of the scaffolding exists.
+4. **Diff pair annealing integration** — current implementation pre-routes pairs
+   once and bakes them as fixed obstacles; integrating them into the rip-up/reroute
+   annealing loop (treating each pair as an atomic unit) would allow global
+   optimisation across single-ended and diff pair nets together.
