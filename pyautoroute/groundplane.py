@@ -254,26 +254,28 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     via_drill = rules.via_drill_for(gnd_net) if rules else 0.3
     via_radius = via_size / 2.0
 
-    pour_layer_obstacles = [
+    # Vias span F.Cu and the pour layer — check obstacles on both so the
+    # annular ring on each layer stays clear of other-net copper.
+    via_layers = {"F.Cu", layer}
+    all_obstacles = [
         o for o in geometry.board_obstacles(board)
-        if o.layer == layer and o.net != gnd_net and o.net
+        if o.layer in via_layers and o.net != gnd_net and o.net
     ]
     if routed_nodes:
-        pour_layer_obstacles.extend(
-            _obstacles_from_nodes(routed_nodes, layer, gnd_net)
-        )
-    if pour_layer_obstacles:
-        _obs_tree = STRtree([o.geom for o in pour_layer_obstacles])
+        for vlayer in via_layers:
+            all_obstacles.extend(_obstacles_from_nodes(routed_nodes, vlayer, gnd_net))
+    if all_obstacles:
+        _obs_tree = STRtree([o.geom for o in all_obstacles])
     else:
         _obs_tree = None
 
     def _via_clear(x: float, y: float) -> bool:
-        """Return True if a via centred at (x, y) has no clearance conflict on the pour layer."""
+        """Return True if a via centred at (x, y) has no clearance conflict on either via layer."""
         if _obs_tree is None:
             return True
         ring = Point(x, y).buffer(via_radius + clearance)
         for idx in _obs_tree.query(ring):
-            obs = pour_layer_obstacles[idx]
+            obs = all_obstacles[idx]
             if Point(x, y).buffer(via_radius).distance(obs.geom) < clearance - 1e-6:
                 return False
         return True
