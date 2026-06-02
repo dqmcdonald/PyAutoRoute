@@ -1655,14 +1655,14 @@ def write_config(parser: argparse.ArgumentParser, args, path: str | Path) -> Non
         value = getattr(args, dest, None)
         _append_option(lines, dest, action, value, commented=(value is None))
 
-        # Immediately follow with any mutex siblings, always commented out.
+        # Immediately follow with any mutex siblings; commented only when unset.
         for sib in mutex_siblings.get(dest, []):
             if sib in written:
                 continue
             written.add(sib)
             sib_val = getattr(args, sib, None)
             _append_option(lines, sib, action_map[sib], sib_val,
-                           commented=True)
+                           commented=(sib_val is None))
 
     with open(path, "w", encoding="utf-8") as f:
         f.writelines(lines)
