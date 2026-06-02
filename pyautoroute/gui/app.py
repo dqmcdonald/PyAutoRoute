@@ -169,8 +169,9 @@ class App:
 
         rm = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="Run", menu=rm)
-        rm.add_command(label="Run", command=self._menu_run)
+        rm.add_command(label="Run", command=self._menu_run, accelerator="Cmd+R")
         rm.add_command(label="Stop", command=self._cancel_run)
+        self._root.bind("<Command-r>", lambda _: self._menu_run())
 
         hm = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="Help", menu=hm)
