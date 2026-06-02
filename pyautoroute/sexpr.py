@@ -110,26 +110,31 @@ def _fmt_float(x: float) -> str:
 
 
 def _escape(s: str) -> str:
-    """Escape backslashes and double quotes for a KiCad quoted string.
+    """Escape backslashes, double quotes, and control characters for a KiCad quoted string.
 
     Args:
         s: the raw string value to escape.
     """
-    return s.replace("\\", "\\\\").replace('"', '\\"')
+    return (s.replace("\\", "\\\\")
+             .replace('"', '\\"')
+             .replace('\n', '\\n')
+             .replace('\r', '\\r')
+             .replace('\t', '\\t'))
 
 
 def _unescape(s: str) -> str:
-    """Reverse `_escape`: drop backslash escapes from a quoted-string body.
+    """Reverse `_escape`: interpret C-style backslash escapes in a quoted-string body.
 
     Args:
         s: the inner text of a quoted atom (without surrounding quotes).
     """
+    _ESC = {'n': '\n', 'r': '\r', 't': '\t', '"': '"', '\\': '\\'}
     out = []
     i = 0
     while i < len(s):
         c = s[i]
         if c == "\\" and i + 1 < len(s):
-            out.append(s[i + 1])
+            out.append(_ESC.get(s[i + 1], s[i + 1]))
             i += 2
         else:
             out.append(c)
