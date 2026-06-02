@@ -356,19 +356,42 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
                     return (x, y)
         return None
 
+    track_width = rules.track_width_for(gnd_net) if rules else 0.25
+
     for root in roots_needing_via:
         via_point = None
-        first_candidate = None
-        for (x, y) in _candidate_positions(root):
-            if first_candidate is None:
-                first_candidate = (x, y)
-            if _via_clear(x, y):
-                via_point = (x, y)
+        track_node = None
+
+        # Prefer an offset via near a GND pad to avoid via-in-pad.
+        # _spiral_search starts at ring 1, so the result is always at least
+        # (via_size + clearance) away from the pad centre.
+        for pad in board.pads:
+            if pad.net != gnd_net:
+                continue
+            if _find(_snap(pad.cx, pad.cy)) != root:
+                continue
+            if not Point(pad.cx, pad.cy).within(pour_poly):
+                continue
+            offset_pos = _spiral_search(pad.cx, pad.cy)
+            if offset_pos:
+                via_point = offset_pos
+                pad_layer = pad.copper_layers[0] if pad.copper_layers else "F.Cu"
+                track_node = pcb.make_segment(
+                    board, pad.cx, pad.cy, offset_pos[0], offset_pos[1],
+                    track_width, pad_layer, gnd_net)
                 break
 
-        # If every exact candidate conflicts, search outward from the first candidate.
-        if via_point is None and first_candidate is not None:
-            via_point = _spiral_search(first_candidate[0], first_candidate[1])
+        # Fallback: try exact candidate positions (may land on a pad).
+        if via_point is None:
+            first_candidate = None
+            for (x, y) in _candidate_positions(root):
+                if first_candidate is None:
+                    first_candidate = (x, y)
+                if _via_clear(x, y):
+                    via_point = (x, y)
+                    break
+            if via_point is None and first_candidate is not None:
+                via_point = _spiral_search(first_candidate[0], first_candidate[1])
 
         if via_point:
             via_node = pcb.make_via(
@@ -376,6 +399,8 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
                 "F.Cu", "B.Cu", gnd_net
             )
             vias.append(via_node)
+            if track_node is not None:
+                vias.append(track_node)
 
     return vias
 
