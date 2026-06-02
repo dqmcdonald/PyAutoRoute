@@ -227,10 +227,15 @@ class Worker:
         layers = (["F.Cu", "B.Cu"] if cfg.ground_plane_layer == "both"
                   else [cfg.ground_plane_layer])
 
-        for layer in layers:
+        if len(layers) == 1 and cfg.stitch_vias:
+            self._post(Phase(
+                "  ⚠ ground-plane: stitching vias skipped — requires "
+                "--ground-plane-layer both (vias would float on the non-pour layer)"))
+        for i, layer in enumerate(layers):
+            sp = cfg.stitch_vias if (len(layers) > 1 and i == 0) else None
             gp_nodes, gp_warns = groundplane.build(
                 board, rules, net=cfg.ground_net, layer=layer, margin=margin,
-                stitch_pitch=cfg.stitch_vias)
+                stitch_pitch=sp)
             nodes.extend(gp_nodes)
             for w in gp_warns:
                 self._post(Phase(f"  ⚠ ground-plane: {w}"))

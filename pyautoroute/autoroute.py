@@ -907,10 +907,16 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         from . import groundplane
         margin = args.ground_plane_margin or rules.default_class.clearance
         layers = ["F.Cu", "B.Cu"] if args.ground_plane_layer == "both" else [args.ground_plane_layer]
-        for layer in layers:
+        if len(layers) == 1 and args.stitch_vias:
+            msg = ("ground-plane: stitching vias skipped — requires "
+                   "--ground-plane-layer both (vias would float on the non-pour layer)")
+            rep.log(msg)
+            print(f"  ⚠ {msg}")
+        for i, layer in enumerate(layers):
+            sp = args.stitch_vias if (len(layers) > 1 and i == 0) else None
             gp_nodes, gp_warns = groundplane.build(
                 board, rules, net=args.ground_net, layer=layer, margin=margin,
-                stitch_pitch=args.stitch_vias, routed_nodes=new_nodes
+                stitch_pitch=sp, routed_nodes=new_nodes
             )
             new_nodes.extend(gp_nodes)
             for w in gp_warns:
@@ -1093,10 +1099,16 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
         from . import groundplane
         margin = args.ground_plane_margin or rules.default_class.clearance
         layers = ["F.Cu", "B.Cu"] if args.ground_plane_layer == "both" else [args.ground_plane_layer]
-        for layer in layers:
+        if len(layers) == 1 and args.stitch_vias:
+            msg = ("ground-plane: stitching vias skipped — requires "
+                   "--ground-plane-layer both (vias would float on the non-pour layer)")
+            rep.log(msg)
+            print(f"  ⚠ {msg}")
+        for i, layer in enumerate(layers):
+            sp = args.stitch_vias if (len(layers) > 1 and i == 0) else None
             gp_nodes, gp_warns = groundplane.build(
                 sel_board, rules, net=args.ground_net, layer=layer, margin=margin,
-                stitch_pitch=args.stitch_vias, routed_nodes=new_nodes
+                stitch_pitch=sp, routed_nodes=new_nodes
             )
             new_nodes.extend(gp_nodes)
             for w in gp_warns:
