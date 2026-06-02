@@ -80,7 +80,7 @@ from shapely.geometry import box
 from shapely.strtree import STRtree
 
 from . import netlist
-from .pcb import Board, Footprint, Pad
+from .pcb import Board, Footprint, Pad, rotate
 
 # Window (in iterations) over which the live acceptance ratio is measured, so the
 # reported rate tracks how the cooling schedule bites (it falls towards zero as T
@@ -337,6 +337,27 @@ class _Placer:
         self._flagged: dict[int, str] = {
             i: fp.edge_affinity for i, fp in enumerate(self.boxed) if fp.edge_affinity
         }
+        # Native KiCad groups: footprints sharing a group_id move as a rigid body.
+        # Build group_id -> [boxed-indices] only for movable members. Groups where
+        # any member is locked are excluded entirely (conservative: don't partially
+        # constrain a group). Single-member groups are also pruned (degenerate).
+        locked_ids = {fp.group_id for fp in self.boxed if fp.locked and fp.group_id}
+        _raw: dict[str, list[int]] = {}
+        for i, fp in enumerate(self.boxed):
+            if fp.group_id and not fp.locked:
+                _raw.setdefault(fp.group_id, []).append(i)
+        self._groups: dict[str, list[int]] = {
+            gid: idxs for gid, idxs in _raw.items()
+            if len(idxs) >= 2 and gid not in locked_ids
+        }
+        grouped_fp_ids = {id(self.boxed[i]) for idxs in self._groups.values() for i in idxs}
+        # Move units: each unit is a list[Footprint]. Groups are multi-fp lists;
+        # ungrouped movable footprints are single-fp lists. _move() samples uniformly
+        # from this list, so group size doesn't bias selection frequency.
+        self._move_units: list[list[Footprint]] = (
+            [[fp] for fp in self.movable if id(fp) not in grouped_fp_ids]
+            + [[self.boxed[i] for i in idxs] for idxs in self._groups.values()]
+        )
         # --keep-outline: contain footprints within the board's existing Edge.Cuts
         # (rather than regenerating a bounding box). The polygon and its bounds are
         # fixed for the run; edge affinity then targets the outline, not the layout
@@ -736,6 +757,10 @@ class _Placer:
     def _move(self, temp_frac: float):
         """Apply one random move and return its undo snapshot and touched indices.
 
+        Moves operate on "units" — either a single footprint or a KiCad group
+        (all members move together as a rigid body). Groups are sampled from
+        ``self._move_units`` with the same probability as individual footprints.
+
         Args:
             temp_frac: ``T / t_start`` in ``[t_end/t_start, 1]``; scales the
                 translate step so moves shrink as the schedule cools.
@@ -745,27 +770,49 @@ class _Placer:
             `_restore`) and the set of their boxed-indices (for `_move_delta`).
         """
         r = self.rng.random()
-        if len(self.movable) >= 2 and r < 0.2:
-            a, b = self.rng.sample(self.movable, 2)          # swap origins
-            snap = self._snapshot([a, b])
-            a.x, b.x = b.x, a.x
-            a.y, b.y = b.y, a.y
-            a.sync_pads()
-            b.sync_pads()
-            return snap, {self._idx_of_fp[id(a)], self._idx_of_fp[id(b)]}
-        fp = self.rng.choice(self.movable)
-        snap = self._snapshot([fp])
+        if len(self._move_units) >= 2 and r < 0.2:
+            # Swap: exchange the centroids of two units while preserving internal
+            # relative offsets within each group.
+            ua, ub = self.rng.sample(self._move_units, 2)
+            snap = self._snapshot(ua + ub)
+            cax = sum(fp.x for fp in ua) / len(ua)
+            cay = sum(fp.y for fp in ua) / len(ua)
+            cbx = sum(fp.x for fp in ub) / len(ub)
+            cby = sum(fp.y for fp in ub) / len(ub)
+            dx, dy = cbx - cax, cby - cay
+            for fp in ua:
+                fp.x += dx; fp.y += dy; fp.sync_pads()
+            for fp in ub:
+                fp.x -= dx; fp.y -= dy; fp.sync_pads()
+            return snap, {self._idx_of_fp[id(fp)] for fp in ua + ub}
+
+        unit = self.rng.choice(self._move_units)
+        snap = self._snapshot(unit)
         if self.p.rotate_mode != "none" and r < 0.5:         # rotate
             if self.p.rotate_mode == "free":
-                fp.angle = self.rng.uniform(0.0, 360.0)
+                delta = self.rng.uniform(0.0, 360.0)
             else:                                            # "ortho"
-                fp.angle = (fp.angle + self.rng.choice((90.0, -90.0, 180.0))) % 360.0
+                delta = self.rng.choice((90.0, -90.0, 180.0))
+            if len(unit) == 1:
+                unit[0].angle = (unit[0].angle + delta) % 360.0
+                unit[0].sync_pads()
+            else:
+                # Rotate every member's origin around the group centroid.
+                cx = sum(fp.x for fp in unit) / len(unit)
+                cy = sum(fp.y for fp in unit) / len(unit)
+                for fp in unit:
+                    rx, ry = rotate(fp.x - cx, fp.y - cy, delta)
+                    fp.x = cx + rx
+                    fp.y = cy + ry
+                    fp.angle = (fp.angle + delta) % 360.0
+                    fp.sync_pads()
         else:                                                # translate
             s = self.p.step * temp_frac
-            fp.x += self.rng.uniform(-s, s)
-            fp.y += self.rng.uniform(-s, s)
-        fp.sync_pads()
-        return snap, {self._idx_of_fp[id(fp)]}
+            dx = self.rng.uniform(-s, s)
+            dy = self.rng.uniform(-s, s)
+            for fp in unit:
+                fp.x += dx; fp.y += dy; fp.sync_pads()
+        return snap, {self._idx_of_fp[id(fp)] for fp in unit}
 
     def run(self, on_progress=None, cancel=None) -> PlaceResult:
         """Run the annealing loop; leave the board at the best placement seen.
@@ -784,7 +831,7 @@ class _Placer:
         """
         for fp in self.boxed:
             fp.sync_pads()
-        if not self.movable:
+        if not self._move_units:
             self._rebuild_cache()
             E = self._cached_energy()
             return PlaceResult(E, E, 0, 0, 0,

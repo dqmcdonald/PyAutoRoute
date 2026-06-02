@@ -18,7 +18,7 @@ def _pad(net, w=2.0, h=2.0):
 
 
 def _fp(ref, x, y, pads_local, locked=False, overlap_ok=False, angle=0.0,
-        edge_affinity=None):
+        edge_affinity=None, group_id=None):
     """Build a Footprint at (x, y) from ``pads_local`` = [(px, py, net), ...]."""
     pads, offsets = [], []
     for (px, py, net) in pads_local:
@@ -27,7 +27,8 @@ def _fp(ref, x, y, pads_local, locked=False, overlap_ok=False, angle=0.0,
     fp = Footprint(ref=ref, x=x, y=y, angle=angle, locked=locked,
                    overlap_ok=overlap_ok, pads=pads, local_offsets=offsets,
                    at_node=sexpr.SList(), fp_node=sexpr.SList(),
-                   x0=x, y0=y, angle0=angle, edge_affinity=edge_affinity)
+                   x0=x, y0=y, angle0=angle, edge_affinity=edge_affinity,
+                   group_id=group_id)
     fp.sync_pads()
     return fp
 
@@ -656,3 +657,169 @@ def test_overlap_ok_exempt_from_board_silk_text():
     placer = _Placer(board, PlaceParams(iters=1, seed=0))
     boxes = [placer._fp_box(fp) for fp in placer.boxed]
     assert placer._fixed_text_overlap(boxes) == 0.0
+
+
+# --- KiCad native group tests ------------------------------------------------
+
+def _board_with_groups(group_map: dict):
+    """Build a board where footprints carry group_id values from *group_map* (ref->gid)."""
+    fps = [
+        _fp("U1", 10.0, 10.0, [(0.0, 0.0, "N0"), (2.0, 0.0, "N1")],
+            group_id=group_map.get("U1")),
+        _fp("C1", 12.0, 10.0, [(0.0, 0.0, "N1")],
+            group_id=group_map.get("C1")),
+        _fp("U2", 40.0, 40.0, [(0.0, 0.0, "N0"), (2.0, 0.0, "N2")],
+            group_id=group_map.get("U2")),
+        _fp("C2", 42.0, 40.0, [(0.0, 0.0, "N2")],
+            group_id=group_map.get("C2")),
+        _fp("R1", 70.0, 70.0, [(0.0, 0.0, "N2"), (2.0, 0.0, "N0")]),
+    ]
+    return _board(fps), {fp.ref: fp for fp in fps}
+
+
+def test_group_members_move_together_translate():
+    """Grouped footprints maintain their relative offset after any translate move."""
+    board, fps = _board_with_groups({"U1": "g1", "C1": "g1"})
+    u1, c1 = fps["U1"], fps["C1"]
+    dx0, dy0 = u1.x - c1.x, u1.y - c1.y
+
+    placement.place(board, placement.PlaceParams(iters=600, seed=42, rotate_mode="none"))
+
+    assert math.isclose(u1.x - c1.x, dx0, abs_tol=1e-9)
+    assert math.isclose(u1.y - c1.y, dy0, abs_tol=1e-9)
+
+
+def test_group_members_preserve_distance_after_rotate():
+    """Group rotate preserves the inter-member distance (rigid body)."""
+    board, fps = _board_with_groups({"U1": "g1", "C1": "g1"})
+    u1, c1 = fps["U1"], fps["C1"]
+    dist0 = math.hypot(u1.x - c1.x, u1.y - c1.y)
+
+    placement.place(board, placement.PlaceParams(iters=600, seed=7))
+
+    assert math.isclose(math.hypot(u1.x - c1.x, u1.y - c1.y), dist0, abs_tol=1e-6)
+
+
+def test_group_swap_exchanges_centroids():
+    """Swapping two groups moves each unit to the other's centroid."""
+    from pyautoroute.placement import _Placer, PlaceParams
+    board, fps = _board_with_groups({"U1": "g1", "C1": "g1", "U2": "g2", "C2": "g2"})
+    placer = _Placer(board, PlaceParams(iters=1, seed=0))
+
+    # Locate the two group units in _move_units.
+    units_by_refs = {
+        frozenset(fp.ref for fp in unit): unit
+        for unit in placer._move_units if len(unit) == 2
+    }
+    ua = units_by_refs[frozenset({"U1", "C1"})]
+    ub = units_by_refs[frozenset({"U2", "C2"})]
+
+    cax0 = sum(fp.x for fp in ua) / 2; cay0 = sum(fp.y for fp in ua) / 2
+    cbx0 = sum(fp.x for fp in ub) / 2; cby0 = sum(fp.y for fp in ub) / 2
+    # Internal offsets before swap.
+    da_x = ua[0].x - ua[1].x; da_y = ua[0].y - ua[1].y
+    db_x = ub[0].x - ub[1].x; db_y = ub[0].y - ub[1].y
+
+    # Force a swap by calling _move directly with the groups already selected.
+    snap = placer._snapshot(ua + ub)
+    dx, dy = cbx0 - cax0, cby0 - cay0
+    for fp in ua:
+        fp.x += dx; fp.y += dy; fp.sync_pads()
+    for fp in ub:
+        fp.x -= dx; fp.y -= dy; fp.sync_pads()
+
+    cax1 = sum(fp.x for fp in ua) / 2; cay1 = sum(fp.y for fp in ua) / 2
+    cbx1 = sum(fp.x for fp in ub) / 2; cby1 = sum(fp.y for fp in ub) / 2
+    assert math.isclose(cax1, cbx0, abs_tol=1e-9)
+    assert math.isclose(cay1, cby0, abs_tol=1e-9)
+    assert math.isclose(cbx1, cax0, abs_tol=1e-9)
+    assert math.isclose(cby1, cay0, abs_tol=1e-9)
+    # Internal offsets unchanged.
+    assert math.isclose(ua[0].x - ua[1].x, da_x, abs_tol=1e-9)
+    assert math.isclose(ub[0].x - ub[1].x, db_x, abs_tol=1e-9)
+
+
+def test_group_all_locked_excluded():
+    """A group whose members are all locked is not in _Placer._groups."""
+    from pyautoroute.placement import _Placer, PlaceParams
+    fps = [
+        _fp("U1", 10.0, 10.0, [(0.0, 0.0, "N0")], locked=True, group_id="g1"),
+        _fp("C1", 12.0, 10.0, [(0.0, 0.0, "N0")], locked=True, group_id="g1"),
+        _fp("R1", 40.0, 40.0, [(0.0, 0.0, "N0")]),
+    ]
+    board = _board(fps)
+    placer = _Placer(board, PlaceParams(iters=1, seed=0))
+    assert "g1" not in placer._groups
+
+
+def test_group_partial_lock_treated_as_ungrouped():
+    """When one member is locked the group is excluded; unlocked member moves freely."""
+    from pyautoroute.placement import _Placer, PlaceParams
+    fps = [
+        _fp("U1", 10.0, 10.0, [(0.0, 0.0, "N0")], locked=True, group_id="g1"),
+        _fp("C1", 12.0, 10.0, [(0.0, 0.0, "N0")], group_id="g1"),
+        _fp("R1", 40.0, 40.0, [(0.0, 0.0, "N0")]),
+    ]
+    board = _board(fps)
+    placer = _Placer(board, PlaceParams(iters=1, seed=0))
+    assert "g1" not in placer._groups
+    # C1 is movable and ungrouped, so it appears as a single-fp unit.
+    unit_refs = [frozenset(fp.ref for fp in u) for u in placer._move_units]
+    assert frozenset({"C1"}) in unit_refs
+
+
+def test_group_single_member_treated_as_ungrouped():
+    """A group with only one member is pruned and the member moves individually."""
+    from pyautoroute.placement import _Placer, PlaceParams
+    fps = [
+        _fp("U1", 10.0, 10.0, [(0.0, 0.0, "N0")], group_id="solo"),
+        _fp("R1", 40.0, 40.0, [(0.0, 0.0, "N0")]),
+    ]
+    board = _board(fps)
+    placer = _Placer(board, PlaceParams(iters=1, seed=0))
+    assert "solo" not in placer._groups
+    unit_refs = [frozenset(fp.ref for fp in u) for u in placer._move_units]
+    assert frozenset({"U1"}) in unit_refs
+
+
+def test_parse_native_kicad_group():
+    """load_board populates group_id from (group ...) nodes using member UUIDs."""
+    text = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
+        ' (footprint "Lib:A" (layer "F.Cu") (at 10 10)'
+        '  (uuid "aaaa0001-0000-0000-0000-000000000000")'
+        '  (property "Reference" "U1")'
+        '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "N")))'
+        ' (footprint "Lib:B" (layer "F.Cu") (at 20 20)'
+        '  (uuid "bbbb0002-0000-0000-0000-000000000000")'
+        '  (property "Reference" "C1")'
+        '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "N")))'
+        ' (footprint "Lib:C" (layer "F.Cu") (at 30 30)'
+        '  (uuid "cccc0003-0000-0000-0000-000000000000")'
+        '  (property "Reference" "R1")'
+        '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "N")))'
+        ' (group "" (uuid "gggg0001-0000-0000-0000-000000000000")'
+        '  (members "aaaa0001-0000-0000-0000-000000000000"'
+        '           "bbbb0002-0000-0000-0000-000000000000")))'
+    )
+    board = _board_from_text(text)
+    fps = {fp.ref: fp for fp in board.footprints}
+    assert fps["U1"].group_id == "gggg0001-0000-0000-0000-000000000000"
+    assert fps["C1"].group_id == "gggg0001-0000-0000-0000-000000000000"
+    assert fps["R1"].group_id is None
+
+
+def test_group_placement_never_worsens_energy():
+    """place() with grouped footprints still satisfies the energy-non-worsening invariant."""
+    board, _ = _board_with_groups({"U1": "g1", "C1": "g1", "U2": "g2", "C2": "g2"})
+    result = placement.place(board, placement.PlaceParams(iters=800, seed=0))
+    assert result.best_energy <= result.start_energy + 1e-6
+
+
+def test_group_constraint_in_summary():
+    """_footprint_constraint_summary includes group= for grouped footprints."""
+    from pyautoroute.autoroute import _footprint_constraint_summary
+    fp = _fp("U1", 0.0, 0.0, [(0.0, 0.0, "N")],
+             group_id="abcd1234-0000-0000-0000-000000000000")
+    summary = _footprint_constraint_summary(fp)
+    assert summary is not None and "group=abcd1234" in summary

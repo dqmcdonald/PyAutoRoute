@@ -314,6 +314,8 @@ def _footprint_constraint_summary(fp) -> str | None:
         parts.append("locked")
     if fp.overlap_ok:
         parts.append("overlap")
+    if getattr(fp, "group_id", None):
+        parts.append(f"group={fp.group_id[:8]}")
     return ", ".join(parts) if parts else None
 
 

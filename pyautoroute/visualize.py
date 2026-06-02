@@ -26,6 +26,7 @@ _FP_OUTLINE_COLOR = "#888888"
 _EDGE_COLOR = "#ff8800"     # orange — edge-affinity arrows / star
 _OVERLAP_COLOR = "#aa00cc"  # purple — overlap-ok ring
 _LOCK_COLOR = "#cc0000"     # red — locked footprint
+_GROUP_COLOR = "#009999"    # teal — KiCad native group members
 
 # Direction vectors for edge affinity (in board coordinates, Y-down).
 # "top" = smaller Y → negative dy; "bottom" = larger Y → positive dy.
@@ -251,6 +252,8 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
     lock_xs: list[float] = []
     lock_ys: list[float] = []
     has_arrows = False
+    # Group members: group_id -> list of (x, y) for drawing connecting lines.
+    group_pts: dict[str, list[tuple[float, float]]] = {}
 
     for fp in board.footprints:
         if fp.edge_affinity:
@@ -273,6 +276,8 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
         if fp.locked:
             lock_xs.append(fp.x)
             lock_ys.append(fp.y)
+        if fp.group_id:
+            group_pts.setdefault(fp.group_id, []).append((fp.x, fp.y))
 
     if any_xs:
         ax.plot(any_xs, any_ys, "*", color=_EDGE_COLOR,
@@ -283,9 +288,27 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
     if lock_xs:
         ax.plot(lock_xs, lock_ys, "s", mfc="none", mec=_LOCK_COLOR,
                 ms=16, mew=2.5, zorder=6, alpha=0.9, linestyle="none")
+    if group_pts:
+        # Draw a diamond marker at each grouped footprint and a thin dashed line
+        # connecting consecutive members so the grouping is easy to spot.
+        gxs, gys = [], []
+        segs = []
+        for pts in group_pts.values():
+            for x, y in pts:
+                gxs.append(x); gys.append(y)
+            segs.extend(zip(pts, pts[1:]))  # sequential segments fp0→fp1→fp2…
+        ax.plot(gxs, gys, "D", mfc="none", mec=_GROUP_COLOR,
+                ms=14, mew=2.0, zorder=6, alpha=0.9, linestyle="none")
+        if segs:
+            lc = LineCollection(
+                [[(ax_, ay_), (bx_, by_)] for (ax_, ay_), (bx_, by_) in segs],
+                color=_GROUP_COLOR, linewidth=1.5, linestyle="dashed",
+                alpha=0.7, zorder=5,
+            )
+            ax.add_collection(lc)
 
     # Draw legend if any markers are present
-    if any_xs or has_arrows or ol_xs or lock_xs:
+    if any_xs or has_arrows or ol_xs or lock_xs or group_pts:
         import matplotlib.lines as mlines
         handles = []
         labels = []
@@ -303,6 +326,11 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
                                          markeredgecolor=_LOCK_COLOR, marker="s",
                                          linestyle="none", markersize=9, label="Locked"))
             labels.append("Locked")
+        if group_pts:
+            handles.append(mlines.Line2D([], [], markerfacecolor="none",
+                                         markeredgecolor=_GROUP_COLOR, marker="D",
+                                         linestyle="none", markersize=9, label="Group"))
+            labels.append("Group")
         if handles:
             ax.legend(handles=handles, loc="upper right", fontsize=7,
                       framealpha=0.7, title="Constraints", title_fontsize=7)

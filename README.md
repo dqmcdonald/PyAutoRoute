@@ -262,6 +262,14 @@ Footprint attributes steer it:
   (higher = harder). The two properties are independent, so a part can carry both.
   By default the "edge" is the regenerated outline's boundary; with `--keep-outline`
   it is the board's existing Edge.Cuts (below).
+- **KiCad native groups** — footprints grouped together in KiCad (select parts →
+  Edit → Group, or `Ctrl+G`) move as a **rigid body** during placement: translate,
+  rotate, and swap all apply to every member simultaneously. This is the natural way
+  to keep a decoupling capacitor co-located with its IC, for example. No extra
+  properties are needed — PyAutoRoute reads the board's existing `(group …)` nodes
+  directly. Groups where any member is locked are excluded from rigid-body movement
+  (conservative policy). Grouped footprints are shown in the GUI with a teal diamond
+  marker and dashed connecting lines.
 
 On startup the CLI lists any footprints carrying these constraints — those with an
 edge affinity, a lock, or the overlap flag — with their reference and value (e.g.

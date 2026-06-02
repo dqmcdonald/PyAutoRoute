@@ -190,6 +190,8 @@ class Footprint:
     y0: float = 0.0
     angle0: float = 0.0
     edge_affinity: str | None = None   # placement: pull to board edge; None | any | left | right | top | bottom
+    uuid: str = ""                     # footprint's KiCad UUID (used to resolve native group membership)
+    group_id: str | None = None        # UUID of the KiCad group this footprint belongs to, or None
 
     @property
     def moved(self) -> bool:
@@ -555,6 +557,54 @@ def _footprint_edge_affinity(fp_node: SList) -> str | None:
     return None
 
 
+def _footprint_uuid(fp_node: SList) -> str:
+    """Return the footprint's KiCad UUID, or ``""`` if absent.
+
+    Args:
+        fp_node: the ``(footprint ...)`` node.
+
+    Returns:
+        The UUID string (e.g. ``"0d488f2c-a923-4fda-b2f9-73d85518f74e"``).
+    """
+    for it in fp_node:
+        if isinstance(it, SList) and sexpr.head_symbol(it) == "uuid":
+            vals = atoms_after_head(it)
+            if vals:
+                return vals[0].text
+    return ""
+
+
+def _parse_groups(tree: SList) -> dict[str, str]:
+    """Build a footprint-UUID → group-UUID map from top-level ``(group ...)`` nodes.
+
+    KiCad 6+ serialises native groups as top-level ``(group "" (uuid ...) (members
+    uuid1 uuid2 ...))`` nodes alongside footprints. Returns a dict mapping each
+    member UUID to the UUID of the group it belongs to, so callers can annotate
+    footprints after parsing them.
+
+    Args:
+        tree: the root board s-expression tree.
+
+    Returns:
+        A ``{member_uuid: group_uuid}`` mapping; empty when no groups exist.
+    """
+    result: dict[str, str] = {}
+    for node in tree:
+        if not (isinstance(node, SList) and sexpr.head_symbol(node) == "group"):
+            continue
+        group_uuid = ""
+        for child_node in node:
+            if isinstance(child_node, SList) and sexpr.head_symbol(child_node) == "uuid":
+                vals = atoms_after_head(child_node)
+                if vals:
+                    group_uuid = vals[0].text
+            elif isinstance(child_node, SList) and sexpr.head_symbol(child_node) == "members":
+                for member in atoms_after_head(child_node):
+                    if group_uuid:
+                        result[member.text] = group_uuid
+    return result
+
+
 # --- outline parsing ---------------------------------------------------------
 
 def _parse_outline(tree: SList) -> list[OutlineShape]:
@@ -793,6 +843,7 @@ def load_board(pcb_path: str | Path) -> Board:
     numbered = _numbered_net_table(tree)
     name_only = len(numbered) == 0
 
+    groups = _parse_groups(tree)
     pads: list[Pad] = []
     footprints: list[Footprint] = []
     for fp in children(tree, "footprint"):
@@ -801,6 +852,7 @@ def load_board(pcb_path: str | Path) -> Board:
         fx, fy = (at + [0.0, 0.0])[:2]
         fa = at[2] if len(at) >= 3 else 0.0
         ref = _footprint_ref(fp)
+        fp_uuid = _footprint_uuid(fp)
         fp_pads: list[Pad] = []
         local_offsets: list[tuple[float, float, float]] = []
         for pad_node in children(fp, "pad"):
@@ -821,6 +873,7 @@ def load_board(pcb_path: str | Path) -> Board:
                 pads=fp_pads, local_offsets=local_offsets,
                 at_node=at_node, fp_node=fp,
                 x0=fx, y0=fy, angle0=fa,
+                uuid=fp_uuid, group_id=groups.get(fp_uuid),
             ))
 
     board = Board(
