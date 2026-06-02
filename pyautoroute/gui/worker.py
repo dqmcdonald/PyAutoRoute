@@ -201,7 +201,8 @@ class Worker:
             anneal_snapshot=anneal_snapshot, anneal_best=anneal_best,
             overall_best=overall_best, route_run_done=route_run_done)
 
-    def _ground_plane_nodes(self, cfg, board, rules, out_path):
+    def _ground_plane_nodes(self, cfg, board, rules, out_path,
+                            routed_nodes=None):
         """Build ground plane zone nodes if configured.
 
         Returns a list of zone nodes (possibly empty). Posts warnings to the queue.
@@ -211,6 +212,9 @@ class Worker:
             board: the board (already routed).
             rules: the design rules.
             out_path: the output path (for refill check).
+            routed_nodes: freshly-routed SList nodes not yet in board (forwarded
+                to `groundplane.build` so connectivity via clearance checks see
+                new tracks).
 
         Returns:
             A list of zone SList nodes.
@@ -239,7 +243,7 @@ class Worker:
             sp = cfg.stitch_vias if (len(layers) > 1 and i == 0) else None
             gp_nodes, gp_warns = groundplane.build(
                 board, rules, net=cfg.ground_net, layer=layer, margin=margin,
-                stitch_pitch=sp)
+                stitch_pitch=sp, routed_nodes=routed_nodes or [])
             nodes.extend(gp_nodes)
             for w in gp_warns:
                 self._post(Phase(f"  ⚠ ground-plane: {w}"))
@@ -457,7 +461,8 @@ class Worker:
             f"PyAutoRoute v{__version__} — {_mode} "
             f"{datetime.date.today().isoformat()}")
         new_nodes = _results_to_nodes(board, grid, final_results)
-        new_nodes.extend(self._ground_plane_nodes(cfg, board, rules, out_path))
+        new_nodes.extend(self._ground_plane_nodes(cfg, board, rules, out_path,
+                                                  routed_nodes=new_nodes))
         pcb.write_board(board, out_path, new_nodes=new_nodes,
                         strip_free_vias=(existing_routes == "clear"),
                         strip_segments=(existing_routes == "clear"))
@@ -559,7 +564,8 @@ class Worker:
             f"PyAutoRoute v{__version__} — placed + routed "
             f"{datetime.date.today().isoformat()}")
         new_nodes = _results_to_nodes(best.board, best.grid, best.results)
-        new_nodes.extend(self._ground_plane_nodes(cfg, best.board, rules, out_path))
+        new_nodes.extend(self._ground_plane_nodes(cfg, best.board, rules, out_path,
+                                                  routed_nodes=new_nodes))
         # cycles always uses --place, which forces clear mode
         pcb.write_board(best.board, out_path, new_nodes=new_nodes,
                         strip_free_vias=True, strip_segments=True)
