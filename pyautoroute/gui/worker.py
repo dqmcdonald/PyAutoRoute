@@ -369,7 +369,8 @@ class Worker:
             edge_weight=cfg.place_edge_weight,
             keep_outline=getattr(cfg, "keep_outline", False), buffer=buf,
             t_start=cfg.place_temps[0], t_end=cfg.place_temps[1],
-            step=cfg.place_step, rotate_mode=cfg.place_rotate)
+            step=cfg.place_step, rotate_mode=cfg.place_rotate,
+            swap_prob=getattr(cfg, "place_swap_prob", 0.2) or 0.2)
 
     def _cycle_hooks(self, cfg, margin, tag):
         """Build a `pipeline.CycleHooks` posting throttled GUI events for one cycle.

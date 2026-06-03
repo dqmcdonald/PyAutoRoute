@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyautoroute"
-version = "0.39.0"
+version = "0.41.0"
 description = "Simulated-annealing autorouter for 2-layer KiCad PCBs"
 license = "MIT"
 requires-python = ">=3.10"
@@ -28,9 +28,10 @@ pyautoroute-tune = "pyautoroute.tune:main"
 pyautoroute-gui = "pyautoroute.gui:main"
 pyautoroute-fix = "pyautoroute.fixup:main"
 pyautoroute-compare = "pyautoroute.compare:main"
+pyautoroute-install-plugin = "pyautoroute.kicad_plugin_install:main"
 
 [tool.setuptools.packages.find]
-include = ["pyautoroute*"]
+include = ["pyautoroute*", "kicad_plugin*"]
 
 [tool.pytest.ini_options]
 # Put the repo root on sys.path so `pytest` (not just `python -m pytest`)

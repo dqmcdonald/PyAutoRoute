@@ -199,7 +199,8 @@ best routing.
 The placement analogue of `anneal.py`, enabled by `--place`. Simulated annealing
 over **footprint poses** (not tracks): moves are translate (a `--place-step`,
 temperature-scaled random step), rotate (`--place-rotate`: `ortho` ±90°/180°,
-`free` any angle, or `none`), or swap two footprints' origins, with Metropolis
+`free` any angle, or `none`), or swap two footprints' origins (`--place-swap-prob`,
+default 0.2), with Metropolis
 acceptance under a geometric `--place-temps` (`t_start → t_end`) schedule and the
 best-seen placement kept. A recent-window **acceptance ratio** is tracked (as in
 `anneal`) and reported via the progress callback; `PlaceResult` also carries the

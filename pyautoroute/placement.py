@@ -55,6 +55,9 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
 Moves (over the *movable* footprints — locked ones are fixed obstacles): translate
 by a temperature-scaled random step, rotate (``rotate_mode``: ``ortho`` = ±90°/180°,
 ``free`` = any angle, ``none`` = no rotation), or swap two footprints' origins.
+``swap_prob`` (default 0.2) sets the probability of attempting a swap move each
+iteration; set higher for boards with many interchangeable ICs where position swaps
+explore the design space much faster than translates.
 Worse moves are accepted with Metropolis probability under a geometric
 ``t_start → t_end`` schedule; the best-seen placement is kept and left on the
 board. Pad absolute coordinates are kept in sync on every move
@@ -246,6 +249,7 @@ class PlaceParams:
     step: float = 20.0                # max translate step (mm) at t_start
     buffer: float = 0.5               # keep-out gap (mm) enforced between footprints
     rotate_mode: str = "ortho"        # "ortho" (+/-90/180), "free" (any angle), "none"
+    swap_prob: float = 0.2            # probability of attempting a swap move (0–1)
     seed: int = 0
     exclude: list[str] = field(default_factory=list)
     # Early-termination (stall detection): if the windowed accept ratio stays
@@ -770,7 +774,7 @@ class _Placer:
             `_restore`) and the set of their boxed-indices (for `_move_delta`).
         """
         r = self.rng.random()
-        if len(self._move_units) >= 2 and r < 0.2:
+        if len(self._move_units) >= 2 and r < self.p.swap_prob:
             # Swap: exchange the centroids of two units while preserving internal
             # relative offsets within each group.
             ua, ub = self.rng.sample(self._move_units, 2)

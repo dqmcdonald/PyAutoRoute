@@ -38,6 +38,29 @@ install and run it as a module with any interpreter that has the dependencies:
 python -m pyautoroute.autoroute board.kicad_pcb
 ```
 
+### KiCad plugin
+
+PyAutoRoute can run directly from inside KiCad as an action plugin (adds a toolbar
+button and a Tools → PyAutoRoute menu entry). The plugin saves the current board,
+invokes `pyautoroute --in-place` as a subprocess, streams the output to a progress
+dialog, then reloads the result back into pcbnew.
+
+**Install** (after `pip install -e .`):
+
+```bash
+pyautoroute-install-plugin
+```
+
+This creates a symlink from `~/Documents/KiCad/<version>/scripting/plugins/pyautoroute` to the
+`kicad_plugin/` directory in the repo. Restart KiCad (or Scripting Console →
+`pcbnew.LoadPlugins()`) to activate it.
+
+> **Python version note:** KiCad bundles its own Python (3.9 on KiCad 10). PyAutoRoute
+> requires Python 3.12 for its native A* extension, so the plugin always invokes
+> `pyautoroute` as an external subprocess using whichever Python you installed it under.
+> On first use the plugin will prompt you to locate the executable if it cannot be found
+> automatically; the path is saved to `~/.config/pyautoroute_plugin.json`.
+
 ### Optional fast A* (native extension)
 
 The A* maze router has an optional Cython core that runs the inner search loop in
@@ -295,6 +318,7 @@ Placement options (all also work with `--place-only`):
 | `--place-temps START END` | Start/end temperature of the placement cooling schedule (default `8.0 0.05`); `START > END > 0`. |
 | `--place-step MM` | Max translate step (mm) at the start temperature (default 20). Shrinks as the schedule cools. |
 | `--place-rotate {ortho,free,none}` | Rotation moves: `ortho` (±90/180, default), `free` (any angle), or `none`. |
+| `--place-swap-prob P` | Probability of attempting a swap move (exchange two footprints' positions) each iteration (default 0.2). Raise for boards with many interchangeable ICs to explore position swaps more aggressively. |
 | `--place-buffer MM` | Keep-out gap enforced between footprints (default: derived from the design-rule clearance). |
 | `--place-margin MM` | Margin around the parts for the regenerated outline (default 2). |
 | `--keep-outline` | Keep the board's existing `Edge.Cuts` and contain the footprints within it, instead of regenerating a bounding-box outline (needs a closed outline; ignored otherwise). |

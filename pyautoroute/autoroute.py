@@ -427,7 +427,7 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
         if getattr(args, "keep_outline", False):
             rep.log("keep outline   on  (footprints contained within the existing Edge.Cuts)")
         rep.log(f"place temps    {args.place_temps[0]} -> {args.place_temps[1]}")
-        rep.log(f"place step     {args.place_step} mm, rotate {args.place_rotate}")
+        rep.log(f"place step     {args.place_step} mm, rotate {args.place_rotate}, swap_prob {args.place_swap_prob}")
         if args.place_runs > 1:
             rep.log(f"place runs     {args.place_runs}")
         if args.place_iters:
@@ -489,7 +489,8 @@ def _place_params_from_args(args, board, rules, rep):
         compact_weight=args.place_compact_weight, buffer=args.place_buffer,
         edge_weight=args.place_edge_weight, keep_outline=keep_outline,
         t_start=args.place_temps[0], t_end=args.place_temps[1],
-        step=args.place_step, rotate_mode=args.place_rotate)
+        step=args.place_step, rotate_mode=args.place_rotate,
+        swap_prob=args.place_swap_prob)
     return pp, keep_outline
 
 
@@ -1757,6 +1758,12 @@ def build_parser() -> argparse.ArgumentParser:
                    default=placement.PlaceParams.rotate_mode,
                    help="placement rotation moves: ortho (+/-90/180), free (any "
                         "angle), or none (default %(default)s)")
+    p.add_argument("--place-swap-prob", type=float,
+                   default=placement.PlaceParams.swap_prob, metavar="P",
+                   help="probability of attempting a swap move each placement "
+                        "iteration (0–1); higher values explore position swaps more "
+                        "aggressively — useful for boards with many interchangeable "
+                        "ICs (default %(default)s)")
     p.add_argument("--place-runs", type=int, default=1, metavar="N",
                    help="run placement N times (different seeds) and keep the "
                         "lowest-energy placement (default 1)")

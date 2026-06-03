@@ -5,6 +5,14 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.41.0
+
+- **KiCad action plugin** (`kicad_plugin/`). Adds a "PyAutoRoute" entry to KiCad's Tools menu and toolbar. The plugin saves the live board, invokes `pyautoroute --in-place` as a subprocess (bypassing the Python 3.9/3.12 version mismatch), streams output to a scrolling progress dialog, then reloads the result into pcbnew. Settings (grid, time, mode, exclude nets, ground plane, cycles, existing routes) are read from and written back to the board's `.ini` file. Install with `pyautoroute-install-plugin` (new console script).
+
+## 0.40.0
+
+- **`--place-swap-prob`** — new CLI flag (and `PlaceParams.swap_prob`) to control what fraction of placement annealing iterations attempt a swap move (exchanging two footprints' positions). Default 0.2 (unchanged behaviour); raise it for boards with many interchangeable ICs to explore position swaps more aggressively.
+
 ## 0.39.0
 
 - **Native KiCad group placement.** Footprints grouped together in KiCad's UI (via Edit → Group) now move as a rigid body during `--place`. All three move types (translate, rotate, swap) are applied to the whole group simultaneously, keeping relative positions and angles intact. Groups where any member is locked are excluded from grouping (conservative policy — the locked member stays fixed so the group can't be treated as rigid). Single-member groups are silently ignored. Grouped footprints are highlighted in the GUI canvas with a teal diamond marker and dashed connecting lines.

@@ -91,7 +91,7 @@ class RunConfig:
         "place_iters", "place_time",
         "place_margin", "place_buffer",
         "place_overlap_weight", "place_compact_weight", "place_edge_weight",
-        "place_temps", "place_step", "place_rotate",
+        "place_temps", "place_step", "place_rotate", "place_swap_prob",
         "place_runs",
         "cycles", "place_feedback", "congestion_weight",
         "snapshots",
@@ -171,6 +171,7 @@ class ControlsPanel(ttk.Frame):
         self._place_t_start = tk.StringVar(value="8.0")
         self._place_t_end = tk.StringVar(value="0.05")
         self._place_step = tk.StringVar(value="20.0")
+        self._place_swap_prob = tk.StringVar(value="0.2")
         self._place_ow = tk.StringVar(value="20.0")
         self._place_cw = tk.StringVar(value="0.02")
         self._place_ew = tk.StringVar(value="2.0")
@@ -316,6 +317,13 @@ class ControlsPanel(ttk.Frame):
         _row(pf, 5, "Rotation:", rot_cb,
              "Placement rotation moves: ortho (±90/180°), free (any angle), "
              "or none.")
+
+        swap_e = _entry(pf, self._place_swap_prob, width=8)
+        _row(pf, 6, "Swap prob:", swap_e,
+             "Probability of attempting a swap move each iteration (0–1). "
+             "Raise for boards with many interchangeable ICs (e.g. repeated "
+             "74HC-series logic) to explore position swaps more aggressively. "
+             "Default 0.2.")
 
         # ── Cycles / Congestion sub-section ──
         cyc_f = _section(p, "Cycles & Congestion")
@@ -503,6 +511,7 @@ class ControlsPanel(ttk.Frame):
         _sv("place_buffer", self._place_buffer)
         if "place_rotate" in d and d["place_rotate"]:
             self._place_rotate.set(d["place_rotate"])
+        _sv("place_swap_prob", self._place_swap_prob)
         if "place_iters" in d and d["place_iters"]:
             self._place_budget_kind.set("iters")
             self._place_budget_val.set(str(d["place_iters"]))
@@ -771,6 +780,7 @@ class ControlsPanel(ttk.Frame):
                          _f(self._place_t_end, 0.05)],
             place_step=_f(self._place_step, 20.0),
             place_rotate=self._place_rotate.get() or "ortho",
+            place_swap_prob=_f(self._place_swap_prob, 0.2),
             place_runs=_i(self._place_runs, 1),
             cycles=_i(self._cycles, 1),
             place_feedback=self._place_feedback.get(),
@@ -820,6 +830,7 @@ class ControlsPanel(ttk.Frame):
             place_temps=cfg.place_temps or [8.0, 0.05],
             place_step=cfg.place_step or 20.0,
             place_rotate=cfg.place_rotate or "ortho",
+            place_swap_prob=cfg.place_swap_prob or 0.2,
             place_runs=cfg.place_runs or 1,
             cycles=cfg.cycles or 1,
             place_feedback=cfg.place_feedback or False,
