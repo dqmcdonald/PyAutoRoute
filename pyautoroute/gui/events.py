@@ -55,6 +55,12 @@ class Done:
 
 
 @dataclass
+class SelfCheck:
+    """In-progress DRC self-check result (violations count)."""
+    violations: int
+
+
+@dataclass
 class Error:
     """An exception terminated the pipeline."""
     exc: BaseException

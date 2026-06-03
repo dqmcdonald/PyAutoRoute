@@ -15,7 +15,7 @@ from pyautoroute import __version__
 
 from .canvas import BoardCanvas
 from .controls import ControlsPanel
-from .events import BoardSnap, Done, Error, Phase, Progress
+from .events import BoardSnap, Done, Error, Phase, Progress, SelfCheck
 from .plots import EnergyPlot
 from .worker import Worker
 
@@ -99,6 +99,9 @@ class _MetricsPanel(ttk.Frame):
         n_viol = len(ev.violations)
         self._vars["check"].set("PASS" if n_viol == 0
                                 else f"{n_viol} violation(s)")
+
+    def set_self_check(self, n_viol: int) -> None:
+        self._vars["check"].set("PASS" if n_viol == 0 else f"{n_viol} violation(s)")
 
     def set_initial_stats(self, stats) -> None:
         """Populate the panel with pre-run board routing statistics."""
@@ -308,6 +311,8 @@ class App:
                 self._current_snap = event
             if self._view_mode.get() == event.kind:
                 self._render(event.board, event.results, event.grid)
+        elif isinstance(event, SelfCheck):
+            self._metrics.set_self_check(event.violations)
         elif isinstance(event, Done):
             self._on_done(event)
         elif isinstance(event, Error):

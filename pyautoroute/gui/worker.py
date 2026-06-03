@@ -23,7 +23,7 @@ import time
 import traceback
 from pathlib import Path
 
-from .events import BoardSnap, Done, Error, Phase, Progress
+from .events import BoardSnap, Done, Error, Phase, Progress, SelfCheck
 
 
 # Minimum seconds between Progress events posted to the UI queue.
@@ -35,7 +35,83 @@ _ROUTE_SNAP_INTERVAL = 1.5
 _ANNEAL_SNAP_COUNT = 40
 
 
-def _snap_pads(board, margin: float = 2.0):
+def _quick_violations(board, grid, results, rules) -> int:
+    """Run an in-memory DRC check on routing results without writing to disk.
+
+    Converts routing results to SList nodes, builds Obstacle objects from them,
+    and runs clearance_violations against the board pads + new routing.
+
+    Args:
+        board: the board (pads/existing copper; routing not yet applied).
+        grid: the routing grid.
+        results: list of RouteResult from the router.
+        rules: design rules for clearance lookup.
+
+    Returns:
+        Number of clearance violations found.
+    """
+    from pyautoroute import geometry, pcb
+    from pyautoroute.autoroute import _results_to_nodes
+    from pyautoroute.sexpr import SList, Atom
+
+    nodes = _results_to_nodes(board, grid, results)
+
+    # Parse SList segment/via nodes into Obstacle objects for all layers.
+    extra_obs: list[geometry.Obstacle] = []
+    for node in nodes:
+        if not isinstance(node, SList) or not node or not isinstance(node[0], Atom):
+            continue
+        head = node[0].raw
+        if head == "segment":
+            start = pcb.floats(pcb.child(node, "start"))
+            end = pcb.floats(pcb.child(node, "end"))
+            widths = pcb.floats(pcb.child(node, "width"))
+            layers = pcb.strings(pcb.child(node, "layer"))
+            net_node = pcb.child(node, "net")
+            net = pcb.strings(net_node)[0] if net_node and pcb.strings(net_node) else ""
+            if len(start) < 2 or len(end) < 2 or not widths or not layers:
+                continue
+            from shapely.geometry import LineString
+            poly = LineString([start[:2], end[:2]]).buffer(widths[0] / 2)
+            extra_obs.append(geometry.Obstacle(poly, net, layers[0]))
+        elif head == "via":
+            at = pcb.floats(pcb.child(node, "at"))
+            sizes = pcb.floats(pcb.child(node, "size"))
+            layers = pcb.strings(pcb.child(node, "layers"))
+            net_node = pcb.child(node, "net")
+            net = pcb.strings(net_node)[0] if net_node and pcb.strings(net_node) else ""
+            if len(at) < 2 or not sizes or not layers:
+                continue
+            from shapely.geometry import Point
+            poly = Point(at[:2]).buffer(sizes[0] / 2)
+            for layer in layers:
+                extra_obs.append(geometry.Obstacle(poly, net, layer))
+
+    # Build combined obstacle list: existing board copper + new routing.
+    all_obs = geometry.board_obstacles(board) + extra_obs
+    by_layer: dict[str, list] = {}
+    for o in all_obs:
+        by_layer.setdefault(o.layer, []).append(o)
+
+    from shapely.strtree import STRtree
+    violations = 0
+    for layer, items in by_layer.items():
+        tree = STRtree([o.geom for o in items])
+        for i, o in enumerate(items):
+            need = max(rules.clearance_for(o.net), 0.0)
+            ring = o.geom.buffer(need)
+            for idx in tree.query(ring):
+                if idx <= i:
+                    continue
+                other = items[idx]
+                if other.net == o.net:
+                    continue
+                if o.geom.distance(other.geom) < need - 1e-6:
+                    violations += 1
+    return violations
+
+
+def _snap_pads(board, margin: float = 2.0, strip_vias: bool = False):
     """Return a Board copy frozen at a consistent instant for live placement.
 
     Both ``board.pads`` and ``board.footprints`` are copied so the snapshot is an
@@ -58,7 +134,10 @@ def _snap_pads(board, margin: float = 2.0):
 
     pads_copy = [dataclasses.replace(p) for p in board.pads]
     fps_copy = [dataclasses.replace(fp) for fp in board.footprints]
-    snap = dataclasses.replace(board, pads=pads_copy, footprints=fps_copy)
+    kw = dict(pads=pads_copy, footprints=fps_copy)
+    if strip_vias:
+        kw["free_vias"] = []
+    snap = dataclasses.replace(board, **kw)
     if pads_copy:
         snap.outline = pcb.pad_bounding_outline(pads_copy, margin)
     return snap
@@ -96,7 +175,7 @@ class Worker:
             self._post(Error(exc, traceback.format_exc()))
 
     # ------------------------------------------------------------------
-    def _build_hooks(self, cfg, margin, board):
+    def _build_hooks(self, cfg, margin, board, rules=None):
         """Build a `pipeline.PipelineHooks` that posts throttled GUI events.
 
         The shared `run_placement` / `run_routing` call these at each progress
@@ -107,6 +186,8 @@ class Worker:
             cfg: the run configuration (for budgets shown in the progress events).
             margin: placement preview margin (mm), passed to `_snap_pads`.
             board: the live board the pipeline mutates (snapshotted for the canvas).
+            rules: design rules; when provided, a `SelfCheck` event is posted
+                whenever a new best routing is found.
 
         Returns:
             A `pyautoroute.pipeline.PipelineHooks`.
@@ -120,6 +201,14 @@ class Worker:
         st = {"tag": "", "place_t0": time.monotonic(), "anneal_t0": time.monotonic(),
               "prog": 0.0, "psnap_t": 0.0, "psnap_best": float("inf"),
               "route_prog": 0.0, "route_snap": 0.0, "anneal_prog": 0.0}
+        # Strip pre-existing free vias from live previews when they'll be cleared
+        _strip_vias = getattr(cfg, "existing_routes", "clear") == "clear"
+
+        def _snap(b=None):
+            return _snap_pads(b or board, margin, strip_vias=_strip_vias)
+
+        def _route_snap(b):
+            return dataclasses.replace(b, free_vias=[] if _strip_vias else b.free_vias)
 
         def phase(name):
             if name.startswith("annealing"):
@@ -146,13 +235,13 @@ class Worker:
                 if new_best:
                     st["psnap_best"] = best
                 st["psnap_t"] = now
-                post(BoardSnap(_snap_pads(board, margin),
+                post(BoardSnap(_snap(),
                                kind="best" if new_best else "current"))
                 if new_best:
-                    post(BoardSnap(_snap_pads(board, margin), kind="overall_best"))
+                    post(BoardSnap(_snap(), kind="overall_best"))
 
         def placed(_board):
-            post(BoardSnap(_snap_pads(board, margin)))
+            post(BoardSnap(_snap()))
 
         def route_run(k, n):
             st["tag"] = f"run {k + 1}/{n} " if n > 1 else ""
@@ -168,8 +257,7 @@ class Worker:
             now = time.monotonic()
             if now - st["route_snap"] >= _ROUTE_SNAP_INTERVAL:
                 st["route_snap"] = now
-                post(BoardSnap(dataclasses.replace(b), results=list(partial),
-                               grid=g))
+                post(BoardSnap(_route_snap(b), results=list(partial), grid=g))
 
         def anneal_progress(it, total, r, u, energy, best, temp, accept, ob):
             now = time.monotonic()
@@ -180,15 +268,20 @@ class Worker:
                               budget=cfg.time_budget or 0.0))
 
         def anneal_snapshot(b, g, results, k, n):
-            post(BoardSnap(dataclasses.replace(b), results=results, grid=g))
+            post(BoardSnap(_route_snap(b), results=results, grid=g))
 
         def anneal_best(b, g, results):
-            post(BoardSnap(dataclasses.replace(b), results=results, grid=g,
-                           kind="best"))
+            post(BoardSnap(_route_snap(b), results=results, grid=g, kind="best"))
 
         def overall_best(b, g, results, energy):
-            post(BoardSnap(dataclasses.replace(b), results=list(results), grid=g,
+            post(BoardSnap(_route_snap(b), results=list(results), grid=g,
                            kind="overall_best"))
+            if rules is not None and results:
+                try:
+                    n = _quick_violations(b, g, list(results), rules)
+                    post(SelfCheck(n))
+                except Exception:
+                    pass
 
         def route_run_done(k, n, energy, summary, metrics, is_best=False, iters=0):
             if summary:
@@ -387,7 +480,7 @@ class Worker:
                              out_path, fill_nets, cycles)
             return
 
-        hooks = self._build_hooks(cfg, margin, board)
+        hooks = self._build_hooks(cfg, margin, board, rules=rules)
 
         # ---- placement -----------------------------------------------
         if place or place_only:
@@ -540,6 +633,11 @@ class Worker:
                 self._post(BoardSnap(dataclasses.replace(cr.board),
                                      results=cr.results, grid=cr.grid,
                                      kind="overall_best"))
+                try:
+                    n = _quick_violations(cr.board, cr.grid, cr.results, rules)
+                    self._post(SelfCheck(n))
+                except Exception:
+                    pass
             if feedback and k + 1 < cycles and not self._cancel.is_set():
                 new_field = router.congestion_heatmap(cr.conns, cr.results,
                                                       cr.grid, frame)
