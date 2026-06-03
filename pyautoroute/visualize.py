@@ -267,7 +267,7 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
                     "", xy=(fp.x + dx * _ARROW_MM, fp.y + dy * _ARROW_MM),
                     xytext=(fp.x, fp.y),
                     arrowprops=dict(arrowstyle="-|>", color=_EDGE_COLOR,
-                                    lw=3.0, mutation_scale=20),
+                                    lw=1.5, mutation_scale=12, alpha=0.6),
                     zorder=6,
                 )
         if fp.overlap_ok:
@@ -281,13 +281,13 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
 
     if any_xs:
         ax.plot(any_xs, any_ys, "*", color=_EDGE_COLOR,
-                ms=18, zorder=6, alpha=0.9, linestyle="none")
+                ms=10, zorder=6, alpha=0.55, linestyle="none")
     if ol_xs:
         ax.plot(ol_xs, ol_ys, "o", mfc="none", mec=_OVERLAP_COLOR,
-                ms=20, mew=3.0, zorder=6, alpha=0.9, linestyle="none")
+                ms=12, mew=1.5, zorder=6, alpha=0.55, linestyle="none")
     if lock_xs:
         ax.plot(lock_xs, lock_ys, "s", mfc="none", mec=_LOCK_COLOR,
-                ms=16, mew=2.5, zorder=6, alpha=0.9, linestyle="none")
+                ms=10, mew=1.5, zorder=6, alpha=0.55, linestyle="none")
     if group_pts:
         # Draw a diamond marker at each grouped footprint and a thin dashed line
         # connecting consecutive members so the grouping is easy to spot.
@@ -298,12 +298,12 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
                 gxs.append(x); gys.append(y)
             segs.extend(zip(pts, pts[1:]))  # sequential segments fp0→fp1→fp2…
         ax.plot(gxs, gys, "D", mfc="none", mec=_GROUP_COLOR,
-                ms=14, mew=2.0, zorder=6, alpha=0.9, linestyle="none")
+                ms=9, mew=1.5, zorder=6, alpha=0.55, linestyle="none")
         if segs:
             lc = LineCollection(
                 [[(ax_, ay_), (bx_, by_)] for (ax_, ay_), (bx_, by_) in segs],
-                color=_GROUP_COLOR, linewidth=1.5, linestyle="dashed",
-                alpha=0.7, zorder=5,
+                color=_GROUP_COLOR, linewidth=1.0, linestyle="dashed",
+                alpha=0.5, zorder=5,
             )
             ax.add_collection(lc)
 
@@ -406,7 +406,7 @@ def draw_board(ax, board: Board, *, results=None, grid=None,
     for tx, ty, content, angle, is_back in _silk_text_items(board):
         color = _SILK_TEXT_COLOR["back" if is_back else "front"]
         ax.text(tx, ty, content, fontsize=6, color=color,
-                ha="center", va="center", rotation=angle,
+                ha="left", va="baseline", rotation=angle,
                 rotation_mode="anchor", clip_on=True)
 
     if board.footprints:
