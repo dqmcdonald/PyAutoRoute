@@ -393,18 +393,18 @@ class Worker:
 
         post = self._post
         cancel = self._cancel
-        st = {"place_t0": time.monotonic(), "anneal_t0": time.monotonic(),
+        st = {"place_t0": None, "anneal_t0": None,
               "prog": 0.0, "route_prog": 0.0, "anneal_prog": 0.0}
 
         def phase(name):
-            if name.startswith("routing"):
-                st["anneal_t0"] = time.monotonic()
             post(Phase(f"{tag}{name}"))
 
         def place_progress(it, total, energy, best, temp, accept):
             if cancel.is_set():
                 return
             now = time.monotonic()
+            if st["place_t0"] is None:
+                st["place_t0"] = now
             if now - st["prog"] >= _PROGRESS_INTERVAL:
                 st["prog"] = now
                 post(Progress("placing", it, total, energy, best, temp, accept,
@@ -420,6 +420,8 @@ class Worker:
 
         def anneal_progress(it, total, r, u, energy, best, temp, accept):
             now = time.monotonic()
+            if st["anneal_t0"] is None:
+                st["anneal_t0"] = now
             if now - st["anneal_prog"] >= _PROGRESS_INTERVAL:
                 st["anneal_prog"] = now
                 post(Progress("annealing", it, total, energy, best, temp, accept,
