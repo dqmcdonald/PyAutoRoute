@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.42.0
+
+- **`--greedy-order {short,long,shuffle}`** — controls the initial greedy routing pass order. `short` (default, unchanged) routes shortest connections first. `long` routes longest-first, giving hard long-distance connections first pick of the empty grid. `shuffle` randomises the order per run/cycle so the annealer starts from genuinely different configurations across `--runs`/`--cycles`. Applied in both the single-pass and best-of-cycles paths.
+
 ## 0.41.1
 
 - **fix(preserve): remove duplicate vias when writing in `--existing-routes preserve` mode.** The annealer could re-route existing connections placing new vias at the same positions as preserved ones; the ground-plane pass could also add fresh stitching vias on top of old ones. Both caused co-located drilled holes in DRC. The write step now strips free vias whose position is superseded by a co-located via in the new routing output.

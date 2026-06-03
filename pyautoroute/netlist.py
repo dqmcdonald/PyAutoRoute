@@ -333,14 +333,28 @@ def build_connections(board: Board, exclude: list[str] | None = None) -> list[Co
     return conns
 
 
-def greedy_order(connections: list[Connection]) -> list[int]:
-    """Compute the initial routing order: shortest connections first.
+def greedy_order(connections: list[Connection], mode: str = "short",
+                 seed: int | None = None) -> list[int]:
+    """Compute the initial greedy routing order.
 
     Args:
         connections: the connections to order.
+        mode: one of ``"short"`` (shortest first, default), ``"long"``
+            (longest first — routes hard long connections while the board is
+            clear), or ``"shuffle"`` (random — varies the starting state
+            across runs so the annealer explores different configurations).
+        seed: random seed for ``"shuffle"``; ``None`` uses the system source.
 
     Returns:
-        Indices into `connections`, sorted by ascending estimated length.
+        Indices into `connections` in the requested order.
     """
+    if mode == "long":
+        return sorted(range(len(connections)),
+                      key=lambda i: connections[i].est_length, reverse=True)
+    if mode == "shuffle":
+        import random as _random
+        idx = list(range(len(connections)))
+        _random.Random(seed).shuffle(idx)
+        return idx
     return sorted(range(len(connections)),
                   key=lambda i: connections[i].est_length)

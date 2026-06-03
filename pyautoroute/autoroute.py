@@ -472,6 +472,7 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
         if args.place_time:
             rep.log(f"place time     {args.place_time} s")
     rep.log(f"via weight     {args.via_weight}")
+    rep.log(f"greedy order   {args.greedy_order}")
     rep.log(f"seed           {args.seed}")
     if args.exclude_net:
         rep.log(f"exclude nets   {', '.join(args.exclude_net)}")
@@ -867,7 +868,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
                        | {spec.net_n for spec in dp_specs})
             conns = [c for c in conns if c.net not in dp_nets]
 
-    order = netlist.greedy_order(conns)
+    order = netlist.greedy_order(conns, mode=args.greedy_order, seed=args.seed)
     annealing = bool(args.routing_iters or args.routing_time)
     route_kw = dict(annealing=annealing, iters=args.routing_iters,
                     time_budget=args.routing_time,
@@ -1108,7 +1109,9 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                                congestion_weight=args.congestion_weight)
             cr = run_cycle(input_path, rules, pitch, pp_k, route_params,
                            route_kw=route_kw, place_margin=args.place_margin,
-                           seed=base_seed + k, hooks=hooks)
+                           seed=base_seed + k,
+                           greedy_order_mode=args.greedy_order,
+                           hooks=hooks)
             rep.done()
             results.append(cr)
             line = _cycle_line(k + 1, cr)
@@ -1816,6 +1819,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="route N times with different annealing seeds and keep the "
                         "lowest-energy result (default 1; only varies with "
                         "--routing-iters/--routing-time)")
+    p.add_argument("--greedy-order", choices=("short", "long", "shuffle"),
+                   default="short",
+                   help="initial greedy routing order: short (default) = shortest "
+                        "connections first; long = longest first (routes hard "
+                        "long-distance connections while the board is clear); "
+                        "shuffle = random order per run/cycle (varies the starting "
+                        "state so the annealer explores different configurations)")
     p.add_argument("--cycles", type=int, default=1, metavar="N",
                    help="with --place: run N independent place+route cycles and "
                         "keep the one that *routes* best (fewest unrouted, then "

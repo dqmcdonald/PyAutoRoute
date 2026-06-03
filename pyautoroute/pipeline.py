@@ -185,6 +185,7 @@ class CycleResult:
 
 def run_cycle(input_path, rules, pitch: float, place_params, route_params, *,
               route_kw: dict, place_margin: float, seed: int,
+              greedy_order_mode: str = "short",
               cancel=None, hooks=None) -> CycleResult:
     """Place and route a fresh copy of a board once, and score the result.
 
@@ -227,7 +228,7 @@ def run_cycle(input_path, rules, pitch: float, place_params, route_params, *,
 
     grid = Grid(board, rules, pitch)
     conns = netlist.build_connections(board, exclude=pp.exclude)
-    order = netlist.greedy_order(conns)
+    order = netlist.greedy_order(conns, mode=greedy_order_mode, seed=seed)
 
     h.phase(f"routing {len(conns)} connections")
     out = _route_one_run(grid, conns, order, route_params, 0, seed=seed,
@@ -433,6 +434,7 @@ def run_placement(board, *, place_params, place_runs: int, seed: int,
 def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                 seed: int, runs: int, jobs: int, snapshots: int, exclude,
                 grid=None, conns=None, order=None,
+                greedy_order_mode: str = "short",
                 hooks=None, cancel=None) -> PipelineResult:
     """Route a (placed) board best-of-`runs` and keep the lowest-energy result.
 
@@ -473,7 +475,7 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
         _call(h.phase, "building netlist (MST rats-nest)")
         conns = netlist.build_connections(board, exclude=exclude or [])
     if order is None:
-        order = netlist.greedy_order(conns)
+        order = netlist.greedy_order(conns, mode=greedy_order_mode, seed=seed)
     if grid is None:
         _call(h.phase, f"building {pitch}mm routing grid")
         grid = Grid(board, rules, pitch)
