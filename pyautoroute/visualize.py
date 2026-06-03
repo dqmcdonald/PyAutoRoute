@@ -142,14 +142,17 @@ def _is_hidden(node) -> bool:
 
 
 def _silk_text_items(board: Board):
-    """Yield ``(x, y, text, angle_deg, is_back)`` for visible silkscreen text.
+    """Yield ``(x, y, text, angle_deg, is_back, is_free)`` for visible silkscreen text.
 
     Covers:
-    - Top-level ``(gr_text ...)`` on a silkscreen layer.
+    - Top-level ``(gr_text ...)`` on a silkscreen layer  (``is_free=True``).
     - ``(property "Reference" ...)`` and ``(property "Value" ...)`` within
-      footprints, on a silkscreen layer and not hidden.
+      footprints, on a silkscreen layer and not hidden  (``is_free=False``).
     - ``(fp_text ...)`` within footprints on a silkscreen layer (legacy format,
-      resolves ``${REFERENCE}`` to the footprint reference).
+      resolves ``${REFERENCE}`` to the footprint reference)  (``is_free=False``).
+
+    ``is_free`` distinguishes free board text (anchored at the string start in
+    KiCad) from footprint-scoped text (position is near the component centroid).
     """
     from .pcb import children, child, strings, floats, atoms_after_head
     from .sexpr import SList, head_symbol
@@ -180,7 +183,7 @@ def _silk_text_items(board: Board):
             continue
         x, y = at_vals[0], at_vals[1]
         angle = at_vals[2] if len(at_vals) >= 3 else 0.0
-        yield x, y, content, angle, lay.startswith("B.")
+        yield x, y, content, angle, lay.startswith("B."), True
 
     # 2. Footprint-scoped text
     for fp in board.footprints:
@@ -214,7 +217,7 @@ def _silk_text_items(board: Board):
                 continue
             bx, by = to_board(at_vals[0], at_vals[1])
             angle = at_vals[2] if len(at_vals) >= 3 else 0.0
-            yield bx, by, content, angle, lay.startswith("B.")
+            yield bx, by, content, angle, lay.startswith("B."), False
 
         # fp_text nodes (legacy format)
         for txt in children(fp_node, "fp_text"):
@@ -234,7 +237,7 @@ def _silk_text_items(board: Board):
                 continue
             bx, by = to_board(at_vals[0], at_vals[1])
             angle = at_vals[2] if len(at_vals) >= 3 else 0.0
-            yield bx, by, content, angle, lay.startswith("B.")
+            yield bx, by, content, angle, lay.startswith("B."), False
 
 
 def _draw_autoroute_markers(ax, board: Board) -> None:
@@ -403,10 +406,14 @@ def draw_board(ax, board: Board, *, results=None, grid=None,
         ax.plot(via_xs, via_ys, "o", mfc="none", mec="#11aa11", ms=5)
 
     # Silkscreen text (gr_text + footprint property/fp_text on SilkS layers)
-    for tx, ty, content, angle, is_back in _silk_text_items(board):
+    for tx, ty, content, angle, is_back, is_free in _silk_text_items(board):
         color = _SILK_TEXT_COLOR["back" if is_back else "front"]
+        # Free gr_text is anchored at the string's left baseline in KiCad.
+        # Footprint-scoped text uses the position as an approximate centroid.
+        ha = "left" if is_free else "center"
+        va = "baseline" if is_free else "center"
         ax.text(tx, ty, content, fontsize=6, color=color,
-                ha="left", va="baseline", rotation=angle,
+                ha=ha, va=va, rotation=angle,
                 rotation_mode="anchor", clip_on=True)
 
     if board.footprints:
