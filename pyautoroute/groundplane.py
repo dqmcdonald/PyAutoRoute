@@ -385,12 +385,13 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         # Prefer an offset via near a GND pad to avoid via-in-pad.
         # _spiral_search starts at ring 1, so the result is always at least
         # (via_size + clearance) away from the pad centre.
+        # Pads outside the pour polygon (e.g. close to the board edge) are also
+        # tried: the spiral only returns positions inside the pour, and the stub
+        # track bridges from the pad to the nearest valid in-pour via location.
         for pad in board.pads:
             if pad.net != gnd_net:
                 continue
             if _find(_snap(pad.cx, pad.cy)) != root:
-                continue
-            if not Point(pad.cx, pad.cy).within(pour_poly):
                 continue
             offset_pos = _spiral_search(pad.cx, pad.cy)
             if offset_pos:
