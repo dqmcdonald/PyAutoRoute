@@ -334,6 +334,16 @@ class _Annealer:
         Returns:
             The `AnnealResult` with the best routing and run statistics.
         """
+        if not self.conns:
+            n_routed = sum(1 for r in self.results if r is not None)
+            length = sum(r.length for r in self.results if r is not None)
+            vias = sum(r.vias for r in self.results if r is not None)
+            return AnnealResult(start_energy=self.E, best_energy=self.E,
+                                iterations=0, accepted=0,
+                                routed=n_routed, unrouted=len(self.results) - n_routed,
+                                total_length=length, total_vias=vias,
+                                results=list(self.results))
+
         E = self.E                              # maintained incrementally by `_apply`
         start_E = E
         best_E = E

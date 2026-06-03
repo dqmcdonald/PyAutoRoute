@@ -358,6 +358,43 @@ def _log_footprint_constraints(rep: Reporter, board) -> None:
         rep.log(f"  {ref:<{width}}  {summary}")
 
 
+def _dup_free_via_ids(board, new_nodes: list) -> set[int]:
+    """Return node ids of free vias superseded by a co-located via in new_nodes.
+
+    In ``--existing-routes preserve`` mode the board's free vias are kept
+    verbatim (strip_free_vias=False), but the annealer may re-route existing
+    connections placing new vias at the same coordinates, and the ground-plane
+    pass may add fresh stitching vias on top of old ones.  Both produce
+    co-located (duplicate) drilled holes.  This function finds the free vias
+    whose snapped position matches any via node in new_nodes so they can be
+    stripped via extra_strip_ids before writing.
+    """
+    from .pcb import child, floats, strings
+
+    def _snap(x: float, y: float) -> tuple[int, int]:
+        return (round(x * 100), round(y * 100))
+
+    new_via_pos: set[tuple[int, int]] = set()
+    for node in new_nodes:
+        if not isinstance(node, list) or not node:
+            continue
+        try:
+            head = node[0]
+        except (IndexError, TypeError):
+            continue
+        if getattr(head, "text", None) != "via":
+            continue
+        at = floats(child(node, "at"))
+        if len(at) >= 2:
+            new_via_pos.add(_snap(at[0], at[1]))
+
+    dup_ids: set[int] = set()
+    for v in board.free_vias:
+        if v.node is not None and _snap(v.cx, v.cy) in new_via_pos:
+            dup_ids.add(id(v.node))
+    return dup_ids
+
+
 def _results_to_nodes(board, grid: Grid, results) -> list:
     """Flatten routed results into the KiCad nodes to append to the board.
 
@@ -771,9 +808,12 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
     def on_snapshot(k, n, results):
         sp = snap_dir / f"{input_path.stem}_anneal_{k:02d}of{n:02d}.kicad_pcb"
-        pcb.write_board(board, sp, new_nodes=_results_to_nodes(board, grid, results),
+        _snap_nodes = _results_to_nodes(board, grid, results)
+        pcb.write_board(board, sp, new_nodes=_snap_nodes,
                         strip_free_vias=(existing_routes == "clear"),
-                        strip_segments=(existing_routes == "clear"))
+                        strip_segments=(existing_routes == "clear"),
+                        extra_strip_ids=_dup_free_via_ids(board, _snap_nodes)
+                        if existing_routes == "preserve" else None)
         nrouted = sum(1 for r in results if r is not None)
         rep.log(f"snapshot {k}/{n} -> {sp}  routed={nrouted}/{len(results)}")
 
@@ -927,7 +967,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     pcb.write_board(board, out_path,
                     new_nodes=new_nodes,
                     strip_free_vias=(existing_routes == "clear"),
-                    strip_segments=(existing_routes == "clear"))
+                    strip_segments=(existing_routes == "clear"),
+                    extra_strip_ids=_dup_free_via_ids(board, new_nodes)
+                    if existing_routes == "preserve" else None)
 
     if fill_nets or args.ground_plane:
         ok = pcb.try_refill_zones(out_path)

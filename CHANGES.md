@@ -5,6 +5,11 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.41.1
+
+- **fix(preserve): remove duplicate vias when writing in `--existing-routes preserve` mode.** The annealer could re-route existing connections placing new vias at the same positions as preserved ones; the ground-plane pass could also add fresh stitching vias on top of old ones. Both caused co-located drilled holes in DRC. The write step now strips free vias whose position is superseded by a co-located via in the new routing output.
+- **fix(anneal): handle empty connection list gracefully.** Running `--existing-routes preserve` on an already-fully-routed board passed zero connections to the annealer, causing a `ValueError: empty range for randrange()` crash. The annealer now returns immediately with the current state when there is nothing to optimise.
+
 ## 0.41.0
 
 - **KiCad action plugin** (`kicad_plugin/`). Adds a "PyAutoRoute" entry to KiCad's Tools menu and toolbar. The plugin saves the live board, invokes `pyautoroute --in-place` as a subprocess (bypassing the Python 3.9/3.12 version mismatch), streams output to a scrolling progress dialog, then reloads the result into pcbnew. Settings (grid, time, mode, exclude nets, ground plane, cycles, existing routes) are read from and written back to the board's `.ini` file. Install with `pyautoroute-install-plugin` (new console script).

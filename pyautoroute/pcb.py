@@ -1519,7 +1519,8 @@ def move_refs_to_fab(board: Board) -> int:
 def write_board(board: Board, out_path: str | Path,
                 new_nodes: list[SList] | None = None,
                 strip_free_vias: bool = True,
-                strip_segments: bool = False) -> None:
+                strip_segments: bool = False,
+                extra_strip_ids: set[int] | None = None) -> None:
     """Serialize a routed copy: drop free vias/segments, append new routing nodes.
 
     Clones the parsed tree (untouched subtrees keep their source spans, so the
@@ -1534,12 +1535,18 @@ def write_board(board: Board, out_path: str | Path,
             output.
         strip_segments: when True, omit all existing ``(segment ...)`` tracks
             from the output (use for a clean re-route so tracks are not doubled).
+        extra_strip_ids: additional ``id(node)`` values to omit, beyond those
+            selected by ``strip_free_vias`` / ``strip_segments`` — used to
+            remove individual free vias that are superseded by co-located vias
+            in ``new_nodes`` (duplicate-via deduplication in preserve mode).
     """
     strip_ids: set[int] = set()
     if strip_free_vias:
         strip_ids.update(id(v.node) for v in board.free_vias if v.node is not None)
     if strip_segments:
         strip_ids.update(id(s.node) for s in board.segments if s.node is not None)
+    if extra_strip_ids:
+        strip_ids.update(extra_strip_ids)
     new_root = SList()
     for ch in board.tree:
         if isinstance(ch, SList) and id(ch) in strip_ids:
