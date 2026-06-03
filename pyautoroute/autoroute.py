@@ -106,8 +106,11 @@ class Reporter:
             budget: time budget in seconds.
             overall_best: best energy across all runs so far (shown when > 1 run).
         """
-        iter_str = (f"{max(0.0, budget - elapsed):.0f}s rem"
-                    if budget > 0 else f"{it}/{total}")
+        if budget > 0:
+            iter_str = f"{max(0.0, budget - elapsed):.0f}s rem  ({elapsed:.0f}s)"
+        else:
+            elapsed_str = f"  ({elapsed:.0f}s)" if elapsed > 0 else ""
+            iter_str = f"{it}/{total}{elapsed_str}"
         ob_str = (f"  ob={overall_best:7.1f}" if overall_best is not None else "")
         msg = (f"{self.tag}anneal {iter_str}  T={temp:5.2f}  E={energy:7.1f}  "
                f"best={best:7.1f}{ob_str}  acc={accept*100:3.0f}%  "
@@ -138,8 +141,11 @@ class Reporter:
             budget: time budget in seconds.
             overall_best: best energy across all runs so far (shown when > 1 run).
         """
-        iter_str = (f"{max(0.0, budget - elapsed):.0f}s rem"
-                    if budget > 0 else f"{it}/{total}")
+        if budget > 0:
+            iter_str = f"{max(0.0, budget - elapsed):.0f}s rem  ({elapsed:.0f}s)"
+        else:
+            elapsed_str = f"  ({elapsed:.0f}s)" if elapsed > 0 else ""
+            iter_str = f"{it}/{total}{elapsed_str}"
         ob_str = (f"  ob={overall_best:8.1f}" if overall_best is not None else "")
         msg = (f"{self.tag}place {iter_str}  T={temp:5.2f}  E={energy:8.1f}  "
                f"best={best:8.1f}{ob_str}  acc={accept*100:3.0f}%")
@@ -1095,13 +1101,27 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
         field = None
         for k in range(cycles):
             rep.tag = f"cycle {k + 1}/{cycles}: "
+            _cy_t = [None, None]   # [place_t0, anneal_t0]; None = not started
+
+            def _place_prog(it, total, e, b, t, acc, _t=_cy_t):
+                if _t[0] is None:
+                    _t[0] = time.monotonic()
+                rep.placing(it, total, e, b, t, acc,
+                            elapsed=time.monotonic() - _t[0],
+                            budget=args.place_time or 0.0)
+
+            def _anneal_prog(it, total, r, u, e, b, t, acc, _t=_cy_t):
+                if _t[1] is None:
+                    _t[1] = time.monotonic()
+                rep.annealing(it, total, r, u, e, b, t, acc,
+                              elapsed=time.monotonic() - _t[1],
+                              budget=args.routing_time or 0.0)
+
             hooks = CycleHooks(
                 phase_cb=lambda n: rep.phase(rep.tag + n),
-                place_progress=(lambda it, total, e, b, t, acc:
-                                rep.placing(it, total, e, b, t, acc)),
+                place_progress=_place_prog,
                 route_progress=rep.routing,
-                anneal_progress=(lambda it, total, r, u, e, b, t, acc:
-                                 rep.annealing(it, total, r, u, e, b, t, acc)),
+                anneal_progress=_anneal_prog,
             )
             pp_k = pp
             if feedback and field is not None:
