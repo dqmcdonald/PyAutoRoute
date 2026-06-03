@@ -361,22 +361,52 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
                 if Point(x, y).within(pour_poly):
                     yield (x, y)
 
-    def _spiral_search(cx: float, cy: float) -> tuple[float, float] | None:
-        """Search for a conflict-free via position near (cx, cy) in expanding rings."""
+    import math as _math
+    track_width = rules.track_width_for(gnd_net) if rules else 0.25
+
+    def _track_clear(px: float, py: float, vx: float, vy: float,
+                     pad_layer: str) -> bool:
+        """Return True if a stub track from (px,py) to (vx,vy) is clear of
+        other-net copper on *pad_layer*."""
+        if _obs_tree is None:
+            return True
+        from shapely.geometry import LineString
+        track = LineString([(px, py), (vx, vy)]).buffer(track_width / 2)
+        ring = track.buffer(clearance)
+        for idx in _obs_tree.query(ring):
+            obs = all_obstacles[idx]
+            if obs.layer != pad_layer:
+                continue
+            if obs.net == gnd_net:
+                continue
+            if track.distance(obs.geom) < clearance - 1e-6:
+                return False
+        return True
+
+    def _spiral_search(cx: float, cy: float,
+                       pad_x: float | None = None,
+                       pad_y: float | None = None,
+                       pad_layer: str = "F.Cu") -> tuple[float, float] | None:
+        """Search for a via position near (cx,cy) that is clear of other-net
+        copper (annular ring) and, when pad coords are supplied, also produces
+        a conflict-free stub track from the pad to the via."""
         step = via_size + clearance
+        check_track = (pad_x is not None and pad_y is not None)
         for ring in range(1, 6):
             r = ring * step
             n = max(4, ring * 4)
-            import math
             for i in range(n):
-                angle = 2 * math.pi * i / n
-                x = cx + r * math.cos(angle)
-                y = cy + r * math.sin(angle)
-                if Point(x, y).within(pour_poly) and _via_clear(x, y):
-                    return (x, y)
+                angle = 2 * _math.pi * i / n
+                x = cx + r * _math.cos(angle)
+                y = cy + r * _math.sin(angle)
+                if not Point(x, y).within(pour_poly):
+                    continue
+                if not _via_clear(x, y):
+                    continue
+                if check_track and not _track_clear(pad_x, pad_y, x, y, pad_layer):
+                    continue
+                return (x, y)
         return None
-
-    track_width = rules.track_width_for(gnd_net) if rules else 0.25
 
     for root in roots_needing_via:
         via_point = None
@@ -388,15 +418,19 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         # Pads outside the pour polygon (e.g. close to the board edge) are also
         # tried: the spiral only returns positions inside the pour, and the stub
         # track bridges from the pad to the nearest valid in-pour via location.
+        # The stub track is also checked for clearance against other-net copper
+        # so it cannot pass over adjacent pads of a different net.
         for pad in board.pads:
             if pad.net != gnd_net:
                 continue
             if _find(_snap(pad.cx, pad.cy)) != root:
                 continue
-            offset_pos = _spiral_search(pad.cx, pad.cy)
+            pad_layer = pad.copper_layers[0] if pad.copper_layers else "F.Cu"
+            offset_pos = _spiral_search(pad.cx, pad.cy,
+                                        pad_x=pad.cx, pad_y=pad.cy,
+                                        pad_layer=pad_layer)
             if offset_pos:
                 via_point = offset_pos
-                pad_layer = pad.copper_layers[0] if pad.copper_layers else "F.Cu"
                 track_node = pcb.make_segment(
                     board, pad.cx, pad.cy, offset_pos[0], offset_pos[1],
                     track_width, pad_layer, gnd_net)
