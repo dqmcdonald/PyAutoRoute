@@ -1014,6 +1014,32 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     return _finish(rep, args, out_path, routed_board, violations)
 
 
+def _save_cycle(args, rules, rep, out_path: Path, cr, cycle_num: int,
+                total: int) -> None:
+    """Write one cycle's placed+routed board to a per-cycle diagnostic file."""
+    cycle_path = out_path.with_name(
+        f"{out_path.stem}_cycle_{cycle_num:02d}of{total:02d}{out_path.suffix}"
+    )
+    new_nodes = _results_to_nodes(cr.board, cr.grid, cr.results)
+    if args.ground_plane:
+        from . import groundplane
+        margin = args.ground_plane_margin or rules.default_class.clearance
+        layers = (["F.Cu", "B.Cu"] if args.ground_plane_layer == "both"
+                  else [args.ground_plane_layer])
+        for i, layer in enumerate(layers):
+            sp = args.stitch_vias if (len(layers) > 1 and i == 0) else None
+            gp_nodes, _ = groundplane.build(
+                cr.board, rules, net=args.ground_net, layer=layer,
+                margin=margin, stitch_pitch=sp, routed_nodes=new_nodes)
+            new_nodes.extend(gp_nodes)
+    pcb.write_board(cr.board, cycle_path, new_nodes=new_nodes,
+                    strip_free_vias=True, strip_segments=True)
+    msg = f"cycle {cycle_num}/{total} saved -> {cycle_path.name}"
+    rep.log(msg)
+    if not args.quiet:
+        print(f"  {msg}")
+
+
 def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                 cycles, init_stats=None) -> int:
     """Best-of-cycles: keep the best-*routing* of N independent place+route runs.
@@ -1080,6 +1106,9 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                     rep.log(line)
                     if not args.quiet:
                         print(f"  {line}")
+                    if getattr(args, "save_cycles", False):
+                        _save_cycle(args, rules, rep, out_path, cr,
+                                    cr.seed - base_seed + 1, cycles)
         except KeyboardInterrupt:
             rep.log("interrupted — keeping best cycle so far")
             if not results:
@@ -1138,6 +1167,8 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
             rep.log(line)
             if not args.quiet:
                 print(f"  {line}")
+            if getattr(args, "save_cycles", False):
+                _save_cycle(args, rules, rep, out_path, cr, k + 1, cycles)
             if feedback and k + 1 < cycles:
                 new_field = router.congestion_heatmap(cr.conns, cr.results,
                                                       cr.grid, frame)
@@ -1854,6 +1885,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "board; parallelised by --jobs. 1 (default) = today's "
                         "behaviour. Each cycle does one placement and one routing; "
                         "--place-runs/--runs remain available as inner loops")
+    p.add_argument("--save-cycles", action="store_true",
+                   help="with --cycles: write each cycle's result to a separate file "
+                        "(<output>_cycle_NNofMM.kicad_pcb) as it completes, so you "
+                        "can inspect intermediate results while the job is still "
+                        "running. Includes the ground plane zone (if --ground-plane) "
+                        "but skips zone refill; open in KiCad to refill")
     p.add_argument("--place-feedback", action="store_true",
                    help="with --cycles > 1: feed each cycle's routing back into "
                         "the next placement as a congestion field, spreading "
