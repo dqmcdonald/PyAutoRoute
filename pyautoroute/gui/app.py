@@ -77,7 +77,7 @@ class _MetricsPanel(ttk.Frame):
             pct = min(100, int(100 * ev.elapsed / ev.budget))
             remaining = max(0.0, ev.budget - ev.elapsed)
             self._vars["iter"].set(
-                f"{ev.it} iters  {remaining:.0f}s left  ({ev.elapsed:.0f}s)")
+                f"{ev.it} iters  {remaining:.0f}s left  ({ev.elapsed:.0f}s elapsed)")
         else:
             total = ev.total or 1
             pct = min(100, int(100 * ev.it / total))

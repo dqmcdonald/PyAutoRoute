@@ -107,7 +107,7 @@ class Reporter:
             overall_best: best energy across all runs so far (shown when > 1 run).
         """
         if budget > 0:
-            iter_str = f"{max(0.0, budget - elapsed):.0f}s rem  ({elapsed:.0f}s)"
+            iter_str = f"{it} iters  {max(0.0, budget - elapsed):.0f}s rem  ({elapsed:.0f}s)"
         else:
             elapsed_str = f"  ({elapsed:.0f}s)" if elapsed > 0 else ""
             iter_str = f"{it}/{total}{elapsed_str}"
@@ -142,7 +142,7 @@ class Reporter:
             overall_best: best energy across all runs so far (shown when > 1 run).
         """
         if budget > 0:
-            iter_str = f"{max(0.0, budget - elapsed):.0f}s rem  ({elapsed:.0f}s)"
+            iter_str = f"{it} iters  {max(0.0, budget - elapsed):.0f}s rem  ({elapsed:.0f}s)"
         else:
             elapsed_str = f"  ({elapsed:.0f}s)" if elapsed > 0 else ""
             iter_str = f"{it}/{total}{elapsed_str}"
