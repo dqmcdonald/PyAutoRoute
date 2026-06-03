@@ -538,7 +538,8 @@ class Worker:
             board, rules, pitch, route_params=route_params, route_kw=route_kw,
             seed=cfg.seed, runs=runs, jobs=1, snapshots=_ANNEAL_SNAP_COUNT,
             exclude=cfg.exclude_net or [], hooks=hooks, cancel=self._cancel,
-            conns=conns)
+            conns=conns,
+            greedy_order_mode=getattr(cfg, "greedy_order", "short") or "short")
 
         if res.results is None:
             self._post(Phase("cancelled before routing completed"))
@@ -622,7 +623,8 @@ class Worker:
             hooks = self._cycle_hooks(cfg, margin, tag)
             cr = run_cycle(input_path, rules, pitch, pp_k, route_params,
                            route_kw=route_kw, place_margin=margin,
-                           seed=cfg.seed + k, hooks=hooks, cancel=self._cancel)
+                           seed=cfg.seed + k, hooks=hooks, cancel=self._cancel,
+                           greedy_order_mode=getattr(cfg, "greedy_order", "short") or "short")
             results.append(cr)
             self._post(Phase(
                 f"cycle {k + 1}/{cycles} done: routed {cr.routed}/{cr.n_conns}, "

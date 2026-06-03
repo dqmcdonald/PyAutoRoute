@@ -100,7 +100,7 @@ class RunConfig:
         "silk_labels", "keep_outline",
         "ground_plane", "ground_net", "ground_plane_layer",
         "ground_plane_margin", "stitch_vias",
-        "existing_routes",
+        "existing_routes", "greedy_order",
     )
 
     def __init__(self, **kw):
@@ -148,6 +148,7 @@ class ControlsPanel(ttk.Frame):
         self._runs = tk.StringVar(value="1")
         self._exclude_net = tk.StringVar(value="")
         self._existing_routes = tk.StringVar(value="clear")
+        self._greedy_order = tk.StringVar(value="short")
         # Placement
         self._place_budget_kind = tk.StringVar(value="iters")
         self._place_budget_val = tk.StringVar(value="")
@@ -281,6 +282,21 @@ class ControlsPanel(ttk.Frame):
         add_tooltip(er_row,
                     "Clear: strip all existing tracks/vias before routing (default). "
                     "Preserve: keep existing copper and only route unconnected nets.")
+
+        go_row = ttk.Frame(rf)
+        go_row.grid(row=6, column=0, columnspan=2, sticky=tk.EW, padx=4, pady=2)
+        ttk.Label(go_row, text="Greedy order:").pack(side=tk.LEFT)
+        for val, lbl in (("short", "Short"), ("long", "Long"), ("shuffle", "Shuffle")):
+            ttk.Radiobutton(go_row, text=lbl,
+                            variable=self._greedy_order,
+                            value=val).pack(side=tk.LEFT, padx=4)
+        add_tooltip(go_row,
+                    "Order for the initial greedy routing pass.\n"
+                    "Short (default): shortest connections first.\n"
+                    "Long: longest first — routes hard long-distance connections "
+                    "while the board is clear.\n"
+                    "Shuffle: random order per run/cycle — varies the starting "
+                    "state so the annealer explores different configurations.")
 
     def _build_place_tab(self, p):
         pf = _section(p, "Placement")
@@ -547,6 +563,8 @@ class ControlsPanel(ttk.Frame):
         _sv("stitch_vias", self._stitch_vias)
         if "existing_routes" in d and d["existing_routes"] in ("clear", "preserve"):
             self._existing_routes.set(d["existing_routes"])
+        if "greedy_order" in d and d["greedy_order"] in ("short", "long", "shuffle"):
+            self._greedy_order.set(d["greedy_order"])
 
     # ── advanced dialog ───────────────────────────────────────────────
 
@@ -799,6 +817,7 @@ class ControlsPanel(ttk.Frame):
             ground_plane_margin=_f(self._ground_plane_margin),
             stitch_vias=_f(self._stitch_vias),
             existing_routes=self._existing_routes.get() or "clear",
+            greedy_order=self._greedy_order.get() or "short",
         )
 
     def _to_namespace(self, parser) -> argparse.Namespace:
@@ -849,4 +868,5 @@ class ControlsPanel(ttk.Frame):
             ground_plane_margin=cfg.ground_plane_margin,
             stitch_vias=cfg.stitch_vias,
             existing_routes=cfg.existing_routes or "clear",
+            greedy_order=cfg.greedy_order or "short",
         )
