@@ -16,7 +16,8 @@ def build(board: Board, rules: DesignRules, *,
           layer: str = "B.Cu",
           margin: float | None = None,
           stitch_pitch: float | None = None,
-          routed_nodes: list | None = None) -> tuple[list[SList], list[str]]:
+          routed_nodes: list | None = None,
+          keep_existing_segments: bool = True) -> tuple[list[SList], list[str]]:
     """Build ground-plane zone node(s) and connecting vias.
 
     Args:
@@ -29,6 +30,10 @@ def build(board: Board, rules: DesignRules, *,
         routed_nodes: freshly-generated routing SList nodes (segments + vias) not yet
             applied to *board*; included in the pour-layer obstacle check so that
             connectivity vias aren't placed where new routing already exists.
+        keep_existing_segments: when False (``--existing-routes clear``), pre-existing
+            board segments are ignored when deciding which GND pads need connectivity
+            vias.  Those segments will be stripped from the output, so relying on them
+            to bridge SMD pads to through-hole pads would leave the SMD pads floating.
 
     Returns:
         (list of zone/via nodes, list of warning strings). Empty list if skipped.
@@ -120,7 +125,8 @@ def build(board: Board, rules: DesignRules, *,
     # ── Connectivity vias (for SMD-only islands) ──────────────────────────────
     connectivity_vias = _add_connectivity_vias(
         board, rules, gnd_net, layer, inset_poly, clearance,
-        routed_nodes=routed_nodes or []
+        routed_nodes=routed_nodes or [],
+        keep_existing_segments=keep_existing_segments,
     )
     nodes.extend(connectivity_vias)
 
@@ -234,7 +240,8 @@ def _obstacles_from_nodes(nodes: list, layer: str, gnd_net: str):
 
 def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer: str,
                            pour_poly, clearance: float,
-                           routed_nodes: list | None = None) -> list[SList]:
+                           routed_nodes: list | None = None,
+                           keep_existing_segments: bool = True) -> list[SList]:
     """Add vias to connect GND islands that don't reach the pour layer.
 
     For each connected GND component that doesn't have copper on the pour layer:
@@ -313,15 +320,18 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
             }
         _union(("pad", id(pad)), snap_pos)
 
-    # Register GND segments
-    for seg in board.segments:
-        if seg.net != gnd_net:
-            continue
-        p1 = _snap(seg.x1, seg.y1)
-        p2 = _snap(seg.x2, seg.y2)
-        component_layers.setdefault(p1, set()).add(seg.layer)
-        component_layers.setdefault(p2, set()).add(seg.layer)
-        _union(p1, p2)
+    # Register GND segments — skip when keep_existing_segments=False (clear mode):
+    # those segments are stripped from the output, so bridging SMD pads through
+    # them to a THT pad's B.Cu annular ring would leave the SMD pads floating.
+    if keep_existing_segments:
+        for seg in board.segments:
+            if seg.net != gnd_net:
+                continue
+            p1 = _snap(seg.x1, seg.y1)
+            p2 = _snap(seg.x2, seg.y2)
+            component_layers.setdefault(p1, set()).add(seg.layer)
+            component_layers.setdefault(p2, set()).add(seg.layer)
+            _union(p1, p2)
 
     # Aggregate layers per component root, then find components lacking the pour layer.
     # Checking per-position would incorrectly flag a component as needing a via whenever

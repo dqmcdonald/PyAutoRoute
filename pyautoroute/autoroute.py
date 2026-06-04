@@ -964,7 +964,8 @@ def run(args: argparse.Namespace, _print_version: bool = True,
             sp = args.stitch_vias if (len(layers) > 1 and i == 0) else None
             gp_nodes, gp_warns = groundplane.build(
                 board, rules, net=args.ground_net, layer=layer, margin=margin,
-                stitch_pitch=sp, routed_nodes=new_nodes
+                stitch_pitch=sp, routed_nodes=new_nodes,
+                keep_existing_segments=(existing_routes == "preserve"),
             )
             new_nodes.extend(gp_nodes)
             for w in gp_warns:
@@ -1030,7 +1031,8 @@ def _save_cycle(args, rules, rep, out_path: Path, cr, cycle_num: int,
             sp = args.stitch_vias if (len(layers) > 1 and i == 0) else None
             gp_nodes, _ = groundplane.build(
                 cr.board, rules, net=args.ground_net, layer=layer,
-                margin=margin, stitch_pitch=sp, routed_nodes=new_nodes)
+                margin=margin, stitch_pitch=sp, routed_nodes=new_nodes,
+                keep_existing_segments=False)
             new_nodes.extend(gp_nodes)
     pcb.write_board(cr.board, cycle_path, new_nodes=new_nodes,
                     strip_free_vias=True, strip_segments=True)
