@@ -19,7 +19,7 @@ from __future__ import annotations
 def main(argv=None) -> int:
     """GUI entry point — checks for tkinter before importing the window."""
     try:
-        import tkinter  # noqa: F401
+        import tkinter  # noqa: F401  # pylint: disable=unused-import
     except ImportError:
         print(
             "PyAutoRoute GUI requires tkinter.\n"
@@ -29,7 +29,7 @@ def main(argv=None) -> int:
         )
         return 1
     try:
-        import matplotlib  # noqa: F401
+        import matplotlib  # noqa: F401  # pylint: disable=unused-import
     except ImportError:
         print(
             "PyAutoRoute GUI requires matplotlib.\n"

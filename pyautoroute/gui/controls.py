@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 import tkinter as tk
+from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
 from .tooltip import add_tooltip
@@ -76,36 +77,53 @@ class _ScrollFrame(ttk.Frame):
 
 # ── RunConfig ─────────────────────────────────────────────────────────────────
 
+@dataclass
 class RunConfig:
     """Plain container for all pipeline parameters (mirrors argparse Namespace)."""
-    __slots__ = (
-        "input", "pro", "output",
-        "place", "place_only",
-        "grid",
-        "iters", "time_budget",
-        "runs",
-        "exclude_net",
-        "via_weight", "unrouted_weight",
-        "anneal_temps",
-        "seed",
-        "place_iters", "place_time",
-        "place_margin", "place_buffer",
-        "place_overlap_weight", "place_compact_weight", "place_edge_weight",
-        "place_temps", "place_step", "place_rotate", "place_swap_prob",
-        "place_runs",
-        "cycles", "place_feedback", "congestion_weight",
-        "snapshots",
-        "quiet", "log",
-        "auto", "auto_yes", "auto_probe_time",
-        "silk_labels", "keep_outline",
-        "ground_plane", "ground_net", "ground_plane_layer",
-        "ground_plane_margin", "stitch_vias",
-        "existing_routes", "greedy_order",
-    )
-
-    def __init__(self, **kw):
-        for k in self.__slots__:
-            setattr(self, k, kw.get(k))
+    input: object = None
+    pro: object = None
+    output: object = None
+    place: object = None
+    place_only: object = None
+    grid: object = None
+    iters: object = None
+    time_budget: object = None
+    runs: object = None
+    exclude_net: object = None
+    via_weight: object = None
+    unrouted_weight: object = None
+    anneal_temps: object = None
+    seed: object = None
+    place_iters: object = None
+    place_time: object = None
+    place_margin: object = None
+    place_buffer: object = None
+    place_overlap_weight: object = None
+    place_compact_weight: object = None
+    place_edge_weight: object = None
+    place_temps: object = None
+    place_step: object = None
+    place_rotate: object = None
+    place_swap_prob: object = None
+    place_runs: object = None
+    cycles: object = None
+    place_feedback: object = None
+    congestion_weight: object = None
+    snapshots: object = None
+    quiet: object = None
+    log: object = None
+    auto: object = None
+    auto_yes: object = None
+    auto_probe_time: object = None
+    silk_labels: object = None
+    keep_outline: object = None
+    ground_plane: object = None
+    ground_net: object = None
+    ground_plane_layer: object = None
+    ground_plane_margin: object = None
+    stitch_vias: object = None
+    existing_routes: object = None
+    greedy_order: object = None
 
 
 # ── ControlsPanel ────────────────────────────────────────────────────────────

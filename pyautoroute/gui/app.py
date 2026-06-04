@@ -43,7 +43,7 @@ class _MetricsPanel(ttk.Frame):
             ("unrouted", "Unrouted:",   "Connections that could not be routed"),
             ("check",    "Self-check:", "DRC clearance violations after routing"),
         ]
-        for i, (key, lbl, tip) in enumerate(rows):
+        for i, (key, lbl, _tip) in enumerate(rows):
             var = tk.StringVar(value="—")
             self._vars[key] = var
             ttk.Label(self, text=lbl, anchor=tk.E).grid(
@@ -681,7 +681,7 @@ class App:
 
     def _menu_run(self) -> None:
         cfg = self._controls.get_run_config()
-        if cfg.input:
+        if cfg.input:  # pylint: disable=no-member
             self._start_run(cfg)
 
     def _about(self) -> None:

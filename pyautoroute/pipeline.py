@@ -22,6 +22,7 @@ processes via `_route_run_worker`.
 from __future__ import annotations
 
 import concurrent.futures
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from . import anneal, netlist, pcb, placement, router
@@ -293,11 +294,11 @@ class CycleHooks:
         anneal_progress: rip-up/reroute per-iteration callback (see `anneal.anneal`).
         board_snap: ``f(board)`` — the placement is finalised (for a live redraw).
     """
-    phase_cb: object = None
-    place_progress: object = None
-    route_progress: object = None
-    anneal_progress: object = None
-    board_snap_cb: object = None
+    phase_cb: Callable | None = None
+    place_progress: Callable | None = None
+    route_progress: Callable | None = None
+    anneal_progress: Callable | None = None
+    board_snap_cb: Callable | None = None
 
     def phase(self, name: str) -> None:
         if self.phase_cb is not None:
@@ -517,9 +518,9 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
             _call(h.phase, f"routing {len(conns)} connections")
             partial = [None] * len(conns)
 
-            def on_partial(idx, res):
-                partial[idx] = res
-                _call(h.route_partial, board, grid, partial)
+            def on_partial(idx, res, _partial=partial):
+                _partial[idx] = res
+                _call(h.route_partial, board, grid, _partial)
 
             state = router.RoutingState(grid)
             result = router.route_all(
@@ -535,14 +536,14 @@ def run_routing(board, rules, pitch: float, *, route_params, route_kw: dict,
                 _call(h.phase, "annealing (rip-up & reroute)")
                 ob_e = best_energy if runs > 1 and best_energy < float("inf") else None
 
-                def on_anneal(it, total, r, u, energy, best, temp, accept):
+                def on_anneal(it, total, r, u, energy, best, temp, accept, _ob=ob_e):
                     _call(h.anneal_progress, it, total, r, u, energy, best, temp,
-                          accept, ob_e)
+                          accept, _ob)
 
                 def on_snap(kk, nn, res):
                     _call(h.anneal_snapshot, board, grid, res, kk, nn)
 
-                def on_best(be, br):
+                def on_best(_be, br):
                     _call(h.anneal_best, board, grid, br)
 
                 ap = anneal.AnnealParams(

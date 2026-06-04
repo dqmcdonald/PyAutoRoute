@@ -213,7 +213,6 @@ def diff_pair_stats(
     out: list[DiffPairStats] = []
     for dp_conn, rp, rn in dp_results:
         # Determine layers used
-        layers_p = {grid_layer for grid_layer, _, _ in rp.path}
         # path stores layer indices; convert via count to a label
         multilayer = rp.vias > 0
         if multilayer:

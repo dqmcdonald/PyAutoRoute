@@ -375,7 +375,7 @@ def _dup_free_via_ids(board, new_nodes: list) -> set[int]:
     whose snapped position matches any via node in new_nodes so they can be
     stripped via extra_strip_ids before writing.
     """
-    from .pcb import child, floats, strings
+    from .pcb import child, floats
 
     def _snap(x: float, y: float) -> tuple[int, int]:
         return (round(x * 100), round(y * 100))
@@ -631,7 +631,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
                            board, fill_nets, cycles, init_stats=init_stats)
 
     if args.place or args.place_only:
-        pp, keep_outline = _place_params_from_args(args, board, rules, rep)
+        pp, _ = _place_params_from_args(args, board, rules, rep)
         place_runs = max(1, args.place_runs)
         n_fps = len(board.footprints)
         _place_t0 = [time.monotonic()]
@@ -1142,7 +1142,7 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
             rep.tag = f"cycle {k + 1}/{cycles}: "
             _cy_t = [None, None]   # [place_t0, anneal_t0]; None = not started
 
-            def _place_prog(it, total, e, b, t, acc, _t=_cy_t):
+            def _place_prog(it, total, e, b, t, acc, _t=_cy_t):  # pylint: disable=dangerous-default-value
                 if _t[0] is None:
                     _t[0] = time.monotonic()
                 ob = select_best(results).energy if results else None
@@ -1151,7 +1151,7 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                             budget=args.place_time or 0.0,
                             overall_best=ob)
 
-            def _anneal_prog(it, total, r, u, e, b, t, acc, _t=_cy_t):
+            def _anneal_prog(it, total, r, u, e, b, t, acc, _t=_cy_t):  # pylint: disable=dangerous-default-value
                 if _t[1] is None:
                     _t[1] = time.monotonic()
                 ob = select_best(results).energy if results else None
@@ -2067,8 +2067,7 @@ def main(argv=None) -> int:
     # so repeated bare invocations explore different solutions. The resolved value
     # is logged so any run can be reproduced with --seed N.
     if args.seed is None:
-        import time as _time
-        args.seed = int(_time.time()) & 0x7FFF_FFFF  # keep it a positive 31-bit int
+        args.seed = int(time.time()) & 0x7FFF_FFFF  # keep it a positive 31-bit int
 
     # CLI-only namespace (no ini defaults) used for source detection in header.
     args_cli = build_parser().parse_args(argv)

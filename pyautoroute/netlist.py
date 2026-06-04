@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import fnmatch
 import math
-import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -141,7 +140,7 @@ def _match_dp_pads(pads_p: list[Pad], pads_n: list[Pad]) -> list[tuple[Pad, Pad]
         # Same footprint first; fall back to nearest globally
         same_fp = [pn for pn in remaining_n if pn.fp_ref == pp.fp_ref]
         pool = same_fp if same_fp else remaining_n
-        pn = min(pool, key=lambda p: math.hypot(p.cx - pp.cx, p.cy - pp.cy))
+        pn = min(pool, key=lambda p, _pp=pp: math.hypot(p.cx - _pp.cx, p.cy - _pp.cy))
         matched.append((pp, pn))
         remaining_n.remove(pn)
 

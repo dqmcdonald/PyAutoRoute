@@ -509,12 +509,12 @@ class _Placer:
         Returns:
             The summed field value (dimensionless), or ``0.0`` when no field.
         """
-        field = self.p.congestion_field
-        if field is None or not bounds:
+        cfield = self.p.congestion_field
+        if cfield is None or not bounds:
             return 0.0
         total = 0.0
         for bx0, by0, bx1, by1 in bounds:
-            total += field.value_at((bx0 + bx1) * 0.5, (by0 + by1) * 0.5)
+            total += cfield.value_at((bx0 + bx1) * 0.5, (by0 + by1) * 0.5)
         return total
 
     def _containment_sum(self, boxes) -> float:
