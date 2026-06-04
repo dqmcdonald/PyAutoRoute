@@ -539,6 +539,7 @@ def _place_params_from_args(args, board, rules, rep):
         step=args.place_step, rotate_mode=args.place_rotate,
         swap_prob=args.place_swap_prob,
         spread_weight=getattr(args, "place_spread_weight", 0.0),
+        scatter_start=getattr(args, "scatter", False),
         polish=getattr(args, "place_polish", False),
         polish_iters=getattr(args, "place_polish_iters",
                              placement.PlaceParams.polish_iters),
@@ -632,6 +633,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         print("  note: --place-feedback needs --cycles > 1 (it learns from each "
               "cycle's routing); ignoring")
         args.place_feedback = False
+    if getattr(args, "scatter", False) and cycles <= 1:
+        print("  note: --scatter is most useful with --cycles > 1 (it diversifies "
+              "starting layouts across cycles); running a single scattered placement")
     if cycles > 1:
         return _run_cycles(args, rep, input_path, out_path, rules, pitch,
                            board, fill_nets, cycles, init_stats=init_stats)
@@ -1992,6 +1996,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --place-feedback: mm-cost per unit congestion at a "
                         "footprint centroid; higher spreads parts harder out of "
                         "the routed hot zones (default %(default)s)")
+    p.add_argument("--scatter", action="store_true",
+                   help="with --cycles: randomise the position and rotation of every "
+                        "unlocked footprint before each cycle's placement pass, "
+                        "giving the annealer a completely fresh starting layout rather "
+                        "than always refining the as-designed configuration. Increases "
+                        "diversity across cycles at the cost of needing more placement "
+                        "iterations to recover a good layout; pair with a generous "
+                        "--place-time or --place-iters budget")
     p.add_argument("-j", "--jobs", type=int, default=1, metavar="N",
                    help="run --runs trials (or --cycles cycles) across N worker "
                         "processes (best-of-N in parallel); 0 uses every CPU "

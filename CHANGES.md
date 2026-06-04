@@ -5,9 +5,14 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
-## 0.45.0
+## 0.46.0
 
 - **New**: optional post-anneal placement **polish** (`--place-polish`). After simulated annealing settles on its best placement, a steepest-descent refinement pass relaxes close contacts and slides parts into their local energy minimum. It estimates each movable unit's translation gradient by central finite differences (reusing the incremental energy cache) and takes backtracking-line-search steps, committing only strictly-improving moves — so it is **monotone** and can never worsen the annealed result. Translations only (angles left to annealing); locks and KiCad groups are respected. Tuning knobs: `--place-polish-iters` (max descent sweeps, default 20), `--place-polish-eps` (finite-difference step, default 0.05 mm), `--place-polish-time` (optional wall-clock cap). Off by default. See `plans/placement-polish-plan.md`.
+
+## 0.45.0
+
+- **Feature**: `--scatter` (with `--cycles`). Randomises every unlocked footprint's position and rotation before each cycle's placement pass, giving the annealer completely different starting layouts across cycles instead of always refining the as-designed configuration. Increases exploration diversity; pair with a generous placement budget. Available in the GUI as a *Scatter start* checkbox in the Cycles & Congestion panel.
+- **Feature**: `--cycles` now prints a ranked summary table at the end showing every cycle's result sorted by energy, with the winner marked ★ (to screen and log).
 
 ## 0.44.1
 
