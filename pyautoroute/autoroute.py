@@ -1090,10 +1090,13 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
     feedback = bool(getattr(args, "place_feedback", False))
     parallel = jobs > 1 and not feedback
 
-    def _cycle_line(k, cr):
-        return (f"cycle {k}/{cycles}: routed {cr.routed}/{cr.n_conns}, "
+    def _cycle_line(k, cr, best_so_far=None):
+        line = (f"cycle {k}/{cycles}: routed {cr.routed}/{cr.n_conns}, "
                 f"energy {cr.energy:.1f}, {cr.vias} vias"
                 + (f", {cr.unrouted} unrouted" if cr.unrouted else ""))
+        if best_so_far is not None and cr is best_so_far:
+            line += "  [best so far]"
+        return line
 
     results: list = []
     if parallel:
@@ -1108,7 +1111,8 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                 for fut in concurrent.futures.as_completed(futs):
                     cr = fut.result()
                     results.append(cr)
-                    line = _cycle_line(len(results), cr)
+                    best_so_far = select_best(results)
+                    line = _cycle_line(len(results), cr, best_so_far)
                     rep.log(line)
                     if not args.quiet:
                         print(f"  {line}")
@@ -1169,7 +1173,8 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                            hooks=hooks)
             rep.done()
             results.append(cr)
-            line = _cycle_line(k + 1, cr)
+            best_so_far = select_best(results)
+            line = _cycle_line(k + 1, cr, best_so_far)
             rep.log(line)
             if not args.quiet:
                 print(f"  {line}")
@@ -1331,12 +1336,14 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
         unrouted_weight: unrouted penalty coefficient (for score computation).
     """
     pct = 100.0 * routed / n_conns if n_conns else 100.0
+    energy = unrouted_weight * unrouted + length + via_weight * vias
     lines = [
         f"output:        {out_path}",
         f"connections:   {routed}/{n_conns} routed ({pct:.0f}%)",
         f"unrouted:      {unrouted}  (reported, not drawn)",
         f"wirelength:    {length:.1f} mm",
         f"vias:          {vias}",
+        f"energy:        {energy:.1f}  (length + {via_weight:g}·vias + {unrouted_weight:g}·unrouted)",
     ]
     if excluded:
         lines.append(f"excluded nets: {len(excluded)} ({', '.join(excluded[:6])}"
