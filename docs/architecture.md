@@ -276,13 +276,39 @@ footprints' overlap contributions (against neighbours and fixed silk text), and
 the layout bbox (and, when any footprint is flagged, the edge term, and under
 feedback the congestion sum — each an O(N) pass over the cached per-box bounds
 since they depend on the global layout extent / each centroid's field cell). A
-rejected move restores the disturbed
-cache entries. This turns each iteration from O(P² + N·log N) into roughly
-O(deg + neighbours). Optional **stall detection**
-(`PlaceParams.stall_ratio`/`stall_patience`, off by default) mirrors `anneal`'s.
+rejected move restores the disturbed cache entries via `_save_cache` /
+`_load_cache` (a snapshot of the scalar totals plus the moved boxes/bounds, the
+incident connection lengths, and the spread bookkeeping). This turns each
+iteration from O(P² + N·log N) into roughly O(deg + neighbours). Optional **stall
+detection** (`PlaceParams.stall_ratio`/`stall_patience`, off by default) mirrors
+`anneal`'s.
 
 Each move keeps the moved footprint's pad coordinates in sync
 (`Footprint.sync_pads`) so the energy geometry stays consistent.
+
+**Post-anneal polish (`--place-polish`).** Annealing is a global *explorer*; it
+rarely sits exactly at the bottom of its local energy basin, leaving close
+contacts a fraction too tight and a few percent of slack in the smooth terms. When
+enabled, `_Placer._polish` runs after the SA loop has restored its best placement
+(and inside each best-of-N run, so the runs are compared *polished*): a
+**steepest-descent** refinement that, for each movable unit (single footprint or
+group), estimates the 2-D gradient of its translation by **central finite
+differences** — reusing `_save_cache`/`_move_delta`/`_load_cache` to probe and
+revert a trial shift cheaply — then takes a **backtracking line search** step
+along the normalised descent direction (`_energy_after_translate` to probe,
+`_commit_translate` to keep). Only strictly-improving steps are committed, so the
+stage is **monotone**: `best_energy` (and the breakdown) can only fall, never
+rise. It is **translations only** (rotation is left to annealing — discrete in
+`ortho` mode and noisy for the overlap term), and operates on the same
+`_move_units` as SA, so **locks and KiCad groups are respected** (locked parts are
+absent from the units; a group translates as a rigid body). The descent sweeps
+until a sweep barely helps (`polish_tol`), the sweep budget (`polish_iters`) or
+optional time budget (`polish_time`) is spent, or `cancel` is set;
+`PlaceResult.polish_sweeps`/`polish_improvement` report what it did. Finite
+differences (rather than analytic gradients) keep the non-smooth Shapely overlap /
+containment terms usable — and because the line search tests the *true* energy, a
+noisy or zero gradient (e.g. from the piecewise-constant spread term) is harmless.
+Off by default (`polish=False`), reproducing the prior behaviour exactly.
 
 **Recentering (anti-drift).** Every energy term depends only on the footprints'
 *relative* poses, so the energy is **translation-invariant**: with nothing locked,
@@ -302,7 +328,9 @@ the write. The whole stage is transparent to the router, which already consumes
 `Board.pads` and `Board.outline`. CLI knobs: `--place-iters`/`--place-time`
 (budget), `--place-temps` (schedule), `--place-step`, `--place-rotate`,
 `--place-margin`, `--place-buffer` (inter-footprint keep-out),
-`--place-overlap-weight`, `--place-compact-weight`; `--seed` is shared.
+`--place-overlap-weight`, `--place-compact-weight`,
+`--place-polish` (+ `--place-polish-iters`/`--place-polish-time`/`--place-polish-eps`,
+post-anneal gradient descent); `--seed` is shared.
 
 **Silkscreen text in body boxes.** `_fp_silk_text_extents` pre-computes a list of
 `(local_x, local_y, half_diag)` for each visible, non-hidden silkscreen text item

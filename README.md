@@ -342,6 +342,9 @@ Placement options (all also work with `--place-only`):
 | `--place-overlap-weight W` / `--place-compact-weight W` | Energy weights for overlap area and layout compactness. |
 | `--place-spread-weight W` | Density-uniformity weight (default 0 = off). Divides the board into a grid and penalises Σ count² across cells, driving a uniform footprint distribution. Useful with `--keep-outline` and locked corner parts, where `--place-compact-weight` is inert (the bounding box is pinned to the board size). A value of ~3.0 is a good starting point. |
 | `--place-edge-weight W` | Pull/alignment strength (cost per mm from the target edge) for footprints flagged `Autoroute-edge=<side>` (default 2.0). Higher pulls edge parts out harder and aligns them flatter against the edge. |
+| `--place-polish` | After annealing, refine the placement by **steepest-descent gradient descent** — relaxes close contacts and slides parts into their local energy minimum (the classic *anneal to explore, descend to exploit* hybrid). Translations only (rotation is left to annealing). It is **monotone**: only strictly-improving steps are taken, so it can never worsen the annealed result, and locks/KiCad groups are respected. Off by default. |
+| `--place-polish-iters N` / `--place-polish-time S` | Polish budget: max descent sweeps over all movable units (default 20) and/or an optional wall-clock cap (seconds). |
+| `--place-polish-eps MM` | Finite-difference step (mm) used to estimate the polish gradient (default 0.05). |
 | `--scatter` | Randomise footprint starting positions before each cycle's placement pass; see *Best-of-cycles* above. |
 | `--place-feedback` / `--congestion-weight W` | Congestion-aware re-placement across cycles (needs `--cycles N`); see *Congestion feedback* above. |
 
@@ -350,7 +353,8 @@ recent **acceptance ratio** (`acc=…%`, which falls as the schedule cools); the
 end-of-placement summary reports the acceptance ratio and an energy breakdown
 (ratsnest length, overlap area, bounding-box area, density-spread term when
 active, and — when any footprint is flagged `Autoroute-edge` — the total edge
-distance).
+distance). With `--place-polish` it also reports the number of descent sweeps run
+and the additional energy the polish removed.
 
 It is experimental: it optimises placement heuristically and does not understand
 mechanical/thermal intent, so review the result. Because it rewrites footprint

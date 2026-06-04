@@ -277,6 +277,18 @@ class PlaceParams:
     stall_ratio: float = 0.02
     stall_patience: int = 0
     scatter_start: bool = False         # scatter unlocked footprints randomly before annealing
+    # Post-anneal polish (steepest descent): after the SA loop settles on its
+    # best placement, optionally refine it by gradient descent — relaxes close
+    # contacts and slides parts into their local energy minimum. Translations
+    # only; monotone (only strictly-improving steps are taken), so it can never
+    # worsen the annealed result. Disabled by default (``polish=False``).
+    polish: bool = False
+    polish_iters: int = 20            # max descent sweeps over all movable units
+    polish_time: float | None = None  # optional wall-clock cap (s) for the polish
+    polish_eps: float = 0.05          # finite-difference step (mm) for the gradient
+    polish_step: float = 0.5          # initial line-search distance (mm)
+    polish_min_step: float = 0.01     # smallest line-search distance before giving up
+    polish_tol: float = 1e-3          # stop when a sweep improves E by less than this (relative)
 
 
 @dataclass
@@ -290,6 +302,8 @@ class PlaceResult:
     final_overlap: float = 0.0        # penalised footprint overlap area (mm²)
     final_bbox: float = 0.0           # layout bounding-box area (mm²)
     final_edge: float = 0.0           # total edge-affinity distance (mm); 0 if none flagged
+    polish_sweeps: int = 0            # descent sweeps run by the post-anneal polish (0 if off)
+    polish_improvement: float = 0.0   # energy reduction from the polish (>= 0)
 
     @property
     def accept_ratio(self) -> float:
@@ -755,6 +769,146 @@ class _Placer:
                     total += bi.intersection(t).area
         return total
 
+    def _save_cache(self, idxs: set[int]):
+        """Snapshot the energy-cache entries a move over ``idxs`` can disturb.
+
+        Captures the scalar energy totals, the moved boxes/bounds, the lengths of
+        the connections incident on the moved footprints, and (when active) the
+        spread cell bookkeeping. Pass the returned token to `_load_cache` to
+        revert the cache to exactly this state (paired with restoring the poses
+        via `_restore`). Shared by the SA loop's reject path and the polish
+        stage's probe/revert.
+
+        Args:
+            idxs: boxed-indices of the footprints the move touches.
+
+        Returns:
+            An opaque snapshot token for `_load_cache`.
+        """
+        touched = {ci for i in idxs for ci in self._fp_conns.get(i, ())}
+        sp = self.p.spread_weight > 0 and self._cell_size_x > 0
+        return (self._rats, self._overlap, self._bbox, self._edge,
+                self._containment, self._congestion,
+                {i: (self._boxes[i], self._bounds[i]) for i in idxs},
+                {ci: self._conn_len[ci] for ci in touched},
+                self._spread,
+                {i: self._fp_cell[i] for i in idxs} if sp else None,
+                self._cell_counts.copy() if sp else None)
+
+    def _load_cache(self, saved) -> None:
+        """Revert the energy cache to a `_save_cache` snapshot."""
+        (self._rats, self._overlap, self._bbox, self._edge,
+         self._containment, self._congestion,
+         boxes, lens, self._spread, fp_cells, cc) = saved
+        for i, (b, bnd) in boxes.items():
+            self._boxes[i] = b
+            self._bounds[i] = bnd
+        for ci, ln in lens.items():
+            self._conn_len[ci] = ln
+        if fp_cells is not None:
+            for i, cell in fp_cells.items():
+                self._fp_cell[i] = cell
+            self._cell_counts = cc
+
+    def _energy_after_translate(self, unit, idxs: set[int],
+                                dx: float, dy: float) -> float:
+        """Energy if ``unit`` were shifted by ``(dx, dy)``; poses + cache unchanged.
+
+        Applies the shift, updates the cache incrementally, reads the resulting
+        energy, then reverts both the footprint poses and the cache. Used by the
+        polish stage's finite-difference gradient and line search.
+
+        Args:
+            unit: the move unit (list of footprints) to probe.
+            idxs: the unit's boxed-indices.
+            dx: x shift (mm).
+            dy: y shift (mm).
+
+        Returns:
+            The energy the shift would produce.
+        """
+        snap = self._snapshot(unit)
+        saved = self._save_cache(idxs)
+        for fp in unit:
+            fp.x += dx
+            fp.y += dy
+            fp.sync_pads()
+        self._move_delta(idxs)
+        e = self._cached_energy()
+        self._restore(snap)
+        self._load_cache(saved)
+        return e
+
+    def _commit_translate(self, unit, idxs: set[int],
+                          dx: float, dy: float) -> float:
+        """Shift ``unit`` by ``(dx, dy)`` permanently; return the new cached energy."""
+        for fp in unit:
+            fp.x += dx
+            fp.y += dy
+            fp.sync_pads()
+        self._move_delta(idxs)
+        return self._cached_energy()
+
+    def _polish(self, on_progress=None, cancel=None) -> tuple[int, float]:
+        """Steepest-descent refinement after annealing.
+
+        For each movable unit (single footprint or KiCad group), estimate the 2-D
+        energy gradient of its translation by central finite differences, then
+        step along the normalised descent direction with a backtracking line
+        search, committing only strictly-improving steps. Sweep over all units,
+        repeating until a sweep barely helps, the sweep budget is spent, the
+        optional time budget elapses, or ``cancel`` is set.
+
+        Every committed step strictly lowers `_cached_energy`, so the polish can
+        never worsen the annealed placement. Angles are held fixed (translations
+        only), and locked footprints — absent from ``_move_units`` — are untouched.
+
+        Args:
+            on_progress: optional callback ``(sweep, max_sweeps, energy)`` per sweep.
+            cancel: optional `threading.Event`; stops between/within sweeps.
+
+        Returns:
+            ``(sweeps_done, improvement)`` — sweeps run and the total energy
+            reduction (``>= 0``).
+        """
+        if not self.p.polish or not self._move_units or self.p.polish_iters <= 0:
+            return 0, 0.0
+        eps = self.p.polish_eps
+        t0 = time.time()
+        units = [(u, {self._idx_of_fp[id(fp)] for fp in u})
+                 for u in self._move_units]
+        E0 = E = self._cached_energy()
+        sweeps = 0
+        for _ in range(self.p.polish_iters):
+            if cancel is not None and cancel.is_set():
+                break
+            if (self.p.polish_time is not None
+                    and time.time() - t0 >= self.p.polish_time):
+                break
+            sweep_start = E
+            for unit, idxs in units:
+                gx = (self._energy_after_translate(unit, idxs, eps, 0.0)
+                      - self._energy_after_translate(unit, idxs, -eps, 0.0)) / (2.0 * eps)
+                gy = (self._energy_after_translate(unit, idxs, 0.0, eps)
+                      - self._energy_after_translate(unit, idxs, 0.0, -eps)) / (2.0 * eps)
+                g = math.hypot(gx, gy)
+                if g < 1e-12:
+                    continue
+                dx, dy = -gx / g, -gy / g          # unit descent direction (mm)
+                step = self.p.polish_step
+                while step >= self.p.polish_min_step:
+                    if self._energy_after_translate(
+                            unit, idxs, dx * step, dy * step) < E - 1e-12:
+                        E = self._commit_translate(unit, idxs, dx * step, dy * step)
+                        break
+                    step *= 0.5
+            sweeps += 1
+            if on_progress is not None:
+                on_progress(sweeps, self.p.polish_iters, E)
+            if sweep_start - E <= self.p.polish_tol * max(1.0, abs(E)):
+                break
+        return sweeps, E0 - E
+
     def _move_delta(self, idxs: set[int]) -> None:
         """Update the energy cache for a move that touched footprints ``idxs``.
 
@@ -970,18 +1124,9 @@ class _Placer:
             T = self.p.t_start * (ratio ** frac)
 
             snap, idxs = self._move(T / self.p.t_start)
-            # Snapshot the cache entries the move can disturb, for a cheap revert:
-            # the scalar totals, the moved boxes, and the lengths of the
-            # connections incident on the moved footprints.
-            touched_conns = {ci for i in idxs for ci in self._fp_conns.get(i, ())}
-            _sp_active = self.p.spread_weight > 0 and self._cell_size_x > 0
-            cache_save = (self._rats, self._overlap, self._bbox,
-                          self._edge, self._containment,
-                          {i: (self._boxes[i], self._bounds[i]) for i in idxs},
-                          {ci: self._conn_len[ci] for ci in touched_conns},
-                          self._spread,
-                          {i: self._fp_cell[i] for i in idxs} if _sp_active else {},
-                          self._cell_counts.copy() if _sp_active else {})
+            # Snapshot the cache entries the move can disturb, for a cheap revert
+            # on a rejected move (see `_save_cache`/`_load_cache`).
+            saved = self._save_cache(idxs)
             self._move_delta(idxs)
             E_new = self._cached_energy()
             dE = E_new - E
@@ -994,19 +1139,7 @@ class _Placer:
                     best = self._snapshot(self.movable)
             else:
                 self._restore(snap)
-                (self._rats, self._overlap, self._bbox,
-                 self._edge, self._containment,
-                 saved_boxes, saved_lens,
-                 self._spread, saved_fp_cells, saved_cc) = cache_save
-                for i, (b, bnd) in saved_boxes.items():
-                    self._boxes[i] = b
-                    self._bounds[i] = bnd
-                for ci, ln in saved_lens.items():
-                    self._conn_len[ci] = ln
-                if _sp_active:
-                    for i, cell in saved_fp_cells.items():
-                        self._fp_cell[i] = cell
-                    self._cell_counts = saved_cc
+                self._load_cache(saved)
             recent.append(1 if accept else 0)
 
             it += 1
@@ -1024,14 +1157,22 @@ class _Placer:
                 window_seen = 0
 
         self._restore(best)
-        moved = sum(1 for fp in self.board.footprints if fp.moved)
         # Recompute the cache at the best placement so the reported breakdown is
         # exactly consistent with `best_E` (both use the fixed ratsnest topology),
         # then re-derive best_E from it so they reconcile to the last bit.
         self._rebuild_cache()
         best_E = self._cached_energy()
+        # Optional post-anneal polish: monotone gradient descent that only ever
+        # lowers the energy, so best_E (and the breakdown) can only improve.
+        # (The SA `on_progress` has a different signature, so it isn't forwarded.)
+        polish_sweeps, polish_improvement = self._polish(cancel=cancel)
+        if polish_sweeps:
+            best_E = self._cached_energy()
+        moved = sum(1 for fp in self.board.footprints if fp.moved)
         return PlaceResult(start_E, best_E, it, accepted, moved,
-                           self._rats, self._overlap, self._bbox, self._edge)
+                           self._rats, self._overlap, self._bbox, self._edge,
+                           polish_sweeps=polish_sweeps,
+                           polish_improvement=polish_improvement)
 
 
 def recenter(board: Board) -> tuple[float, float]:
