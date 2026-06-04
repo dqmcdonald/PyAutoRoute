@@ -1167,7 +1167,8 @@ class _Placer:
                 fp.x += dx; fp.y += dy; fp.sync_pads()
         return snap, {self._idx_of_fp[id(fp)] for fp in unit}
 
-    def run(self, on_progress=None, cancel=None) -> PlaceResult:
+    def run(self, on_progress=None, cancel=None,
+            on_polish_progress=None) -> PlaceResult:
         """Run the annealing loop; leave the board at the best placement seen.
 
         Args:
@@ -1177,6 +1178,8 @@ class _Placer:
             cancel: optional `threading.Event`; when set, the loop stops early and
                 the board is left at the best placement found so far (for a GUI
                 Stop button).
+            on_polish_progress: optional callback ``(sweep, max_sweeps, energy)``
+                invoked after each polish descent sweep; ``None`` suppresses it.
 
         Returns:
             The `PlaceResult` with start/best energy, run statistics, and the
@@ -1264,8 +1267,8 @@ class _Placer:
         best_E = self._cached_energy()
         # Optional post-anneal polish: monotone gradient descent that only ever
         # lowers the energy, so best_E (and the breakdown) can only improve.
-        # (The SA `on_progress` has a different signature, so it isn't forwarded.)
-        polish_sweeps, polish_improvement = self._polish(cancel=cancel)
+        polish_sweeps, polish_improvement = self._polish(
+            on_progress=on_polish_progress, cancel=cancel)
         if polish_sweeps:
             best_E = self._cached_energy()
         moved = sum(1 for fp in self.board.footprints if fp.moved)
@@ -1366,7 +1369,8 @@ def scatter_footprints(board: Board, seed: int) -> None:
 
 
 def place(board: Board, params: PlaceParams | None = None,
-          on_progress=None, runs: int = 1, cancel=None) -> PlaceResult:
+          on_progress=None, runs: int = 1, cancel=None,
+          on_polish_progress=None) -> PlaceResult:
     """Place a board's footprints by simulated annealing; return the best seen.
 
     Mutates `board`'s footprint poses (and their pads) in place, leaving them at
@@ -1389,6 +1393,8 @@ def place(board: Board, params: PlaceParams | None = None,
         runs: number of independent placement runs; the best is kept.
         cancel: optional `threading.Event`; when set, stops early (between and
             within runs) and returns the best placement found so far.
+        on_polish_progress: optional callback ``(sweep, max_sweeps, energy)``
+            invoked after each polish descent sweep (see `_Placer.run`).
 
     Returns:
         The `PlaceResult` with the best placement's energy and run statistics.
@@ -1401,7 +1407,8 @@ def place(board: Board, params: PlaceParams | None = None,
     # would invalidate it too.
     do_recenter = not params.keep_outline and params.congestion_field is None
     if runs <= 1:
-        result = _Placer(board, params).run(on_progress, cancel)
+        result = _Placer(board, params).run(on_progress, cancel,
+                                            on_polish_progress=on_polish_progress)
         if do_recenter:
             recenter(board)           # undo translation-invariant drift
         return result
@@ -1416,12 +1423,13 @@ def place(board: Board, params: PlaceParams | None = None,
             fp.x, fp.y, fp.angle = x, y, a
             fp.sync_pads()
         result = _Placer(board, replace(params, seed=params.seed + k)).run(
-            on_progress, cancel)
+            on_progress, cancel, on_polish_progress=on_polish_progress)
         if best is None or result.best_energy < best.best_energy:
             best = result
             best_poses = [(fp, fp.x, fp.y, fp.angle) for fp in board.footprints]
     if best is None:                             # cancelled before any run finished
-        return _Placer(board, params).run(on_progress, cancel)
+        return _Placer(board, params).run(on_progress, cancel,
+                                          on_polish_progress=on_polish_progress)
     for fp, x, y, a in best_poses:               # leave the board at the best
         fp.x, fp.y, fp.angle = x, y, a
         fp.sync_pads()

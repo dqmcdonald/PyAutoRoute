@@ -240,6 +240,12 @@ class Worker:
                 if new_best:
                     post(BoardSnap(_snap(), kind="overall_best"))
 
+        def place_polish_progress(sweep, max_sweeps, energy):
+            if cancel.is_set():
+                return
+            post(Phase(f"polishing: sweep {sweep}/{max_sweeps}  E={energy:.1f}"))
+            post(BoardSnap(_snap(), kind="current"))
+
         def placed(_board):
             post(BoardSnap(_snap()))
 
@@ -289,6 +295,7 @@ class Worker:
 
         return pipeline.PipelineHooks(
             phase=phase, place_run=place_run, place_progress=place_progress,
+            place_polish_progress=place_polish_progress,
             placed=placed, route_run=route_run, route_progress=route_progress,
             route_partial=route_partial, anneal_progress=anneal_progress,
             anneal_snapshot=anneal_snapshot, anneal_best=anneal_best,
@@ -371,7 +378,11 @@ class Worker:
             t_start=cfg.place_temps[0], t_end=cfg.place_temps[1],
             step=cfg.place_step, rotate_mode=cfg.place_rotate,
             swap_prob=getattr(cfg, "place_swap_prob", 0.2) or 0.2,
-            scatter_start=bool(getattr(cfg, "scatter_start", False)))
+            scatter_start=bool(getattr(cfg, "scatter_start", False)),
+            polish=bool(getattr(cfg, "place_polish", False)),
+            polish_iters=getattr(cfg, "place_polish_iters", None) or 20,
+            polish_time=getattr(cfg, "place_polish_time", None),
+            polish_eps=getattr(cfg, "place_polish_eps", None) or 0.05)
 
     def _cycle_hooks(self, cfg, margin, tag):
         """Build a `pipeline.CycleHooks` posting throttled GUI events for one cycle.
@@ -429,13 +440,19 @@ class Worker:
                               r, u, elapsed=now - st["anneal_t0"],
                               budget=cfg.time_budget or 0.0))
 
+        def polish_progress(sweep, max_sweeps, energy, board):
+            if cancel.is_set():
+                return
+            post(Phase(f"{tag}polishing: sweep {sweep}/{max_sweeps}  E={energy:.1f}"))
+            post(BoardSnap(_snap_pads(board, margin)))
+
         def board_snap(b):
             post(BoardSnap(_snap_pads(b, margin)))
 
         return pipeline.CycleHooks(
             phase_cb=phase, place_progress=place_progress,
             route_progress=route_progress, anneal_progress=anneal_progress,
-            board_snap_cb=board_snap)
+            board_snap_cb=board_snap, polish_progress_cb=polish_progress)
 
     def _pipeline(self, cfg) -> None:
         from pyautoroute import __version__, geometry, pcb, pipeline

@@ -224,7 +224,12 @@ def run_cycle(input_path, rules, pitch: float, place_params, route_params, *,
 
     pp = replace(place_params, seed=seed)
     h.phase(f"placing {len(board.footprints)} footprints")
-    placement.place(board, pp, on_progress=h.place_progress, cancel=cancel)
+    _polish_cb = None
+    if h.polish_progress_cb is not None:
+        def _polish_cb(sweep, max_sweeps, energy, _b=board):
+            h.polish_progress_cb(sweep, max_sweeps, energy, _b)
+    placement.place(board, pp, on_progress=h.place_progress, cancel=cancel,
+                    on_polish_progress=_polish_cb)
     kept = pcb.apply_placement(board, margin=place_margin,
                                keep_outline=pp.keep_outline)
     pcb.sync_tree_from_placement(board, keep_outline=kept)
@@ -296,12 +301,14 @@ class CycleHooks:
         route_progress: greedy-route progress ``f(done, total, routed, unrouted)``.
         anneal_progress: rip-up/reroute per-iteration callback (see `anneal.anneal`).
         board_snap: ``f(board)`` — the placement is finalised (for a live redraw).
+        polish_progress_cb: ``f(sweep, max_sweeps, energy)`` per polish sweep.
     """
     phase_cb: Callable | None = None
     place_progress: Callable | None = None
     route_progress: Callable | None = None
     anneal_progress: Callable | None = None
     board_snap_cb: Callable | None = None
+    polish_progress_cb: Callable | None = None
 
     def phase(self, name: str) -> None:
         if self.phase_cb is not None:
@@ -327,6 +334,8 @@ class PipelineHooks:
         place_run: ``f(k, n)`` — placement run ``k`` of ``n`` (0-based) started.
         place_progress: ``f(it, total, energy, best, temp, accept, overall_best)``
             per placement iteration (``overall_best`` is ``None`` when one run).
+        place_polish_progress: ``f(sweep, max_sweeps, energy)`` per post-anneal
+            polish descent sweep (only fires when ``--place-polish`` is on).
         placed: ``f(board)`` — placement finalised into the board (ready to draw).
         route_run: ``f(k, n)`` — routing run ``k`` of ``n`` (0-based) started.
         route_progress: ``f(done, total, routed, unrouted)`` greedy-route progress.
@@ -347,6 +356,7 @@ class PipelineHooks:
     phase: object = None
     place_run: object = None
     place_progress: object = None
+    place_polish_progress: object = None
     placed: object = None
     route_run: object = None
     route_progress: object = None
@@ -423,11 +433,16 @@ def run_placement(board, *, place_params, place_runs: int, seed: int,
         ob = prog["ob"] if place_runs > 1 else None
         _call(h.place_progress, it, total, energy, best, temp, accept, ob)
 
+    def on_polish(sweep, max_sweeps, energy):
+        _call(h.place_polish_progress, sweep, max_sweeps, energy)
+
     _call(h.phase, f"placing {n_fps} footprints")
     _call(h.place_run, 0, place_runs)
     place_stats = placement.place(board, replace(place_params, seed=seed),
                                   on_progress=on_place, runs=place_runs,
-                                  cancel=cancel)
+                                  cancel=cancel,
+                                  on_polish_progress=on_polish
+                                  if h.place_polish_progress else None)
     kept = pcb.apply_placement(board, margin=place_margin,
                                keep_outline=place_params.keep_outline)
     pcb.sync_tree_from_placement(board, keep_outline=kept)

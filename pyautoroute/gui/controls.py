@@ -106,6 +106,10 @@ class RunConfig:
     place_rotate: object = None
     place_swap_prob: object = None
     place_runs: object = None
+    place_polish: object = None
+    place_polish_iters: object = None
+    place_polish_time: object = None
+    place_polish_eps: object = None
     cycles: object = None
     scatter_start: object = None
     place_feedback: object = None
@@ -175,6 +179,11 @@ class ControlsPanel(ttk.Frame):
         self._place_rotate = tk.StringVar(value="ortho")
         self._place_margin = tk.StringVar(value="2.0")
         self._place_buffer = tk.StringVar(value="")
+        # Post-anneal placement polish
+        self._place_polish = tk.BooleanVar(value=False)
+        self._place_polish_iters = tk.StringVar(value="20")
+        self._place_polish_time = tk.StringVar(value="")
+        self._place_polish_eps = tk.StringVar(value="0.05")
         # Best-of-cycles + congestion feedback (place+route outer loop)
         self._cycles = tk.StringVar(value="1")
         self._scatter_start = tk.BooleanVar(value=False)
@@ -360,6 +369,38 @@ class ControlsPanel(ttk.Frame):
              "Raise for boards with many interchangeable ICs (e.g. repeated "
              "74HC-series logic) to explore position swaps more aggressively. "
              "Default 0.2.")
+
+        # ── Polish sub-section ──
+        pol_f = _section(p, "Polish")
+        pol_f.columnconfigure(1, weight=1)
+
+        self._polish_cb = ttk.Checkbutton(
+            pol_f, text="Post-anneal polish", variable=self._place_polish)
+        self._polish_cb.grid(row=0, column=0, columnspan=2, sticky=tk.W,
+                             padx=4, pady=2)
+        add_tooltip(self._polish_cb,
+                    "After placement annealing, run a steepest-descent refinement "
+                    "pass that slides each footprint to its local energy minimum "
+                    "using finite-difference gradients and a backtracking line "
+                    "search. Strictly monotone — can never worsen the annealed "
+                    "result. Useful for tightening up a placement after SA has "
+                    "found a good global configuration.")
+
+        pol_iters_e = _entry(pol_f, self._place_polish_iters, width=8)
+        _row(pol_f, 1, "Max sweeps:", pol_iters_e,
+             "Maximum descent sweeps over all movable footprints (default 20). "
+             "Each sweep tries every movable unit once.")
+
+        pol_time_e = _entry(pol_f, self._place_polish_time, width=8)
+        _row(pol_f, 2, "Time cap (s):", pol_time_e,
+             "Optional wall-clock cap in seconds for the polish stage. "
+             "Leave blank for no cap.")
+
+        pol_eps_e = _entry(pol_f, self._place_polish_eps, width=8)
+        _row(pol_f, 3, "Eps (mm):", pol_eps_e,
+             "Finite-difference step (mm) used to estimate the translation "
+             "gradient (default 0.05). Smaller values give a more accurate "
+             "gradient but are noisier for small energy differences.")
 
         # ── Cycles / Congestion sub-section ──
         cyc_f = _section(p, "Cycles & Congestion")
@@ -561,6 +602,11 @@ class ControlsPanel(ttk.Frame):
         if "place_rotate" in d and d["place_rotate"]:
             self._place_rotate.set(d["place_rotate"])
         _sv("place_swap_prob", self._place_swap_prob)
+        if "place_polish" in d:
+            self._place_polish.set(bool(d["place_polish"]))
+        _sv("place_polish_iters", self._place_polish_iters)
+        _sv("place_polish_time", self._place_polish_time)
+        _sv("place_polish_eps", self._place_polish_eps)
         if "place_iters" in d and d["place_iters"]:
             self._place_budget_kind.set("iters")
             self._place_budget_val.set(str(d["place_iters"]))
@@ -833,6 +879,10 @@ class ControlsPanel(ttk.Frame):
             place_rotate=self._place_rotate.get() or "ortho",
             place_swap_prob=_f(self._place_swap_prob, 0.2),
             place_runs=_i(self._place_runs, 1),
+            place_polish=self._place_polish.get(),
+            place_polish_iters=_i(self._place_polish_iters, 20),
+            place_polish_time=_f(self._place_polish_time),
+            place_polish_eps=_f(self._place_polish_eps, 0.05),
             cycles=_i(self._cycles, 1),
             scatter_start=self._scatter_start.get(),
             place_feedback=self._place_feedback.get(),
@@ -885,6 +935,10 @@ class ControlsPanel(ttk.Frame):
             place_rotate=cfg.place_rotate or "ortho",
             place_swap_prob=cfg.place_swap_prob or 0.2,
             place_runs=cfg.place_runs or 1,
+            place_polish=cfg.place_polish or False,
+            place_polish_iters=cfg.place_polish_iters or 20,
+            place_polish_time=cfg.place_polish_time,
+            place_polish_eps=cfg.place_polish_eps or 0.05,
             cycles=cfg.cycles or 1,
             scatter=cfg.scatter_start or False,
             place_feedback=cfg.place_feedback or False,
