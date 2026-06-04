@@ -333,6 +333,39 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
             component_layers.setdefault(p2, set()).add(seg.layer)
             _union(p1, p2)
 
+    # Register freshly-routed GND segments and vias from routed_nodes.  These
+    # ARE written to the output regardless of keep_existing_segments, so they
+    # must always contribute to connectivity.  Without this, SMD pads that the
+    # router just connected via GND traces would still look isolated here and
+    # trigger (usually failing) connectivity-via attempts.
+    if routed_nodes:
+        for node in routed_nodes:
+            head = _node_head(node)
+            if head == "segment":
+                net_n = _child(node, "net")
+                if not net_n or _atom_text(net_n, 1) != gnd_net:
+                    continue
+                start_n = _child(node, "start")
+                end_n   = _child(node, "end")
+                layer_n = _child(node, "layer")
+                if not all([start_n, end_n, layer_n]):
+                    continue
+                seg_layer = _atom_text(layer_n, 1)
+                p1 = _snap(_float(start_n, 1), _float(start_n, 2))
+                p2 = _snap(_float(end_n, 1),   _float(end_n, 2))
+                component_layers.setdefault(p1, set()).add(seg_layer)
+                component_layers.setdefault(p2, set()).add(seg_layer)
+                _union(p1, p2)
+            elif head == "via":
+                net_n = _child(node, "net")
+                if not net_n or _atom_text(net_n, 1) != gnd_net:
+                    continue
+                at_n = _child(node, "at")
+                if not at_n:
+                    continue
+                vsnap = _snap(_float(at_n, 1), _float(at_n, 2))
+                component_layers.setdefault(vsnap, set()).update({"F.Cu", "B.Cu"})
+
     # Aggregate layers per component root, then find components lacking the pour layer.
     # Checking per-position would incorrectly flag a component as needing a via whenever
     # any segment endpoint in it lacks the pour layer, even if a THT pad in the same
@@ -457,6 +490,30 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
                     break
             if via_point is None and first_candidate is not None:
                 via_point = _spiral_search(first_candidate[0], first_candidate[1])
+
+            # If the fallback placed a via that isn't at a pad centre, add a
+            # stub track from the nearest GND pad so the pad is actually wired
+            # to the via.  (The primary path above already handles this for the
+            # offset-via case; here we catch the fallback path.)
+            if via_point is not None and track_node is None:
+                nearest_pad = None
+                nearest_dist_sq = float("inf")
+                for pad in board.pads:
+                    if pad.net != gnd_net:
+                        continue
+                    if _find(_snap(pad.cx, pad.cy)) != root:
+                        continue
+                    dsq = (pad.cx - via_point[0]) ** 2 + (pad.cy - via_point[1]) ** 2
+                    if dsq < nearest_dist_sq:
+                        nearest_dist_sq = dsq
+                        nearest_pad = pad
+                if nearest_pad is not None and nearest_dist_sq > 1e-8:
+                    pad_layer = (nearest_pad.copper_layers[0]
+                                 if nearest_pad.copper_layers else "F.Cu")
+                    track_node = pcb.make_segment(
+                        board, nearest_pad.cx, nearest_pad.cy,
+                        via_point[0], via_point[1],
+                        track_width, pad_layer, gnd_net)
 
         if via_point:
             via_node = pcb.make_via(

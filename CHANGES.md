@@ -5,6 +5,11 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.43.4
+
+- **Fix**: SMD GND pads already connected by the router's fresh GND traces were incorrectly flagged as isolated in `--existing-routes clear` mode, because `routed_nodes` was only used for obstacle checking, not for the union-find. This caused spurious (usually failed) connectivity-via attempts and left pads unconnected. Freshly-routed GND segments and vias are now registered in the union-find.
+- **Fix**: fallback connectivity-via placement (when the preferred offset-via spiral fails) omitted the stub track from the pad to the via, leaving the via electrically floating. The fallback now always adds a stub track to the nearest GND pad.
+
 ## 0.43.3
 
 - **Fix**: SMD GND pads connected to THT pads only via *pre-existing* F.Cu segments now correctly get connectivity vias in `--existing-routes clear` mode. Previously the union-find read `board.segments` (which still held the original segments in memory) and concluded no via was needed, even though those segments were being stripped from the output.
