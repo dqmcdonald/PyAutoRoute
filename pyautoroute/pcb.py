@@ -70,6 +70,14 @@ def atoms_after_head(node: SList) -> list[Atom]:
     return [it for it in node[1:] if isinstance(it, Atom)]
 
 
+def _is_numeric_atom(a: Atom) -> bool:
+    try:
+        float(a.raw)
+        return True
+    except ValueError:
+        return False
+
+
 def floats(node: SList | None) -> list[float]:
     """Read a list's trailing atoms as floats, e.g. ``(at 1 2)`` -> ``[1.0, 2.0]``.
 
@@ -449,9 +457,12 @@ def _parse_pad(pad_node: SList, fx: float, fy: float, fa: float,
     drill_node = child(pad_node, "drill")
     drill = None
     if drill_node is not None:
-        df = floats(drill_node)
+        # Skip non-numeric atoms (e.g. "oval" shape keyword) — KiCad emits
+        # (drill d) for circular or (drill oval dx dy) for elongated drills.
+        df = [a.as_float() for a in atoms_after_head(drill_node)
+              if _is_numeric_atom(a)]
         if df:
-            drill = df[-1]   # (drill d) or (drill oval dx dy)
+            drill = df[-1]   # circular: df=[d]; oval: df=[dx, dy], use larger
 
     net = _net_name(child(pad_node, "net"), numbered)
 

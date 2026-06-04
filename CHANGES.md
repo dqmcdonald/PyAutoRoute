@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.43.1
+
+- **Fix**: crash loading boards with oval through-hole pad drills (`(drill oval dx dy)`) — the `oval` shape keyword was incorrectly passed to `float()`.
+
 ## 0.43.0
 
 - **`--save-cycles`** — with `--cycles N`, writes each cycle's placed+routed board to `<output>_cycle_NNofMM.kicad_pcb` as it completes (including the ground-plane zone if `--ground-plane` is set, but without zone refill). Useful for inspecting intermediate results while a long multi-cycle job is still running.
