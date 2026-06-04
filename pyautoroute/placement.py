@@ -7,7 +7,8 @@ while keeping bodies from overlapping and pulling the layout together.
 
 Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
 + edge_weight·edge_distance + containment_weight·area_outside_outline
-+ congestion_weight·Σ field(centroid) + spread_weight·Σ_cell count²``:
++ congestion_weight·Σ field(centroid) + spread_weight·Σ_cell count²
++ decouple_weight·Σ dist(cap, IC)``:
 
 - **ratsnest** — total MST length over the pad centroids (reuses
   `pyautoroute.netlist`); shrinks as connected pads are drawn together.
@@ -60,6 +61,15 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
   pin the bounding-box term to a constant, making ``compact_weight`` inert). A
   value around ``3.0`` works well for most boards; ``0.0`` (the default) leaves
   the behaviour unchanged.
+- **Σ dist(cap, IC)** — for each footprint marked as a *decoupling cap* via the
+  ``Autoroute-decouple`` property (`pcb.Footprint.decouple_target`: an IC refdes,
+  or ``auto`` to resolve the IC by net search,
+  `pyautoroute.netlist.resolve_decoupling_ic`). The cap is softly pulled toward
+  its IC's centroid, so it settles next to it instead of drifting — a flexible
+  alternative to a rigid KiCad group. The overlap/buffer term keeps the cap from
+  landing *on* the IC, so the cap seats at the buffer gap. Translation-invariant
+  (depends only on the cap↔IC separation). Zero when no cap is marked or
+  ``decouple_weight = 0``.
 
 Moves (over the *movable* footprints — locked ones are fixed obstacles): translate
 by a temperature-scaled random step, rotate (``rotate_mode``: ``ortho`` = ±90°/180°,
@@ -289,6 +299,11 @@ class PlaceParams:
     polish_step: float = 0.5          # initial line-search distance (mm)
     polish_min_step: float = 0.01     # smallest line-search distance before giving up
     polish_tol: float = 1e-3          # stop when a sweep improves E by less than this (relative)
+    # Decoupling-cap attraction: footprints marked with the ``Autoroute-decouple``
+    # property (`pcb.Footprint.decouple_target`) are softly pulled toward their
+    # associated IC, so a decoupling cap settles next to it instead of drifting.
+    # mm-cost per mm of cap→IC centroid distance; 0 disables the term.
+    decouple_weight: float = 5.0
 
 
 @dataclass
@@ -304,6 +319,7 @@ class PlaceResult:
     final_edge: float = 0.0           # total edge-affinity distance (mm); 0 if none flagged
     polish_sweeps: int = 0            # descent sweeps run by the post-anneal polish (0 if off)
     polish_improvement: float = 0.0   # energy reduction from the polish (>= 0)
+    warnings: list[str] = field(default_factory=list)  # e.g. unresolved decouple targets
 
     @property
     def accept_ratio(self) -> float:
@@ -314,6 +330,14 @@ class PlaceResult:
 def _half_extent(pad: Pad) -> float:
     """Rotation-independent half-extent of a pad (half its bounding diagonal)."""
     return 0.5 * math.hypot(pad.w, pad.h)
+
+
+def _fp_centroid(fp: Footprint) -> tuple[float, float]:
+    """Centroid of a footprint's pad centres (its origin if it has no pads)."""
+    if not fp.pads:
+        return (fp.x, fp.y)
+    n = len(fp.pads)
+    return (sum(p.cx for p in fp.pads) / n, sum(p.cy for p in fp.pads) / n)
 
 
 class _Placer:
@@ -395,6 +419,21 @@ class _Placer:
             [[fp] for fp in self.movable if id(fp) not in grouped_fp_ids]
             + [[self.boxed[i] for i in idxs] for idxs in self._groups.values()]
         )
+        # Decoupling-cap attraction: each footprint marked `decouple_target` is
+        # softly pulled toward its associated IC. Resolve the target to a boxed
+        # index here (an "auto" target is resolved by net search); collect any
+        # warnings for the caller. Pairs are (cap-index, ic-index); the per-pair
+        # distance is cached and updated incrementally like the ratsnest term.
+        self._decouple_pairs: list[tuple[int, int]] = []
+        self._decouple_warnings: list[str] = []
+        if self.p.decouple_weight > 0:
+            self._build_decouple_pairs()
+        self._fp_decouple: dict[int, list[int]] = {}
+        for pi, (a, b) in enumerate(self._decouple_pairs):
+            self._fp_decouple.setdefault(a, []).append(pi)
+            self._fp_decouple.setdefault(b, []).append(pi)
+        self._decouple_len: list[float] = []   # per-pair cap→IC distance
+        self._decouple = 0.0                    # cached Σ distance
         # --keep-outline: contain footprints within the board's existing Edge.Cuts
         # (rather than regenerating a bounding box). The polygon and its bounds are
         # fixed for the run; edge affinity then targets the outline, not the layout
@@ -472,6 +511,43 @@ class _Placer:
                 if fi is not None:
                     self._fp_conns[fi].append(ci)
 
+    def _build_decouple_pairs(self) -> None:
+        """Resolve ``decouple_target`` marks into (cap-index, IC-index) pairs.
+
+        A concrete refdes target is looked up directly; ``"auto"`` is resolved by
+        net search (`netlist.resolve_decoupling_ic`). Unresolvable or self-target
+        marks are skipped with a warning recorded in ``self._decouple_warnings``.
+        """
+        ref_to_idx: dict[str, int] = {}
+        for i, fp in enumerate(self.boxed):
+            ref_to_idx.setdefault(fp.ref, i)        # first wins; dup handled by resolver
+        for ci, fp in enumerate(self.boxed):
+            tgt = fp.decouple_target
+            if not tgt:
+                continue
+            if tgt == "auto":
+                ref, _cands, warn = netlist.resolve_decoupling_ic(self.board, fp)
+                if warn:
+                    self._decouple_warnings.append(warn)
+                tgt = ref
+            if not tgt:
+                continue
+            ii = ref_to_idx.get(tgt)
+            if ii is None:
+                self._decouple_warnings.append(
+                    f"{fp.ref}: decouple target {tgt!r} not found on the board")
+            elif ii == ci:
+                self._decouple_warnings.append(
+                    f"{fp.ref}: decouple target {tgt!r} is the cap itself")
+            else:
+                self._decouple_pairs.append((ci, ii))
+
+    def _pair_distance(self, a: int, b: int) -> float:
+        """Centroid distance between two boxed footprints (for a decouple pair)."""
+        ax, ay = _fp_centroid(self.boxed[a])
+        bx, by = _fp_centroid(self.boxed[b])
+        return math.hypot(ax - bx, ay - by)
+
     def _rebuild_cache(self) -> None:
         """Full recompute of the energy cache (init / after a structural change)."""
         if not self._conns and self.boxed:
@@ -486,6 +562,10 @@ class _Placer:
         self._edge = self._edge_sum_from_bounds(self._bounds)
         self._containment = self._containment_sum(self._boxes)
         self._congestion = self._congestion_sum(self._bounds)
+        # Decoupling attraction: per-pair cap→IC centroid distance.
+        self._decouple_len = [self._pair_distance(a, b)
+                              for (a, b) in self._decouple_pairs]
+        self._decouple = sum(self._decouple_len)
         # Spread term: (re)build cell assignments from current footprint positions.
         # If the grid wasn't set up in __init__ (no outline at that point), try now
         # using the layout bounding box as the reference.
@@ -639,7 +719,8 @@ class _Placer:
                 + self.p.edge_weight * self._edge
                 + self.p.containment_weight * self._containment
                 + self.p.congestion_weight * self._congestion
-                + self.p.spread_weight * self._spread)
+                + self.p.spread_weight * self._spread
+                + self.p.decouple_weight * self._decouple)
 
     def _overlap_touching(self, idxs: set[int], boxes) -> float:
         """Overlap area of every pair/fixed-text touching a footprint in `idxs`.
@@ -786,6 +867,7 @@ class _Placer:
             An opaque snapshot token for `_load_cache`.
         """
         touched = {ci for i in idxs for ci in self._fp_conns.get(i, ())}
+        touched_dec = {pi for i in idxs for pi in self._fp_decouple.get(i, ())}
         sp = self.p.spread_weight > 0 and self._cell_size_x > 0
         return (self._rats, self._overlap, self._bbox, self._edge,
                 self._containment, self._congestion,
@@ -793,13 +875,16 @@ class _Placer:
                 {ci: self._conn_len[ci] for ci in touched},
                 self._spread,
                 {i: self._fp_cell[i] for i in idxs} if sp else None,
-                self._cell_counts.copy() if sp else None)
+                self._cell_counts.copy() if sp else None,
+                self._decouple,
+                {pi: self._decouple_len[pi] for pi in touched_dec})
 
     def _load_cache(self, saved) -> None:
         """Revert the energy cache to a `_save_cache` snapshot."""
         (self._rats, self._overlap, self._bbox, self._edge,
          self._containment, self._congestion,
-         boxes, lens, self._spread, fp_cells, cc) = saved
+         boxes, lens, self._spread, fp_cells, cc,
+         self._decouple, dec_lens) = saved
         for i, (b, bnd) in boxes.items():
             self._boxes[i] = b
             self._bounds[i] = bnd
@@ -809,6 +894,8 @@ class _Placer:
             for i, cell in fp_cells.items():
                 self._fp_cell[i] = cell
             self._cell_counts = cc
+        for pi, ln in dec_lens.items():
+            self._decouple_len[pi] = ln
 
     def _energy_after_translate(self, unit, idxs: set[int],
                                 dx: float, dy: float) -> float:
@@ -967,6 +1054,18 @@ class _Placer:
                 self._cell_counts[new_cell] = self._cell_counts.get(new_cell, 0) + 1
                 self._fp_cell[fi] = new_cell
             self._spread = sum(c * c for c in self._cell_counts.values())
+        # Decoupling: recompute the distance of each pair incident on a moved
+        # footprint (either the cap or its IC may have moved).
+        seen_dec: set[int] = set()
+        for fi in idxs:
+            for pi in self._fp_decouple.get(fi, ()):
+                seen_dec.add(pi)
+        for pi in seen_dec:
+            self._decouple -= self._decouple_len[pi]
+            a, b = self._decouple_pairs[pi]
+            nl = self._pair_distance(a, b)
+            self._decouple_len[pi] = nl
+            self._decouple += nl
 
     def _energy_components(self) -> tuple[float, float, float]:
         """Return the ``(ratsnest, overlap_area, bbox_area)`` energy terms."""
@@ -1089,7 +1188,8 @@ class _Placer:
             self._rebuild_cache()
             E = self._cached_energy()
             return PlaceResult(E, E, 0, 0, 0,
-                               self._rats, self._overlap, self._bbox, self._edge)
+                               self._rats, self._overlap, self._bbox, self._edge,
+                               warnings=list(self._decouple_warnings))
 
         self._rebuild_cache()
         E = self._cached_energy()
@@ -1172,7 +1272,8 @@ class _Placer:
         return PlaceResult(start_E, best_E, it, accepted, moved,
                            self._rats, self._overlap, self._bbox, self._edge,
                            polish_sweeps=polish_sweeps,
-                           polish_improvement=polish_improvement)
+                           polish_improvement=polish_improvement,
+                           warnings=list(self._decouple_warnings))
 
 
 def recenter(board: Board) -> tuple[float, float]:

@@ -176,6 +176,19 @@ to two-pin connections via a **minimum spanning tree** over pad centroids
 (`scipy.sparse.csgraph.minimum_spanning_tree`). `greedy_order` sorts connections
 shortest-first for the initial routing pass.
 
+`resolve_decoupling_ic(board, cap)` finds the IC a decoupling cap serves (for the
+`Autoroute-decouple` placement term). A decoupling cap bridges a **power** net and
+**ground**, both high-fanout, so net membership alone is ambiguous; the resolver
+classifies the cap's two nets by name (`_net_kind`: ground / power / signal, with a
+fallback that treats the non-ground net as the rail when its name is unrecognised),
+then among footprints on the **power** net keeps the **IC-like** ones (refdes
+`U…`/`IC…`, or ≥ 4 pads) and picks the **nearest** to the cap by pad centroid. It
+returns `(ic_ref, candidates, warning)` — a warning is produced for a near-tie
+between two ICs, no IC found, an unrecognised rail name, a non-unique refdes, or a
+part that doesn't look like a decoupling cap (≠ 2 pad-nets, or it doesn't bridge
+power and ground). Pure and deterministic; used by the GUI (at mark-time) and by
+placement (to resolve an `auto` target).
+
 ### `anneal.py` — simulated annealing
 Incremental rip-up & reroute over an already-committed routing. Moves: rip a
 connection (failed *or* routed) plus its nearest neighbours and reroute the freed
@@ -208,7 +221,8 @@ energy breakdown (`final_ratsnest`/`final_overlap`/`final_bbox`/`final_edge`) at
 the best placement. Energy
 `E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
 + edge_weight·edge_distance + containment_weight·area_outside_outline
-+ congestion_weight·Σ field(centroid)`:
++ congestion_weight·Σ field(centroid) + spread_weight·Σ count²
++ decouple_weight·Σ dist(cap, IC)`:
 
 - **ratsnest** — total MST length over pad centroids, reusing `netlist`
   (`build_connections` + `Connection.est_length`). The connection topology is
@@ -267,6 +281,19 @@ the best placement. Energy
   like `--keep-outline` it makes the energy position-dependent and `place` skips
   `recenter`. Zero (and skipped) when no field is supplied. See **Congestion
   feedback** under `autoroute.py` for how the field is built and accumulated.
+- **Σ dist(cap, IC)** — only when a footprint is marked a **decoupling cap** via
+  the `Autoroute-decouple` property (`pcb.Footprint.decouple_target`: an IC refdes
+  or `auto`). At setup `_build_decouple_pairs` resolves each mark to a
+  `(cap-index, IC-index)` pair — a concrete refdes is looked up directly, `auto`
+  via `netlist.resolve_decoupling_ic` — and the term sums the cap↔IC pad-centroid
+  distance over the pairs, **softly** pulling each cap toward its IC. It is a
+  *bias*, not a pin: the cap still rotates and shuffles, and the overlap/buffer
+  term stops it landing *on* the IC, so it seats at the buffer gap (a flexible
+  alternative to a rigid group). Translation-invariant (depends only on the
+  separation). Incremental like the ratsnest: a `_fp_decouple` index recomputes
+  only the pairs incident on a moved footprint. Unresolvable marks are skipped and
+  surfaced in `PlaceResult.warnings`. Zero when nothing is marked or
+  `decouple_weight = 0` (the pairs are not even built).
 
 **Incremental energy.** The energy is cached and updated per move rather than
 recomputed wholesale: `_rebuild_cache` does the one-time full pass (and runs again
@@ -278,8 +305,9 @@ feedback the congestion sum — each an O(N) pass over the cached per-box bounds
 since they depend on the global layout extent / each centroid's field cell). A
 rejected move restores the disturbed cache entries via `_save_cache` /
 `_load_cache` (a snapshot of the scalar totals plus the moved boxes/bounds, the
-incident connection lengths, and the spread bookkeeping). This turns each
-iteration from O(P² + N·log N) into roughly O(deg + neighbours). Optional **stall
+incident connection lengths, the spread bookkeeping, and the incident decoupling-
+pair distances). This turns each iteration from O(P² + N·log N) into roughly
+O(deg + neighbours). Optional **stall
 detection** (`PlaceParams.stall_ratio`/`stall_patience`, off by default) mirrors
 `anneal`'s.
 
@@ -330,7 +358,8 @@ the write. The whole stage is transparent to the router, which already consumes
 `--place-margin`, `--place-buffer` (inter-footprint keep-out),
 `--place-overlap-weight`, `--place-compact-weight`,
 `--place-polish` (+ `--place-polish-iters`/`--place-polish-time`/`--place-polish-eps`,
-post-anneal gradient descent); `--seed` is shared.
+post-anneal gradient descent), `--place-decouple-weight` (decoupling-cap
+attraction); `--seed` is shared.
 
 **Silkscreen text in body boxes.** `_fp_silk_text_extents` pre-computes a list of
 `(local_x, local_y, half_diag)` for each visible, non-hidden silkscreen text item

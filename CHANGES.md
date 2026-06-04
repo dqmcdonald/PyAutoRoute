@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.47.0
+
+- **New**: mark a capacitor as a **decoupling cap** so placement keeps it next to its IC. A footprint with an `Autoroute-decouple` property (value = the IC's reference designator, or `auto` to find it automatically) is softly pulled toward that IC during `--place`, so the cap settles beside it instead of drifting — a flexible alternative to a rigid KiCad group. The IC is found by searching the cap's power net for the nearest IC-like part (`netlist.resolve_decoupling_ic`), warning when the match is ambiguous or the part doesn't look like a decoupling cap. Set it via the GUI right-click menu (*Decoupling cap* → resolves the IC on open and offers a chooser) or the property directly; tune with `--place-decouple-weight` (default 5.0; 0 disables). Unresolved targets are reported in the placement summary. See `plans/decoupling-cap-plan.md`.
+
 ## 0.46.0
 
 - **New**: optional post-anneal placement **polish** (`--place-polish`). After simulated annealing settles on its best placement, a steepest-descent refinement pass relaxes close contacts and slides parts into their local energy minimum. It estimates each movable unit's translation gradient by central finite differences (reusing the incremental energy cache) and takes backtracking-line-search steps, committing only strictly-improving moves — so it is **monotone** and can never worsen the annealed result. Translations only (angles left to annealing); locks and KiCad groups are respected. Tuning knobs: `--place-polish-iters` (max descent sweeps, default 20), `--place-polish-eps` (finite-difference step, default 0.05 mm), `--place-polish-time` (optional wall-clock cap). Off by default. See `plans/placement-polish-plan.md`.

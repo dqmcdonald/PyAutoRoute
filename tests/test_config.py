@@ -131,3 +131,23 @@ def test_polish_bad_values_error():
         autoroute.main([str(_TEST_BOARD), "--place-only", "--place-polish-iters", "-1"])
     with pytest.raises(SystemExit):  # polish needs --place / --place-only
         autoroute.main([str(_TEST_BOARD), "--place-polish"])
+
+
+# --- decoupling-cap CLI flag -------------------------------------------------
+
+def test_decouple_weight_flag_parses():
+    args = autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "--place", "--place-decouple-weight", "8.5"])
+    assert args.place_decouple_weight == 8.5
+
+
+def test_decouple_weight_default():
+    args = autoroute.build_parser().parse_args([str(_TEST_BOARD)])
+    from pyautoroute import placement
+    assert args.place_decouple_weight == placement.PlaceParams.decouple_weight
+
+
+def test_decouple_weight_negative_errors():
+    with pytest.raises(SystemExit):
+        autoroute.main([str(_TEST_BOARD), "--place-only",
+                        "--place-decouple-weight", "-1"])
