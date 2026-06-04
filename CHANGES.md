@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.43.2
+
+- **Fix**: ground-plane zone missing `(net_name "GND")` on numbered-net boards — KiCad's fill engine requires both `(net <code>)` and `(net_name "name")` to connect the pour to the net.
+
 ## 0.43.1
 
 - **Fix**: crash loading boards with oval through-hole pad drills (`(drill oval dx dy)`) — the `oval` shape keyword was incorrectly passed to `float()`.

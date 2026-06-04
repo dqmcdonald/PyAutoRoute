@@ -1076,9 +1076,15 @@ def make_zone_node(board: Board, layer: str, net: str,
     # KiCad's fill algorithm silently drops the thermal reliefs for affected pads.
     thermal_bridge = max(clearance, min_thickness)
 
-    return SList([
+    # Zones need (net_name "GND") alongside (net <code>) on numbered-net boards;
+    # KiCad's fill engine uses both to match the zone to its net.
+    zone_items: list = [
         sexpr.sym("zone"),
         _net_ref_node(board, net),
+    ]
+    if not board.name_only_nets:
+        zone_items.append(SList([sexpr.sym("net_name"), sexpr.string(net)]))
+    zone_items += [
         SList([sexpr.sym("layer"), sexpr.string(layer)]),
         SList([sexpr.sym("uuid"), sexpr.string(str(__import__("uuid").uuid4()))]),
         SList([sexpr.sym("hatch"), sexpr.sym("edge"), sexpr.number(0.5)]),
@@ -1094,7 +1100,8 @@ def make_zone_node(board: Board, layer: str, net: str,
             SList([sexpr.sym("island_removal_mode"), sexpr.number(0)])
         ]),
         SList([sexpr.sym("polygon"), pts_node]),
-    ])
+    ]
+    return SList(zone_items)
 
 
 def make_edge_rect(x1: float, y1: float, x2: float, y2: float,
