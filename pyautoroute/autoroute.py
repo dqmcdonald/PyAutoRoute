@@ -469,6 +469,9 @@ def _log_params(rep: Reporter, args, input_path, out_path, pro_path, pitch,
                 f"edge wt {args.place_edge_weight})")
         if getattr(args, "keep_outline", False):
             rep.log("keep outline   on  (footprints contained within the existing Edge.Cuts)")
+        sw = getattr(args, "place_spread_weight", 0.0)
+        if sw > 0:
+            rep.log(f"spread weight  {sw}  (density-uniformity grid active)")
         rep.log(f"place temps    {args.place_temps[0]} -> {args.place_temps[1]}")
         rep.log(f"place step     {args.place_step} mm, rotate {args.place_rotate}, swap_prob {args.place_swap_prob}")
         if args.place_runs > 1:
@@ -534,7 +537,8 @@ def _place_params_from_args(args, board, rules, rep):
         edge_weight=args.place_edge_weight, keep_outline=keep_outline,
         t_start=args.place_temps[0], t_end=args.place_temps[1],
         step=args.place_step, rotate_mode=args.place_rotate,
-        swap_prob=args.place_swap_prob)
+        swap_prob=args.place_swap_prob,
+        spread_weight=getattr(args, "place_spread_weight", 0.0))
     return pp, keep_outline
 
 
@@ -1838,6 +1842,13 @@ def build_parser() -> argparse.ArgumentParser:
                    default=placement.PlaceParams.compact_weight, metavar="W",
                    help="placement cost per mm² of layout bounding box, pulling the "
                         "parts together (default %(default)s)")
+    p.add_argument("--place-spread-weight", type=float,
+                   default=placement.PlaceParams.spread_weight, metavar="W",
+                   help="placement cost per unit of cell-occupancy variance "
+                        "(sum count² over a density grid); >0 spreads footprints "
+                        "uniformly across the board — useful with --keep-outline "
+                        "where locked corner parts make --place-compact-weight "
+                        "inert. ~3.0 is a good starting value. (default %(default)s)")
     p.add_argument("--place-edge-weight", type=float,
                    default=placement.PlaceParams.edge_weight, metavar="W",
                    help="placement cost per mm a footprint flagged "

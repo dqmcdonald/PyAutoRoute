@@ -7,7 +7,7 @@ while keeping bodies from overlapping and pulling the layout together.
 
 Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
 + edge_weight·edge_distance + containment_weight·area_outside_outline
-+ congestion_weight·Σ field(centroid)``:
++ congestion_weight·Σ field(centroid) + spread_weight·Σ_cell count²``:
 
 - **ratsnest** — total MST length over the pad centroids (reuses
   `pyautoroute.netlist`); shrinks as connected pads are drawn together.
@@ -51,6 +51,15 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
   the layout), so like ``keep_outline`` it makes the energy position-dependent and
   `recenter` is skipped. Zero when no field is supplied, so default behaviour is
   unchanged.
+- **Σ_cell count²** — only when ``spread_weight > 0``. The board outline (or
+  layout bounding box) is divided into a ``spread_cells × spread_cells`` grid and
+  the sum of squared footprint counts per cell is minimised. By Cauchy-Schwarz
+  this is minimised when every cell has the same occupancy, so the term pushes
+  the placement towards *uniform density*, correcting the cluster-in-one-corner
+  failure mode that arises with ``--keep-outline`` and locked corner parts (which
+  pin the bounding-box term to a constant, making ``compact_weight`` inert). A
+  value around ``3.0`` works well for most boards; ``0.0`` (the default) leaves
+  the behaviour unchanged.
 
 Moves (over the *movable* footprints — locked ones are fixed obstacles): translate
 by a temperature-scaled random step, rotate (``rotate_mode``: ``ortho`` = ±90°/180°,
@@ -246,6 +255,8 @@ class PlaceParams:
     # weight 0 (the default) leaves placement unchanged.
     congestion_field: object = None
     congestion_weight: float = 0.0    # mm-cost per unit field value at a footprint centroid
+    spread_weight: float = 0.0        # penalise uneven cell occupancy (sum count²); spreads the layout
+    spread_cells: int = 8             # approximate cells along the longer board axis
     step: float = 20.0                # max translate step (mm) at t_start
     buffer: float = 0.5               # keep-out gap (mm) enforced between footprints
     rotate_mode: str = "ortho"        # "ortho" (+/-90/180), "free" (any angle), "none"
@@ -377,6 +388,48 @@ class _Placer:
                 self._outline_poly = None
                 self._outline_bounds = None
 
+        # Density-spread grid.  When spread_weight > 0 the board area is divided
+        # into a grid and the sum of squared per-cell footprint counts is penalised,
+        # which drives the placement towards uniform density (Cauchy-Schwarz: the
+        # sum is minimised when all counts are equal).  Uses the outline bounds when
+        # available, otherwise falls back to the layout bounding box on first
+        # _rebuild_cache.  The grid is rectilinear with aspect ratio matched to the
+        # board so cells are approximately square.
+        self._cell_size_x: float = 0.0
+        self._cell_size_y: float = 0.0
+        self._cell_nx: int = 0
+        self._cell_ny: int = 0
+        self._fp_cell: list = []        # per-boxed-index current (ci, cj)
+        self._cell_counts: dict = {}    # (ci, cj) -> count
+        self._spread: float = 0.0
+        if params.spread_weight > 0:
+            ref_bounds = (self._outline_bounds if self._outline_bounds is not None
+                          else None)   # filled on first _rebuild_cache if None
+            if ref_bounds is not None:
+                self._init_spread_grid(ref_bounds)
+
+    def _init_spread_grid(self, bounds: tuple) -> None:
+        """Set up the density grid from *bounds* = ``(ox0, oy0, ox1, oy1)``."""
+        ox0, oy0, ox1, oy1 = bounds
+        bw = max(ox1 - ox0, 1e-6)
+        bh = max(oy1 - oy0, 1e-6)
+        nc = max(2, self.p.spread_cells)
+        if bw >= bh:
+            self._cell_nx = nc
+            self._cell_ny = max(2, round(nc * bh / bw))
+        else:
+            self._cell_ny = nc
+            self._cell_nx = max(2, round(nc * bw / bh))
+        self._cell_size_x = bw / self._cell_nx
+        self._cell_size_y = bh / self._cell_ny
+
+    def _fp_to_cell(self, fp) -> tuple:
+        """Return the ``(ci, cj)`` grid cell for footprint *fp*'s position."""
+        ox0, oy0 = self._outline_bounds[0], self._outline_bounds[1]
+        ci = min(self._cell_nx - 1, max(0, int((fp.x - ox0) / self._cell_size_x)))
+        cj = min(self._cell_ny - 1, max(0, int((fp.y - oy0) / self._cell_size_y)))
+        return (ci, cj)
+
     def _build_index(self) -> None:
         """Build the fixed connection list and footprint->connection incidence.
 
@@ -411,6 +464,27 @@ class _Placer:
         self._edge = self._edge_sum_from_bounds(self._bounds)
         self._containment = self._containment_sum(self._boxes)
         self._congestion = self._congestion_sum(self._bounds)
+        # Spread term: (re)build cell assignments from current footprint positions.
+        # If the grid wasn't set up in __init__ (no outline at that point), try now
+        # using the layout bounding box as the reference.
+        self._spread = 0.0
+        self._fp_cell = [(0, 0)] * len(self.boxed)
+        self._cell_counts = {}
+        if self.p.spread_weight > 0:
+            if self._cell_size_x == 0.0 and self._bounds:
+                # No outline → derive grid from current layout bounds
+                minx = min(b[0] for b in self._bounds)
+                miny = min(b[1] for b in self._bounds)
+                maxx = max(b[2] for b in self._bounds)
+                maxy = max(b[3] for b in self._bounds)
+                self._outline_bounds = (minx, miny, maxx, maxy)
+                self._init_spread_grid(self._outline_bounds)
+            if self._cell_size_x > 0:
+                for i, fp in enumerate(self.boxed):
+                    cell = self._fp_to_cell(fp)
+                    self._fp_cell[i] = cell
+                    self._cell_counts[cell] = self._cell_counts.get(cell, 0) + 1
+                self._spread = sum(c * c for c in self._cell_counts.values())
 
     def _congestion_sum(self, bounds) -> float:
         """Total congestion-field value sampled at the footprint centroids.
@@ -542,7 +616,8 @@ class _Placer:
                 + self.p.compact_weight * self._bbox
                 + self.p.edge_weight * self._edge
                 + self.p.containment_weight * self._containment
-                + self.p.congestion_weight * self._congestion)
+                + self.p.congestion_weight * self._congestion
+                + self.p.spread_weight * self._spread)
 
     def _overlap_touching(self, idxs: set[int], boxes) -> float:
         """Overlap area of every pair/fixed-text touching a footprint in `idxs`.
@@ -717,6 +792,19 @@ class _Placer:
         self._bbox = self._bbox_from_bounds()
         self._edge = self._edge_sum_from_bounds(self._bounds)
         self._congestion = self._congestion_sum(self._bounds)
+        # Spread: update cell occupancy for the moved footprints and recompute.
+        if self.p.spread_weight > 0 and self._cell_size_x > 0:
+            for fi in idxs:
+                old_cell = self._fp_cell[fi]
+                n = self._cell_counts.get(old_cell, 0) - 1
+                if n <= 0:
+                    self._cell_counts.pop(old_cell, None)
+                else:
+                    self._cell_counts[old_cell] = n
+                new_cell = self._fp_to_cell(self.boxed[fi])
+                self._cell_counts[new_cell] = self._cell_counts.get(new_cell, 0) + 1
+                self._fp_cell[fi] = new_cell
+            self._spread = sum(c * c for c in self._cell_counts.values())
 
     def _energy_components(self) -> tuple[float, float, float]:
         """Return the ``(ratsnest, overlap_area, bbox_area)`` energy terms."""
@@ -878,10 +966,14 @@ class _Placer:
             # the scalar totals, the moved boxes, and the lengths of the
             # connections incident on the moved footprints.
             touched_conns = {ci for i in idxs for ci in self._fp_conns.get(i, ())}
+            _sp_active = self.p.spread_weight > 0 and self._cell_size_x > 0
             cache_save = (self._rats, self._overlap, self._bbox,
                           self._edge, self._containment,
                           {i: (self._boxes[i], self._bounds[i]) for i in idxs},
-                          {ci: self._conn_len[ci] for ci in touched_conns})
+                          {ci: self._conn_len[ci] for ci in touched_conns},
+                          self._spread,
+                          {i: self._fp_cell[i] for i in idxs} if _sp_active else {},
+                          self._cell_counts.copy() if _sp_active else {})
             self._move_delta(idxs)
             E_new = self._cached_energy()
             dE = E_new - E
@@ -896,12 +988,17 @@ class _Placer:
                 self._restore(snap)
                 (self._rats, self._overlap, self._bbox,
                  self._edge, self._containment,
-                 saved_boxes, saved_lens) = cache_save
+                 saved_boxes, saved_lens,
+                 self._spread, saved_fp_cells, saved_cc) = cache_save
                 for i, (b, bnd) in saved_boxes.items():
                     self._boxes[i] = b
                     self._bounds[i] = bnd
                 for ci, ln in saved_lens.items():
                     self._conn_len[ci] = ln
+                if _sp_active:
+                    for i, cell in saved_fp_cells.items():
+                        self._fp_cell[i] = cell
+                    self._cell_counts = saved_cc
             recent.append(1 if accept else 0)
 
             it += 1
