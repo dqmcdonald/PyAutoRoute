@@ -119,7 +119,6 @@ class RunConfig:
     log: object = None
     auto: object = None
     auto_yes: object = None
-    auto_probe_time: object = None
     silk_labels: object = None
     keep_outline: object = None
     ground_plane: object = None
@@ -141,12 +140,11 @@ class ControlsPanel(ttk.Frame):
         on_run: callback(RunConfig) invoked when Run is pressed.
         on_stop: callback() invoked when Stop is pressed.
         on_apply: callback() invoked when Apply to Project is pressed.
-        on_suggest: callback() invoked when Suggest is pressed.
     """
 
     def __init__(self, parent,
                  on_run: Callable, on_stop: Callable,
-                 on_apply: Callable, on_suggest: Callable,
+                 on_apply: Callable,
                  on_open: Callable | None = None,
                  on_save_constraints: Callable | None = None,
                  **kw):
@@ -154,7 +152,6 @@ class ControlsPanel(ttk.Frame):
         self._on_run = on_run
         self._on_stop = on_stop
         self._on_apply = on_apply
-        self._on_suggest = on_suggest
         self._on_open = on_open
         self._on_save_constraints = on_save_constraints
 
@@ -206,7 +203,6 @@ class ControlsPanel(ttk.Frame):
         self._place_cw = tk.StringVar(value="0.02")
         self._place_ew = tk.StringVar(value="2.0")
         self._snapshots = tk.StringVar(value="0")
-        self._auto_probe_time = tk.StringVar(value="3.0")
         self._silk_labels = tk.BooleanVar(value=False)
         self._keep_outline = tk.BooleanVar(value=False)
         # Ground plane
@@ -471,12 +467,8 @@ class ControlsPanel(ttk.Frame):
                    command=self._save_settings).pack(side=tk.LEFT, padx=2)
         ttk.Button(sf2, text="Load Settings",
                    command=self._load_settings).pack(side=tk.LEFT, padx=2)
-        ttk.Button(sf2, text="Suggest…",
-                   command=self._on_suggest).pack(side=tk.LEFT, padx=2)
         add_tooltip(sf2.winfo_children()[0], "Save current settings to an .ini file.")
         add_tooltip(sf2.winfo_children()[1], "Load settings from an .ini file.")
-        add_tooltip(sf2.winfo_children()[2],
-                    "Run --auto to probe grid/via settings and suggest the best.")
 
         adv_f = ttk.Frame(parent)
         adv_f.pack(fill=tk.X, padx=6, pady=(2, 6))
@@ -626,7 +618,6 @@ class ControlsPanel(ttk.Frame):
         _sv("place_overlap_weight", self._place_ow)
         _sv("place_compact_weight", self._place_cw)
         _sv("place_edge_weight", self._place_ew)
-        _sv("auto_probe_time", self._auto_probe_time)
         if "quiet" in d:
             self._quiet.set(bool(d["quiet"]))
         if "silk_labels" in d:
@@ -770,8 +761,8 @@ class ControlsPanel(ttk.Frame):
         add_tooltip(e_stitch,
                     "Pitch for a regular grid of stitching vias. Leave empty to disable.")
 
-        # ── Output & Suggest (full width) ──
-        os_lf = ttk.LabelFrame(outer, text="Output & Suggest", padding=(8, 4))
+        # ── Output (full width) ──
+        os_lf = ttk.LabelFrame(outer, text="Output", padding=(8, 4))
         os_lf.pack(fill=tk.X, pady=(0, 6))
         os_lf.columnconfigure(1, weight=1)
         os_lf.columnconfigure(3, weight=1)
@@ -783,12 +774,6 @@ class ControlsPanel(ttk.Frame):
         cb_q = ttk.Checkbutton(os_lf, text="Quiet (no progress)", variable=self._quiet)
         cb_q.grid(row=0, column=2, columnspan=2, sticky=tk.W, padx=4, pady=2)
         add_tooltip(cb_q, "Suppress live progress output.")
-
-        ttk.Label(os_lf, text="Auto probe time (s):").grid(
-            row=1, column=0, sticky=tk.W, padx=4, pady=2)
-        e_apt = ttk.Entry(os_lf, textvariable=self._auto_probe_time, width=10)
-        e_apt.grid(row=1, column=1, sticky=tk.EW, padx=4, pady=2)
-        add_tooltip(e_apt, "Annealing seconds per probed setting when using Suggest.")
 
         ttk.Button(outer, text="OK", command=dlg.destroy).pack(pady=(4, 0))
         dlg.transient(self)
@@ -892,7 +877,6 @@ class ControlsPanel(ttk.Frame):
             log=None,
             auto=False,
             auto_yes=False,
-            auto_probe_time=_f(self._auto_probe_time, 3.0),
             silk_labels=self._silk_labels.get(),
             keep_outline=self._keep_outline.get(),
             ground_plane=self._ground_plane.get(),
@@ -948,7 +932,6 @@ class ControlsPanel(ttk.Frame):
             log=None,
             auto=False,
             auto_yes=False,
-            auto_probe_time=cfg.auto_probe_time or 3.0,
             silk_labels=cfg.silk_labels or False,
             keep_outline=cfg.keep_outline or False,
             ground_plane=cfg.ground_plane or False,

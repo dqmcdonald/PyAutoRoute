@@ -27,6 +27,22 @@ back for their own residual TODOs.
 >   shipped; see [`footprint-interaction-plan.md`](footprint-interaction-plan.md).
 > - **Differential pair routing** (`--diff-pairs`, `--diff-pair-gap`) — shipped in
 >   0.38.0; see [`diffpair-plan.md`](diffpair-plan.md). Closes item #2 below.
+> - **`--scatter` + ranked cycle summary** — shipped in 0.45.0. `--scatter`
+>   randomises all unlocked footprint positions/rotations before each `--cycles`
+>   pass, diversifying annealer starting layouts; `--cycles` now prints a ranked
+>   energy table at the end (winner marked ★). Also exposed in the GUI as a
+>   *Scatter start* checkbox.
+> - **Placement polish** (`--place-polish`) — shipped in 0.46.0. After annealing
+>   settles, a steepest-descent pass (central-difference gradient, backtracking
+>   line search) relaxes close contacts and slides parts to their local energy
+>   minimum — monotone, so it can never worsen the annealed result. Knobs:
+>   `--place-polish-iters`, `--place-polish-eps`, `--place-polish-time`. GUI
+>   controls added shortly after. See [`placement-polish-plan.md`](placement-polish-plan.md).
+> - **Decoupling-cap marking** (`Autoroute-decouple`, `--place-decouple-weight`)
+>   — shipped in 0.47.0. A footprint property (`auto` or explicit IC ref) pulls a
+>   cap toward its IC during `--place`; IC resolved by searching the cap's power
+>   net for the nearest IC-like part. Settable via GUI right-click menu.
+>   See [`decoupling-cap-plan.md`](decoupling-cap-plan.md).
 
 ## Context
 
@@ -183,12 +199,13 @@ pipeline in a daemon thread (`worker.py:_pipeline`) with live render, energy plo
 (`plots.py`), metrics, cooperative cancel, and a working Apply-to-Project with
 timestamped backup (`app.py:348`). The remaining gaps are targeted:
 
-### 10. Wire up the "Suggest" button
+### 10. ~~Wire up the "Suggest" button~~ — **removed**
 
-`app.py:_suggest` (`:385`) is a placeholder dialog that does **not** call
-`tune`/`--auto`; `RunConfig.auto` is hardcoded `False` (`controls.py:588`).
-Connecting it to the existing `tune.sweep` probe (the same path `--auto` uses)
-would make the advertised feature real.
+The Suggest… button and its associated `_suggest` placeholder, `on_suggest`
+callback parameter, `auto_probe_time` field in `RunConfig`, and the
+"Auto probe time" entry in the Advanced dialog were all removed (2026-06-05).
+The feature was never wired to `tune.sweep` and was deemed not practical enough
+to implement.
 
 ### 11. Share one pipeline between CLI and GUI
 

@@ -1,17 +1,9 @@
 # Plan: decoupling capacitors — mark a cap, auto-find its IC, keep them together
 
-> **Status: 📋 Proposed.** A design artefact to be reviewed before code, following
-> the same plan-doc convention as
-> [`footprint-interaction-plan.md`](footprint-interaction-plan.md) (the GUI
-> right-click constraint menu — already shipped) and
-> [`placement-improvements-plan.md`](placement-improvements-plan.md): reviewed,
-> then implemented in phases, each shipping with docs + a version bump + a
-> `CHANGES.md` entry (per `CLAUDE.md`).
->
-> Target version: **next minor** (a major addition — new property, GUI action,
-> placement energy term). Sequence after [`placement-polish-plan.md`](placement-polish-plan.md)
-> if both land; they touch the same cache helpers (see *Interaction with the
-> polish plan*).
+> **Status: ✅ Shipped in 0.47.0 (2026-06-05).** Landed after
+> [`placement-polish-plan.md`](placement-polish-plan.md) as intended. See
+> `CHANGES.md` for the full entry. The implementation followed the plan below;
+> no major deviations.
 
 ## Motivation
 

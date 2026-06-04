@@ -1,13 +1,8 @@
 # Plan: placement polish — gradient descent refinement after annealing
 
-> **Status: 📋 Proposed.** A design artefact to be reviewed before code, following
-> the same plan-doc convention as
-> [`place-feature-plan.md`](place-feature-plan.md) and
-> [`placement-improvements-plan.md`](placement-improvements-plan.md): reviewed,
-> then implemented in phases, each shipping with docs + a version bump + a
-> `CHANGES.md` entry (per `CLAUDE.md`).
->
-> Target version: **0.45.0** (a major addition — new optimisation stage + CLI flag).
+> **Status: ✅ Shipped in 0.46.0 (2026-06-05).** GUI controls for the polish pass
+> were added shortly after in the same minor. See `CHANGES.md` for the full
+> entry. The implementation followed the plan below; no major deviations.
 
 ## Motivation
 

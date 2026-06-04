@@ -193,7 +193,6 @@ class App:
             on_run=self._start_run,
             on_stop=self._cancel_run,
             on_apply=self._apply_to_project,
-            on_suggest=self._suggest,
             on_open=self._open_board,
             on_save_constraints=self._save_constraints,
         )
@@ -414,21 +413,6 @@ class App:
                             f"Replaced {orig.name}.\n"
                             f"Backup: {bak.name}")
         self._status_var.set(f"Applied — backup: {bak.name}")
-
-    # ── suggest (--auto) ─────────────────────────────────────────────
-
-    def _suggest(self) -> None:
-        inp = self._controls._full_input_path()
-        if not inp:
-            messagebox.showwarning("No board", "Open a board first.")
-            return
-        messagebox.showinfo(
-            "Suggest",
-            "Suggest will probe several grid/via combinations and recommend "
-            "the best settings.\n\nThis runs in the background and may take "
-            "~30–60 seconds for large boards.\n\n"
-            "(Full implementation: apply suggested grid/via-weight to controls "
-            "and show results.)")
 
     # ── board open ────────────────────────────────────────────────────
 
