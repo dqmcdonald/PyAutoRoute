@@ -1046,6 +1046,46 @@ def _save_cycle(args, rules, rep, out_path: Path, cr, cycle_num: int,
         print(f"  {msg}")
 
 
+def _print_cycle_ranking(rep: Reporter, results: list, best,
+                         base_seed: int, quiet: bool) -> None:
+    """Print and log a ranked summary of all cycle results, sorted by energy.
+
+    Args:
+        rep: the reporter (for logging).
+        results: the list of `CycleResult` from all cycles.
+        best: the winning `CycleResult` (marked with ★).
+        base_seed: the seed of cycle 1 (`args.seed`), used to recover the
+            original cycle number from each result's seed.
+        quiet: if True, only log — do not print to the screen.
+    """
+    ranked = sorted(results, key=lambda cr: cr.score)
+    n = len(ranked)
+    rank_w = max(len(str(n)), 4)
+    cycle_w = max(len(str(n)), 5)
+    n_conns = ranked[0].n_conns if ranked else 0
+    routed_w = max(len(f"{n_conns}/{n_conns}"), 6)
+
+    header = (f"  {'rank':>{rank_w}}  {'cycle':>{cycle_w}}  "
+              f"{'routed':>{routed_w}}  {'energy':>9}  {'vias':>4}")
+    lines = ["cycle ranking (by energy):", header]
+    for rank, cr in enumerate(ranked, 1):
+        cycle_num = cr.seed - base_seed + 1
+        routed_str = f"{cr.routed}/{cr.n_conns}"
+        best_tag = "  ★" if cr is best else ""
+        unr_tag = f"  ({cr.unrouted} unrouted)" if cr.unrouted else ""
+        row = (f"  {rank:>{rank_w}}  {cycle_num:>{cycle_w}}  "
+               f"{routed_str:>{routed_w}}  {cr.energy:>9.1f}  {cr.vias:>4}"
+               f"{best_tag}{unr_tag}")
+        lines.append(row)
+
+    for ln in lines:
+        rep.log(ln)
+    if not quiet:
+        print()
+        for ln in lines:
+            print(f"  {ln}")
+
+
 def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
                 cycles, init_stats=None) -> int:
     """Best-of-cycles: keep the best-*routing* of N independent place+route runs.
@@ -1192,6 +1232,7 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
         rep.tag = ""
 
     best = select_best(results)
+    _print_cycle_ranking(rep, results, best, base_seed, args.quiet)
     best_line = (f"best of {cycles} cycles: seed {best.seed} — "
                  f"routed {best.routed}/{best.n_conns}, energy {best.energy:.1f}, "
                  f"{best.vias} vias"
