@@ -1145,16 +1145,20 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
             def _place_prog(it, total, e, b, t, acc, _t=_cy_t):
                 if _t[0] is None:
                     _t[0] = time.monotonic()
+                ob = select_best(results).energy if results else None
                 rep.placing(it, total, e, b, t, acc,
                             elapsed=time.monotonic() - _t[0],
-                            budget=args.place_time or 0.0)
+                            budget=args.place_time or 0.0,
+                            overall_best=ob)
 
             def _anneal_prog(it, total, r, u, e, b, t, acc, _t=_cy_t):
                 if _t[1] is None:
                     _t[1] = time.monotonic()
+                ob = select_best(results).energy if results else None
                 rep.annealing(it, total, r, u, e, b, t, acc,
                               elapsed=time.monotonic() - _t[1],
-                              budget=args.routing_time or 0.0)
+                              budget=args.routing_time or 0.0,
+                              overall_best=ob)
 
             hooks = CycleHooks(
                 phase_cb=lambda n: rep.phase(rep.tag + n),
