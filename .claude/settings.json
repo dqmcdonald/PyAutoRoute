@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytest *)",
+      "Bash(/Users/que/venvs/tf/bin/pytest *)"
+    ]
+  }
+}
