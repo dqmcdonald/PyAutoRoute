@@ -246,6 +246,17 @@ the best placement. Energy
   placement in the existing board shape rather than regenerating a bounding box;
   because it (and the keep-outline edge term) depend on absolute position,
   `place` skips `recenter` in this mode. Zero otherwise.
+- **Σ count²** — only when `--place-spread-weight W` is set (default 0). The
+  board is divided into a grid (sized by `spread_cells`, default 8 along the
+  longer axis) and `Σ count²` across cells is penalised, which by
+  Cauchy-Schwarz is minimised when all counts are equal — driving a uniform
+  footprint distribution. Addresses the cluster-in-corner failure mode with
+  `--keep-outline` and locked corner parts: the locked parts pin
+  `bbox_area` to a constant, leaving `compact_weight` with zero gradient;
+  `spread_weight` provides the spreading force instead. Incremental: each
+  move decrements the old cell's count, increments the new one, and
+  recomputes the sum-of-squares in O(1). Zero (and grid not allocated) when
+  `spread_weight = 0`.
 - **Σ field(centroid)** — only under **congestion feedback** (`--place-feedback`),
   when a `router.CongestionField` from a previous cycle's routing is supplied
   (`PlaceParams.congestion_field`/`congestion_weight`). Each footprint's body-box

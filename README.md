@@ -324,14 +324,16 @@ Placement options (all also work with `--place-only`):
 | `--place-margin MM` | Margin around the parts for the regenerated outline (default 2). |
 | `--keep-outline` | Keep the board's existing `Edge.Cuts` and contain the footprints within it, instead of regenerating a bounding-box outline (needs a closed outline; ignored otherwise). |
 | `--place-overlap-weight W` / `--place-compact-weight W` | Energy weights for overlap area and layout compactness. |
+| `--place-spread-weight W` | Density-uniformity weight (default 0 = off). Divides the board into a grid and penalises Σ count² across cells, driving a uniform footprint distribution. Useful with `--keep-outline` and locked corner parts, where `--place-compact-weight` is inert (the bounding box is pinned to the board size). A value of ~3.0 is a good starting point. |
 | `--place-edge-weight W` | Pull/alignment strength (cost per mm from the target edge) for footprints flagged `Autoroute-edge=<side>` (default 2.0). Higher pulls edge parts out harder and aligns them flatter against the edge. |
 | `--place-feedback` / `--congestion-weight W` | Congestion-aware re-placement across cycles (needs `--cycles N`); see *Congestion feedback* above. |
 
 The live placement progress shows the temperature, current/best energy, and the
 recent **acceptance ratio** (`acc=…%`, which falls as the schedule cools); the
 end-of-placement summary reports the acceptance ratio and an energy breakdown
-(ratsnest length, overlap area, bounding-box area, and — when any footprint is
-flagged `Autoroute-edge` — the total edge distance).
+(ratsnest length, overlap area, bounding-box area, density-spread term when
+active, and — when any footprint is flagged `Autoroute-edge` — the total edge
+distance).
 
 It is experimental: it optimises placement heuristically and does not understand
 mechanical/thermal intent, so review the result. Because it rewrites footprint
