@@ -107,6 +107,7 @@ class RunConfig:
     place_swap_prob: object = None
     place_runs: object = None
     cycles: object = None
+    scatter_start: object = None
     place_feedback: object = None
     congestion_weight: object = None
     snapshots: object = None
@@ -176,6 +177,7 @@ class ControlsPanel(ttk.Frame):
         self._place_buffer = tk.StringVar(value="")
         # Best-of-cycles + congestion feedback (place+route outer loop)
         self._cycles = tk.StringVar(value="1")
+        self._scatter_start = tk.BooleanVar(value=False)
         self._place_feedback = tk.BooleanVar(value=False)
         self._congestion_weight = tk.StringVar(value="5.0")
         # Output
@@ -368,9 +370,20 @@ class ControlsPanel(ttk.Frame):
              "Run N independent place+route cycles and keep the one that *routes* "
              "best (fewest unrouted, then lowest energy). 1 = single pass.")
 
+        self._scatter_cb = ttk.Checkbutton(
+            cyc_f, text="Scatter start", variable=self._scatter_start)
+        self._scatter_cb.grid(row=1, column=0, columnspan=2, sticky=tk.W,
+                              padx=4, pady=2)
+        add_tooltip(self._scatter_cb,
+                    "With Cycles > 1: randomise every unlocked footprint's position "
+                    "and rotation before each cycle's placement pass, so the annealer "
+                    "explores completely different starting layouts rather than always "
+                    "refining the as-designed configuration. Increases diversity; pair "
+                    "with a generous placement budget.")
+
         self._feedback_cb = ttk.Checkbutton(
             cyc_f, text="Congestion feedback", variable=self._place_feedback)
-        self._feedback_cb.grid(row=1, column=0, columnspan=2, sticky=tk.W,
+        self._feedback_cb.grid(row=2, column=0, columnspan=2, sticky=tk.W,
                                padx=4, pady=2)
         add_tooltip(self._feedback_cb,
                     "With Cycles > 1: feed each cycle's routing back into the next "
@@ -378,7 +391,7 @@ class ControlsPanel(ttk.Frame):
                     "struggled (PathFinder-style). Cycles then run sequentially.")
 
         cw_e = _entry(cyc_f, self._congestion_weight, width=8)
-        _row(cyc_f, 2, "Congestion wt:", cw_e,
+        _row(cyc_f, 3, "Congestion wt:", cw_e,
              "With Congestion feedback: how hard to spread parts out of the routed "
              "hot zones (cost per unit congestion at a footprint centroid; "
              "default 5.0).")
@@ -539,6 +552,8 @@ class ControlsPanel(ttk.Frame):
         _sv("place_runs", self._place_runs)
         _sv("cycles", self._cycles)
         _sv("congestion_weight", self._congestion_weight)
+        if "scatter_start" in d:
+            self._scatter_start.set(bool(d["scatter_start"]))
         if "place_feedback" in d:
             self._place_feedback.set(bool(d["place_feedback"]))
         _sv("place_margin", self._place_margin)
@@ -819,6 +834,7 @@ class ControlsPanel(ttk.Frame):
             place_swap_prob=_f(self._place_swap_prob, 0.2),
             place_runs=_i(self._place_runs, 1),
             cycles=_i(self._cycles, 1),
+            scatter_start=self._scatter_start.get(),
             place_feedback=self._place_feedback.get(),
             congestion_weight=_f(self._congestion_weight, 5.0),
             snapshots=0,
@@ -870,6 +886,7 @@ class ControlsPanel(ttk.Frame):
             place_swap_prob=cfg.place_swap_prob or 0.2,
             place_runs=cfg.place_runs or 1,
             cycles=cfg.cycles or 1,
+            scatter=cfg.scatter_start or False,
             place_feedback=cfg.place_feedback or False,
             congestion_weight=cfg.congestion_weight or 5.0,
             snapshots=0,

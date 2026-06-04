@@ -219,6 +219,9 @@ def run_cycle(input_path, rules, pitch: float, place_params, route_params, *,
     h = hooks or CycleHooks()
     board = pcb.load_board(input_path)
 
+    if place_params.scatter_start:
+        placement.scatter_footprints(board, seed)
+
     pp = replace(place_params, seed=seed)
     h.phase(f"placing {len(board.footprints)} footprints")
     placement.place(board, pp, on_progress=h.place_progress, cancel=cancel)

@@ -276,6 +276,7 @@ class PlaceParams:
     # `stall_ratio <= 0` (the default), so the full budget is honoured.
     stall_ratio: float = 0.02
     stall_patience: int = 0
+    scatter_start: bool = False         # scatter unlocked footprints randomly before annealing
 
 
 @dataclass
@@ -1074,6 +1075,52 @@ def recenter(board: Board) -> tuple[float, float]:
         fp.y += dy
         fp.sync_pads()
     return dx, dy
+
+
+def scatter_footprints(board: Board, seed: int) -> None:
+    """Randomly scatter unlocked footprints across the board area.
+
+    Gives each ``--cycles`` run a genuinely different starting layout so the
+    placement annealer explores different basins of attraction rather than always
+    refining the as-designed configuration.  Positions are drawn uniformly within
+    the board outline's bounding box (or the current layout bounding box when no
+    real outline exists).  Rotations are sampled from {0, 90, 180, 270}°. Locked
+    footprints are untouched.
+
+    Args:
+        board: the board to scatter (mutated in place).
+        seed: RNG seed for reproducibility.
+    """
+    import random
+
+    movable = [fp for fp in board.footprints if not fp.locked]
+    if not movable:
+        return
+
+    try:
+        from . import geometry
+        if board.outline and not board.outline_synthesized:
+            poly = geometry.outline_to_polygon(board.outline)
+            ox0, oy0, ox1, oy1 = poly.bounds
+        else:
+            raise ValueError("no real outline")
+    except Exception:
+        xs = [fp.x for fp in movable]
+        ys = [fp.y for fp in movable]
+        span_x = max(xs) - min(xs) or 10.0
+        span_y = max(ys) - min(ys) or 10.0
+        ox0 = min(xs) - span_x * 0.1
+        oy0 = min(ys) - span_y * 0.1
+        ox1 = max(xs) + span_x * 0.1
+        oy1 = max(ys) + span_y * 0.1
+
+    rng = random.Random(seed)
+    ortho = [0.0, 90.0, 180.0, 270.0]
+    for fp in movable:
+        fp.x = rng.uniform(ox0, ox1)
+        fp.y = rng.uniform(oy0, oy1)
+        fp.angle = rng.choice(ortho)
+        fp.sync_pads()
 
 
 def place(board: Board, params: PlaceParams | None = None,

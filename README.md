@@ -107,6 +107,7 @@ The original file is never modified unless you pass `--in-place` — a routed co
 | `--jobs N`, `-j N` | Run the `--runs` trials (or `--cycles` cycles) across `N` worker processes (parallel best-of-N). `0` uses every CPU (capped at the trial/cycle count). `1` (default) keeps the sequential path with live progress. Speedup ≈ `min(count, cores)`. In parallel mode live progress is suppressed (it can't interleave cleanly across processes); each trial/cycle logs a one-line completion. |
 | `--cycles N` | **With `--place`:** run `N` independent place+route cycles and keep the one that *routes* best — fewest unrouted, then lowest energy — selecting on the true objective rather than placement energy alone (default 1). Parallelised by `--jobs`. See *Best-of-cycles* below. |
 | `--save-cycles` | **With `--cycles`:** write each cycle's result to a separate file (`<output>_cycle_NNofMM.kicad_pcb`) as it completes, so you can inspect intermediate results while the job is still running. Includes the ground plane zone boundary (if `--ground-plane`) but skips the zone fill; open in KiCad to refill. |
+| `--scatter` | **With `--cycles`:** randomise the position and rotation of every unlocked footprint before each cycle's placement pass, giving the annealer a completely fresh starting layout rather than always refining the as-designed configuration. Increases diversity across cycles at the cost of needing more placement iterations to recover a good layout; pair with a generous `--place-time` or `--place-iters` budget. |
 | `--place-feedback` | **With `--cycles N`:** feed each cycle's routing back into the next placement as a *congestion field*, spreading footprints out of the cells where routing struggled (PathFinder-style). Cycles then run sequentially; the best-routing cycle is still kept, so feedback can only help. Opt-in and experimental. See *Congestion feedback* below. |
 | `--congestion-weight W` | With `--place-feedback`: how hard to spread parts out of the routed hot zones (mm-cost per unit congestion at a footprint centroid; default 5.0). |
 | `--auto` | Probe a few grid/via settings on this board, pick the best, and (on a terminal) ask to confirm before routing with them. `--auto-yes` skips the prompt; `--auto-probe-time S` sets the budget per probed setting; `--auto-time-weight W` (default 1.0) adds a score penalty per second of routing time so that a marginally finer grid doesn't automatically win over a faster coarser one — set to 0 to rank by quality only. |
@@ -158,6 +159,16 @@ avoid an N×M blow-up, each cycle runs **one** placement and **one** routing;
 routing energy) remain available as **inner** loops for power users. Cycles are
 independent, so `--jobs N` parallelises them across processes exactly like
 `--runs`. `--cycles 1` (the default) is unchanged from today.
+
+Add `--scatter` to randomise every unlocked footprint's position and rotation
+before each cycle's placement pass. Without it all cycles start from the
+as-designed layout and the annealer explores nearby configurations; `--scatter`
+gives each cycle a completely fresh random starting layout so the annealer can
+explore basins of attraction it would otherwise never reach. The trade-off is that
+a scattered start is far from feasible — pair it with a generous `--place-time`
+or `--place-iters` budget so the annealer has room to recover. At the end of a
+`--cycles` run a ranked summary table is printed showing each cycle's result in
+energy order, with the winner marked ★.
 
 #### Congestion feedback (`--place-feedback`, with `--cycles`)
 
@@ -331,6 +342,7 @@ Placement options (all also work with `--place-only`):
 | `--place-overlap-weight W` / `--place-compact-weight W` | Energy weights for overlap area and layout compactness. |
 | `--place-spread-weight W` | Density-uniformity weight (default 0 = off). Divides the board into a grid and penalises Σ count² across cells, driving a uniform footprint distribution. Useful with `--keep-outline` and locked corner parts, where `--place-compact-weight` is inert (the bounding box is pinned to the board size). A value of ~3.0 is a good starting point. |
 | `--place-edge-weight W` | Pull/alignment strength (cost per mm from the target edge) for footprints flagged `Autoroute-edge=<side>` (default 2.0). Higher pulls edge parts out harder and aligns them flatter against the edge. |
+| `--scatter` | Randomise footprint starting positions before each cycle's placement pass; see *Best-of-cycles* above. |
 | `--place-feedback` / `--congestion-weight W` | Congestion-aware re-placement across cycles (needs `--cycles N`); see *Congestion feedback* above. |
 
 The live placement progress shows the temperature, current/best energy, and the
