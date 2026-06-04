@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.45.0
+
+- **New**: optional post-anneal placement **polish** (`--place-polish`). After simulated annealing settles on its best placement, a steepest-descent refinement pass relaxes close contacts and slides parts into their local energy minimum. It estimates each movable unit's translation gradient by central finite differences (reusing the incremental energy cache) and takes backtracking-line-search steps, committing only strictly-improving moves — so it is **monotone** and can never worsen the annealed result. Translations only (angles left to annealing); locks and KiCad groups are respected. Tuning knobs: `--place-polish-iters` (max descent sweeps, default 20), `--place-polish-eps` (finite-difference step, default 0.05 mm), `--place-polish-time` (optional wall-clock cap). Off by default. See `plans/placement-polish-plan.md`.
+
 ## 0.44.1
 
 - **Fix**: board-level silkscreen `gr_text` keep-out boxes were computed as squares using the circumscribed-circle half-diagonal, producing a ~30× area overestimate for wide, flat title-block text (e.g. a 52-character label at 1.5 mm font height produced a 56×56 mm square keep-out instead of a 54×2 mm rectangle). The keep-out now uses a tight rotated rectangle matching the actual text extent, so a long title block no longer blocks a large fraction of the board from footprint placement.

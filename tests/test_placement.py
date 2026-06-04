@@ -267,6 +267,92 @@ def test_place_no_movable_footprints_is_noop():
     assert res.moved == 0 and res.iterations == 0
 
 
+# --- post-anneal polish (steepest descent) -----------------------------------
+
+def test_polish_disabled_reports_zero():
+    # Default (polish off): no descent runs and the metrics stay at zero.
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0")])
+    b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0")])
+    board = _board([a, b])
+    res = placement.place(board, placement.PlaceParams(iters=100, seed=0))
+    assert res.polish_sweeps == 0
+    assert res.polish_improvement == 0.0
+
+
+def test_polish_never_worsens_energy_vs_no_polish():
+    # Polish runs after the SA loop and consumes no RNG, so the annealing
+    # trajectory is identical with and without it; being monotone, the polished
+    # energy can only be lower (or equal).
+    def make():
+        a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        b = _fp("U2", 21.5, 20.5, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        c = _fp("U3", 45.0, 45.0, [(-2.0, 0.0, "N1"), (2.0, 0.0, "N0")])
+        return _board([a, b, c])
+
+    no = placement.place(make(), placement.PlaceParams(
+        iters=300, seed=4, overlap_weight=200.0))
+    yes = placement.place(make(), placement.PlaceParams(
+        iters=300, seed=4, overlap_weight=200.0, polish=True, polish_iters=30))
+    assert yes.polish_sweeps > 0
+    assert yes.polish_improvement >= 0.0
+    assert yes.best_energy <= no.best_energy + 1e-9
+    assert yes.best_energy <= yes.start_energy + 1e-6
+
+
+def test_polish_relaxes_close_contact():
+    # Polish alone (no annealing) must separate two overlapping parts via
+    # gradient descent: the overlap repulsion dominates until they sit ~buffer
+    # apart. Driving _Placer._polish directly isolates it from SA randomness.
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    b = _fp("U2", 21.0, 20.5, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    board = _board([a, b])
+    assert _max_body_overlap([a, b]) > 0.0
+    placer = placement._Placer(board, placement.PlaceParams(
+        overlap_weight=200.0, polish=True, polish_iters=80))
+    placer._rebuild_cache()
+    sweeps, improvement = placer._polish()
+    assert sweeps > 0
+    assert improvement >= 0.0
+    assert _max_body_overlap([a, b]) < 1e-4
+
+
+def test_polish_respects_locks():
+    fixed = _fp("LOCK", 40.0, 40.0,
+                [(0.0, 0.0, "N0"), (2.0, 0.0, "N1")], locked=True)
+    a = _fp("U1", 41.0, 40.5, [(0.0, 0.0, "N0"), (2.0, 0.0, "N2")])
+    board = _board([fixed, a])
+    placement.place(board, placement.PlaceParams(
+        iters=10, seed=1, overlap_weight=200.0, polish=True, polish_iters=40))
+    assert not fixed.moved
+    assert (fixed.x, fixed.y) == (40.0, 40.0)
+
+
+def test_polish_preserves_group_rigidity():
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0")], group_id="G")
+    b = _fp("U2", 26.0, 20.0, [(-2.0, 0.0, "N1")], group_id="G")
+    other = _fp("U3", 50.0, 50.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    board = _board([a, b, other])
+    rel = (b.x - a.x, b.y - a.y)
+    a_ang, b_ang = a.angle, b.angle
+    placement.place(board, placement.PlaceParams(
+        iters=5, seed=2, polish=True, polish_iters=40, rotate_mode="none"))
+    # the group translates as a rigid body: internal offset and angles unchanged
+    assert math.isclose(b.x - a.x, rel[0], abs_tol=1e-9)
+    assert math.isclose(b.y - a.y, rel[1], abs_tol=1e-9)
+    assert a.angle == a_ang and b.angle == b_ang
+
+
+def test_polish_deterministic():
+    def run():
+        a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        b = _fp("U2", 21.0, 20.5, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        board = _board([a, b])
+        res = placement.place(board, placement.PlaceParams(
+            iters=200, seed=3, polish=True, polish_iters=20))
+        return res.best_energy, round(sum(p.cx + p.cy for p in board.pads), 6)
+    assert run() == run()
+
+
 # --- pcb parsing of lock / overlap property ----------------------------------
 
 def _board_from_text(text):

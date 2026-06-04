@@ -103,3 +103,31 @@ def test_cli_write_config_default_name(tmp_path):
     cfg = tmp_path / "Test5.ini"
     assert cfg.exists()
     assert "grid = 0.2" in cfg.read_text()
+
+
+# --- placement polish CLI flags ---------------------------------------------
+
+def test_polish_flags_parse():
+    parser = autoroute.build_parser()
+    args = parser.parse_args([
+        str(_TEST_BOARD), "--place", "--place-polish",
+        "--place-polish-iters", "7", "--place-polish-eps", "0.02",
+        "--place-polish-time", "1.5"])
+    assert args.place_polish is True
+    assert args.place_polish_iters == 7
+    assert args.place_polish_eps == 0.02
+    assert args.place_polish_time == 1.5
+
+
+def test_polish_flag_default_off():
+    args = autoroute.build_parser().parse_args([str(_TEST_BOARD)])
+    assert args.place_polish is False
+
+
+def test_polish_bad_values_error():
+    with pytest.raises(SystemExit):
+        autoroute.main([str(_TEST_BOARD), "--place-only", "--place-polish-eps", "0"])
+    with pytest.raises(SystemExit):
+        autoroute.main([str(_TEST_BOARD), "--place-only", "--place-polish-iters", "-1"])
+    with pytest.raises(SystemExit):  # polish needs --place / --place-only
+        autoroute.main([str(_TEST_BOARD), "--place-polish"])

@@ -538,7 +538,13 @@ def _place_params_from_args(args, board, rules, rep):
         t_start=args.place_temps[0], t_end=args.place_temps[1],
         step=args.place_step, rotate_mode=args.place_rotate,
         swap_prob=args.place_swap_prob,
-        spread_weight=getattr(args, "place_spread_weight", 0.0))
+        spread_weight=getattr(args, "place_spread_weight", 0.0),
+        polish=getattr(args, "place_polish", False),
+        polish_iters=getattr(args, "place_polish_iters",
+                             placement.PlaceParams.polish_iters),
+        polish_time=getattr(args, "place_polish_time", None),
+        polish_eps=getattr(args, "place_polish_eps",
+                           placement.PlaceParams.polish_eps))
     return pp, keep_outline
 
 
@@ -662,6 +668,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
                    f"{pout.moved} moved, energy "
                    f"{pout.start_energy:.1f} -> {pout.best_energy:.1f}"
                    + (f"  (best of {place_runs})" if place_runs > 1 else ""))
+        if pout.polish_sweeps:
+            summary += (f"\n  polish: {pout.polish_sweeps} sweeps, "
+                        f"-{pout.polish_improvement:.1f} energy")
         breakdown = (f"placement: ratsnest {pout.final_ratsnest:.1f} mm, "
                      f"overlap {pout.final_overlap:.1f} mm2, "
                      f"bbox {pout.final_bbox:.0f} mm2")
@@ -1925,6 +1934,22 @@ def build_parser() -> argparse.ArgumentParser:
                         "iteration (0–1); higher values explore position swaps more "
                         "aggressively — useful for boards with many interchangeable "
                         "ICs (default %(default)s)")
+    p.add_argument("--place-polish", action="store_true",
+                   help="after annealing, refine the placement by steepest-descent "
+                        "gradient descent — relaxes close contacts and slides parts "
+                        "into their local energy minimum. Monotone (never worsens "
+                        "the annealed result); translations only")
+    p.add_argument("--place-polish-iters", type=int,
+                   default=placement.PlaceParams.polish_iters, metavar="N",
+                   help="max polish descent sweeps over all movable units "
+                        "(with --place-polish; default %(default)s)")
+    p.add_argument("--place-polish-time", type=float, default=None, metavar="S",
+                   help="optional wall-clock cap (s) for the polish stage "
+                        "(with --place-polish)")
+    p.add_argument("--place-polish-eps", type=float,
+                   default=placement.PlaceParams.polish_eps, metavar="MM",
+                   help="finite-difference step (mm) for the polish gradient "
+                        "(with --place-polish; default %(default)s)")
     p.add_argument("--place-runs", type=int, default=1, metavar="N",
                    help="run placement N times (different seeds) and keep the "
                         "lowest-energy placement (default 1)")
@@ -2136,6 +2161,14 @@ def main(argv=None) -> int:
         parser.error("--place-temps requires START > END > 0")
     if args.place_step <= 0:
         parser.error("--place-step must be > 0")
+    if args.place_polish_iters < 0:
+        parser.error("--place-polish-iters must be >= 0")
+    if args.place_polish_eps <= 0:
+        parser.error("--place-polish-eps must be > 0")
+    if args.place_polish_time is not None and args.place_polish_time <= 0:
+        parser.error("--place-polish-time must be > 0")
+    if (args.place_polish and not (args.place or args.place_only)):
+        parser.error("--place-polish requires --place or --place-only")
     if args.runs < 1:
         parser.error("--runs must be >= 1")
     if args.jobs < 0:
