@@ -200,6 +200,7 @@ class Footprint:
     edge_affinity: str | None = None   # placement: pull to board edge; None | any | left | right | top | bottom
     uuid: str = ""                     # footprint's KiCad UUID (used to resolve native group membership)
     group_id: str | None = None        # UUID of the KiCad group this footprint belongs to, or None
+    decouple_target: str | None = None  # decoupling cap: IC refdes it serves, "auto", or None
 
     @property
     def moved(self) -> bool:
@@ -568,6 +569,30 @@ def _footprint_edge_affinity(fp_node: SList) -> str | None:
     return None
 
 
+def _footprint_decouple(fp_node: SList) -> str | None:
+    """Return a decoupling cap's associated-IC target, or ``None``.
+
+    Reads the user-defined ``Autoroute-decouple`` property. Its value is the
+    reference designator of the IC this decoupling cap serves (e.g. ``U3``), so
+    the placement pass keeps the cap next to that IC; the special value ``auto``
+    asks placement to find the IC by searching the cap's shared power/ground nets
+    (`pyautoroute.netlist.resolve_decoupling_ic`). An absent or empty value means
+    the footprint is not marked as a decoupling cap.
+
+    Args:
+        fp_node: the ``(footprint ...)`` node.
+
+    Returns:
+        The target refdes, the string ``"auto"``, or ``None``.
+    """
+    for prop in children(fp_node, "property"):
+        vals = atoms_after_head(prop)
+        if len(vals) >= 2 and vals[0].text == "Autoroute-decouple":
+            v = vals[1].text.strip()
+            return v or None
+    return None
+
+
 def _footprint_uuid(fp_node: SList) -> str:
     """Return the footprint's KiCad UUID, or ``""`` if absent.
 
@@ -882,6 +907,7 @@ def load_board(pcb_path: str | Path) -> Board:
                 ref=ref, x=fx, y=fy, angle=fa,
                 locked=_footprint_locked(fp), overlap_ok=_footprint_overlap_ok(fp),
                 edge_affinity=_footprint_edge_affinity(fp),
+                decouple_target=_footprint_decouple(fp),
                 pads=fp_pads, local_offsets=local_offsets,
                 at_node=at_node, fp_node=fp,
                 x0=fx, y0=fy, angle0=fa,
@@ -1729,6 +1755,22 @@ def set_footprint_overlap(fp: Footprint, on: bool) -> None:
     set_footprint_property(
         fp, "Autoroute-overlap", "yes" if on else None
     )
+
+
+def set_footprint_decoupling(fp: Footprint, target: str | None) -> None:
+    """Set/clear a footprint's decoupling-cap target.
+
+    Updates both the `Footprint.decouple_target` field and the sexpr tree
+    (``Autoroute-decouple`` property), so the change is persisted on the next
+    `write_board`.
+
+    Args:
+        fp: the footprint.
+        target: the associated IC's reference designator, ``"auto"`` (resolve by
+            net search at placement time), or `None` to clear the mark.
+    """
+    fp.decouple_target = target
+    set_footprint_property(fp, "Autoroute-decouple", target)
 
 
 def set_footprint_locked(fp: Footprint, locked: bool) -> None:

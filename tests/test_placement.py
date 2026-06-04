@@ -353,6 +353,98 @@ def test_polish_deterministic():
     assert run() == run()
 
 
+# --- decoupling-cap attraction -----------------------------------------------
+
+def _ic4(ref, x, y, nets, locked=True):
+    """An IC-like footprint (4 pads on `nets`) at (x, y)."""
+    pads = [(-3.0, 0.0, nets[0]), (3.0, 0.0, nets[1]),
+            (-3.0, 3.0, nets[2]), (3.0, 3.0, nets[3])]
+    return _fp(ref, x, y, pads, locked=locked)
+
+
+def test_decoupling_cap_settles_near_its_ic():
+    # No shared nets (so the ratsnest gives no pull) and compact off: only the
+    # decouple term can draw the cap to the IC. The marked cap ends adjacent; an
+    # otherwise identical unmarked cap does not.
+    def make(mark):
+        ic = _ic4("U1", 40.0, 40.0, ["P1", "P2", "P3", "P4"])
+        cap = _fp("C1", 72.0, 72.0, [(-1.0, 0.0, "Q1"), (1.0, 0.0, "Q2")])
+        if mark:
+            cap.decouple_target = "U1"
+        return _board([ic, cap]), ic, cap
+
+    bU, icU, capU = make(False)
+    placement.place(bU, placement.PlaceParams(
+        iters=1500, seed=1, compact_weight=0.0, decouple_weight=10.0))
+    bM, icM, capM = make(True)
+    placement.place(bM, placement.PlaceParams(
+        iters=1500, seed=1, compact_weight=0.0, decouple_weight=10.0))
+    dU = math.hypot(capU.x - icU.x, capU.y - icU.y)
+    dM = math.hypot(capM.x - icM.x, capM.y - icM.y)
+    assert dM < dU
+    assert dM < 15.0                       # seated next to the IC
+
+
+def test_decoupling_to_locked_ic_pulls_cap_and_ic_stays():
+    ic = _ic4("U1", 40.0, 40.0, ["P1", "P2", "P3", "P4"], locked=True)
+    cap = _fp("C1", 75.0, 75.0, [(-1.0, 0.0, "Q1"), (1.0, 0.0, "Q2")])
+    cap.decouple_target = "U1"
+    board = _board([ic, cap])
+    placement.place(board, placement.PlaceParams(
+        iters=1500, seed=3, compact_weight=0.0, decouple_weight=10.0))
+    assert not ic.moved and (ic.x, ic.y) == (40.0, 40.0)
+    assert math.hypot(cap.x - 40.0, cap.y - 40.0) < 15.0
+
+
+def test_decouple_weight_zero_is_noop():
+    # With the weight at 0 a marked board matches an unmarked one exactly.
+    def make(mark):
+        a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        if mark:
+            b.decouple_target = "U1"
+        return _board([a, b])
+
+    rm = placement.place(make(True), placement.PlaceParams(
+        iters=300, seed=2, decouple_weight=0.0))
+    ru = placement.place(make(False), placement.PlaceParams(
+        iters=300, seed=2, decouple_weight=0.0))
+    assert math.isclose(rm.best_energy, ru.best_energy, rel_tol=1e-12)
+
+
+def test_decoupling_unresolved_target_warns_and_runs():
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    a.decouple_target = "NOPE"             # no such refdes on the board
+    b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    board = _board([a, b])
+    res = placement.place(board, placement.PlaceParams(iters=100, seed=4))
+    assert any("NOPE" in w for w in res.warnings)
+    assert res.iterations == 100           # placement still ran
+
+
+def test_decoupling_auto_resolves_in_placement():
+    ic = _ic4("U1", 40.0, 40.0, ["VCC", "GND", "P3", "P4"], locked=True)
+    cap = _fp("C1", 70.0, 70.0, [(-1.0, 0.0, "VCC"), (1.0, 0.0, "GND")])
+    cap.decouple_target = "auto"
+    board = _board([ic, cap])
+    res = placement.place(board, placement.PlaceParams(
+        iters=1500, seed=6, compact_weight=0.0, decouple_weight=10.0))
+    assert res.warnings == []              # auto-resolved cleanly to U1
+    assert math.hypot(cap.x - 40.0, cap.y - 40.0) < 15.0
+
+
+def test_decoupling_deterministic():
+    def run():
+        ic = _ic4("U1", 40.0, 40.0, ["P1", "P2", "P3", "P4"], locked=True)
+        cap = _fp("C1", 70.0, 70.0, [(-1.0, 0.0, "Q1"), (1.0, 0.0, "Q2")])
+        cap.decouple_target = "U1"
+        board = _board([ic, cap])
+        res = placement.place(board, placement.PlaceParams(
+            iters=400, seed=5, decouple_weight=10.0))
+        return res.best_energy, round(cap.x + cap.y, 6)
+    assert run() == run()
+
+
 # --- pcb parsing of lock / overlap property ----------------------------------
 
 def _board_from_text(text):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pyautoroute import netlist, sexpr
-from pyautoroute.pcb import Board, Pad, Segment, Via
+from pyautoroute.pcb import Board, Footprint, Pad, Segment, Via
 
 
 def _pad(net, cx, cy, layers=None):
@@ -118,3 +118,90 @@ def test_pre_routed_tht_pad_bridges_layers():
     pre, unrouted = netlist.pre_routed_connections(board, conns)
     assert len(pre) == 1
     assert unrouted == []
+
+
+# ── resolve_decoupling_ic ──────────────────────────────────────────────────────
+
+def _fp(ref, x, y, pad_nets):
+    """A footprint at (x, y) with pads at the footprint origin on `pad_nets`."""
+    pads = [_pad(net, x, y) for net in pad_nets]
+    return Footprint(ref=ref, x=x, y=y, angle=0.0, locked=False, overlap_ok=False,
+                     pads=pads, local_offsets=[(0.0, 0.0, 0.0)] * len(pads),
+                     at_node=sexpr.SList(), fp_node=sexpr.SList())
+
+
+def _fp_board(footprints):
+    pads = [p for fp in footprints for p in fp.pads]
+    return Board(tree=sexpr.SList(), copper_layers=["F.Cu", "B.Cu"], pads=pads,
+                 free_vias=[], segments=[], zones=[], outline=[],
+                 footprints=footprints)
+
+
+def _ic(ref, x, y, nets):
+    """An IC-like footprint (>=4 pads) at (x, y); first nets get distinct pads."""
+    pads = [_pad(n, x, y) for n in nets] + [_pad("", x, y)] * max(0, 4 - len(nets))
+    return Footprint(ref=ref, x=x, y=y, angle=0.0, locked=False, overlap_ok=False,
+                     pads=pads, local_offsets=[(0.0, 0.0, 0.0)] * len(pads),
+                     at_node=sexpr.SList(), fp_node=sexpr.SList())
+
+
+def test_resolve_picks_nearest_ic_on_power_net():
+    cap = _fp("C1", 10.0, 10.0, ["VCC", "GND"])
+    near = _ic("U1", 12.0, 10.0, ["VCC", "GND"])
+    far = _ic("U2", 60.0, 60.0, ["VCC", "GND"])
+    board = _fp_board([cap, near, far])
+    ref, candidates, warning = netlist.resolve_decoupling_ic(board, cap)
+    assert ref == "U1"
+    assert candidates == ["U1", "U2"]          # nearest first
+    assert warning is None
+
+
+def test_resolve_warns_when_not_two_nets():
+    cap = _fp("C1", 0.0, 0.0, ["VCC"])          # single pad-net
+    ic = _ic("U1", 1.0, 0.0, ["VCC", "GND"])
+    board = _fp_board([cap, ic])
+    ref, candidates, warning = netlist.resolve_decoupling_ic(board, cap)
+    assert ref is None and candidates == []
+    assert warning and "bridge two" in warning
+
+
+def test_resolve_warns_when_no_power_ground_bridge():
+    cap = _fp("C1", 0.0, 0.0, ["SIG_A", "SIG_B"])   # both signal nets
+    ic = _ic("U1", 1.0, 0.0, ["SIG_A", "GND"])
+    board = _fp_board([cap, ic])
+    ref, candidates, warning = netlist.resolve_decoupling_ic(board, cap)
+    assert ref is None
+    assert warning and "power and ground" in warning
+
+
+def test_resolve_warns_when_no_ic_on_power_net():
+    cap = _fp("C1", 0.0, 0.0, ["VCC", "GND"])
+    # only a 2-pad resistor shares VCC — not IC-like, and it is the cap's only
+    # company; with no other footprint on VCC the pool falls back to it.
+    other_cap = _fp("C2", 50.0, 50.0, ["SIG", "GND"])   # not on VCC
+    board = _fp_board([cap, other_cap])
+    ref, candidates, warning = netlist.resolve_decoupling_ic(board, cap)
+    assert ref is None and candidates == []
+    assert warning and "no IC found" in warning
+
+
+def test_resolve_ambiguous_near_tie_warns_but_chooses():
+    cap = _fp("C1", 10.0, 10.0, ["VCC", "GND"])
+    a = _ic("U1", 12.0, 10.0, ["VCC", "GND"])
+    b = _ic("U2", 8.1, 10.0, ["VCC", "GND"])    # ~ equally close
+    board = _fp_board([cap, a, b])
+    ref, candidates, warning = netlist.resolve_decoupling_ic(board, cap)
+    assert ref in ("U1", "U2")
+    assert set(candidates) == {"U1", "U2"}
+    assert warning and "could serve" in warning
+
+
+def test_resolve_power_fallback_on_unrecognised_rail_name():
+    # power net not matched by name, but the other net is clearly GND → the
+    # non-ground net is taken as the rail (with a note).
+    cap = _fp("C1", 0.0, 0.0, ["PWR3", "GND"])
+    ic = _ic("U1", 1.0, 0.0, ["PWR3", "GND"])
+    board = _fp_board([cap, ic])
+    ref, candidates, warning = netlist.resolve_decoupling_ic(board, cap)
+    assert ref == "U1"
+    assert warning and "not recognised" in warning

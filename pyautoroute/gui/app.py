@@ -603,6 +603,30 @@ class App:
             variable=overlap_var,
             command=lambda: self._set_overlap(fp, overlap_var.get()))
 
+        # Decoupling-cap submenu: resolve the associated IC on open and offer it
+        # (plus any other plausible ICs) as a chooser. Storing the concrete refdes
+        # keeps placement deterministic.
+        from pyautoroute import netlist
+        dec_var = tk.StringVar(value=fp.decouple_target or "")
+        dec_menu = tk.Menu(menu, tearoff=0)
+        dec_menu.add_radiobutton(
+            label="Off", value="", variable=dec_var,
+            command=lambda: self._set_decouple(fp, None))
+        ic_ref, candidates, warning = netlist.resolve_decoupling_ic(
+            self._initial_board, fp)
+        if ic_ref:
+            dec_menu.add_radiobutton(
+                label=f"Auto → {ic_ref}", value=ic_ref, variable=dec_var,
+                command=lambda r=ic_ref, w=warning: self._set_decouple(fp, r, w))
+        for cand in candidates:
+            if cand != ic_ref:
+                dec_menu.add_radiobutton(
+                    label=cand, value=cand, variable=dec_var,
+                    command=lambda r=cand: self._set_decouple(fp, r))
+        if not candidates:
+            dec_menu.add_command(label="(no IC found)", state=tk.DISABLED)
+        menu.add_cascade(label="Decoupling cap", menu=dec_menu)
+
         # Post menu at click position
         try:
             menu.tk_popup(event.guiEvent.x_root, event.guiEvent.y_root)
@@ -629,6 +653,19 @@ class App:
         pcb.set_footprint_overlap(fp, on)
         self._on_view_change()
         self._mark_dirty()
+
+    def _set_decouple(self, fp, target: str | None, warning: str | None = None) -> None:
+        """Mark/clear a footprint as a decoupling cap serving IC ``target``."""
+        from pyautoroute import pcb
+        pcb.set_footprint_decoupling(fp, target)
+        self._on_view_change()
+        self._mark_dirty()
+        if warning:
+            self._status_var.set(f"⚠ {warning}")
+        elif target:
+            self._status_var.set(f"{fp.ref} → decouples {target}")
+        else:
+            self._status_var.set(f"{fp.ref}: decoupling cleared")
 
     def _mark_dirty(self) -> None:
         """Mark constraints as unsaved and update UI."""

@@ -545,7 +545,9 @@ def _place_params_from_args(args, board, rules, rep):
                              placement.PlaceParams.polish_iters),
         polish_time=getattr(args, "place_polish_time", None),
         polish_eps=getattr(args, "place_polish_eps",
-                           placement.PlaceParams.polish_eps))
+                           placement.PlaceParams.polish_eps),
+        decouple_weight=getattr(args, "place_decouple_weight",
+                                placement.PlaceParams.decouple_weight))
     return pp, keep_outline
 
 
@@ -685,6 +687,10 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         if not args.quiet:
             print(f"\n  {summary}")
             print(f"  {breakdown}")
+        for w in pout.warnings:
+            rep.log(f"placement warning: {w}")
+            if not args.quiet:
+                print(f"  ⚠ {w}")
 
     if args.place_only:
         rep.phase("writing placed board")
@@ -1920,6 +1926,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "Autoroute-edge=<side> sits from its target board edge; "
                         "higher pulls edge parts (e.g. connectors) out harder and "
                         "aligns them flat against the edge (default %(default)s)")
+    p.add_argument("--place-decouple-weight", type=float,
+                   default=placement.PlaceParams.decouple_weight, metavar="W",
+                   help="placement cost per mm a footprint flagged "
+                        "Autoroute-decouple=<IC> sits from its associated IC, "
+                        "keeping decoupling caps next to their IC; 0 disables "
+                        "(default %(default)s)")
     p.add_argument("--place-temps", nargs=2, type=float, metavar=("START", "END"),
                    default=(placement.PlaceParams.t_start, placement.PlaceParams.t_end),
                    help="placement annealing start/end temperature for the geometric "
@@ -2181,6 +2193,8 @@ def main(argv=None) -> int:
         parser.error("--place-polish-time must be > 0")
     if (args.place_polish and not (args.place or args.place_only)):
         parser.error("--place-polish requires --place or --place-only")
+    if args.place_decouple_weight < 0:
+        parser.error("--place-decouple-weight must be >= 0")
     if args.runs < 1:
         parser.error("--runs must be >= 1")
     if args.jobs < 0:

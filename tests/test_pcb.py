@@ -532,6 +532,35 @@ class TestFootprintConstraints:
         assert fp.locked is False
         assert pcb._footprint_locked(fp.fp_node) is False
 
+    def test_set_footprint_decoupling(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "C1" (at 10 20)'
+            '  (property "Reference" "C1")))'
+        )
+        board = _board_from_text(text)
+        fp = board.footprints[0]
+        assert fp.decouple_target is None
+        pcb.set_footprint_decoupling(fp, "U3")
+        assert fp.decouple_target == "U3"
+        assert pcb._footprint_decouple(fp.fp_node) == "U3"
+        pcb.set_footprint_decoupling(fp, "auto")
+        assert fp.decouple_target == "auto"
+        assert pcb._footprint_decouple(fp.fp_node) == "auto"
+        pcb.set_footprint_decoupling(fp, None)
+        assert fp.decouple_target is None
+        assert pcb._footprint_decouple(fp.fp_node) is None
+
+    def test_parse_decoupling_property(self):
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "C1" (at 10 20)'
+            '  (property "Reference" "C1")'
+            '  (property "Autoroute-decouple" "U7")))'
+        )
+        board = _board_from_text(text)
+        assert board.footprints[0].decouple_target == "U7"
+
     def test_constraint_round_trip_to_file(self):
         text = (
             '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
@@ -546,6 +575,7 @@ class TestFootprintConstraints:
         pcb.set_footprint_overlap(u1, True)
         pcb.set_footprint_locked(u1, True)
         pcb.set_footprint_edge(u2, "any")
+        pcb.set_footprint_decoupling(u2, "U1")
 
         # Write and reload
         import tempfile
@@ -562,6 +592,8 @@ class TestFootprintConstraints:
             assert u2_r.edge_affinity == "any"
             assert u2_r.overlap_ok is False
             assert u2_r.locked is False
+            assert u2_r.decouple_target == "U1"
+            assert u1_r.decouple_target is None
         finally:
             import os
             os.unlink(tmp_path)

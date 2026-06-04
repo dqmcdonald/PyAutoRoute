@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import fnmatch
 import math
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -357,3 +358,144 @@ def greedy_order(connections: list[Connection], mode: str = "short",
         return idx
     return sorted(range(len(connections)),
                   key=lambda i: connections[i].est_length)
+
+
+# ---------------------------------------------------------------------------
+# Decoupling-capacitor → IC resolution
+# ---------------------------------------------------------------------------
+
+# Net-name classification. A decoupling cap bridges a power rail and ground;
+# both are high-fanout, so naming is what tells them apart (with a fallback for
+# unrecognised power names when the other net is clearly ground).
+_GND_RE = re.compile(r"^(gnd|ground|agnd|dgnd|pgnd|gnda|gndd|vss|vssa|0v)$|^gnd",
+                     re.IGNORECASE)
+_PWR_RE = re.compile(r"^(vcc|vdd|vdda|vcca|vee|vbat|vin)"   # common rail names
+                     r"|^[+-]\d"                            # +3V3, +5V, -12V
+                     r"|^v\d",                              # V5, V33
+                     re.IGNORECASE)
+
+# A footprint is "IC-like" if its refdes looks like one (U.. / IC..) or it has
+# at least this many pads (excludes 2-/3-pin passives and discretes).
+_IC_PAD_THRESHOLD = 4
+
+
+def _net_kind(net: str) -> str:
+    """Classify a net name as ``"ground"``, ``"power"``, or ``"signal"``."""
+    n = (net or "").strip()
+    if not n:
+        return "signal"
+    if _GND_RE.match(n):
+        return "ground"
+    if _PWR_RE.match(n):
+        return "power"
+    return "signal"
+
+
+def _fp_centroid(fp) -> tuple[float, float]:
+    """Centroid of a footprint's pad centres (its origin if it has no pads)."""
+    if not fp.pads:
+        return (fp.x, fp.y)
+    n = len(fp.pads)
+    return (sum(p.cx for p in fp.pads) / n, sum(p.cy for p in fp.pads) / n)
+
+
+def _is_ic_like(fp) -> bool:
+    """Whether a footprint looks like an IC (by refdes or pad count)."""
+    r = fp.ref.strip().upper()
+    if r.startswith("IC"):
+        return True
+    if r[:1] == "U" and (len(r) == 1 or r[1].isdigit()):
+        return True
+    return len(fp.pads) >= _IC_PAD_THRESHOLD
+
+
+def resolve_decoupling_ic(board: Board, cap):
+    """Find the IC a decoupling cap serves by searching its nets.
+
+    A decoupling cap bridges a **power** net and **ground**, both of which fan
+    out to many footprints — so net membership alone is ambiguous. This narrows
+    to footprints on the cap's *power* net that look like ICs, then picks the
+    **nearest** to the cap (by pad-centroid distance), which matches how a
+    decoupling cap is placed next to its IC's power pin. A warning is returned
+    whenever the result is doubtful (no IC, a near-tie between two ICs, an
+    unrecognised power name, or a non-unique refdes) or the part does not look
+    like a decoupling cap at all (≠ 2 pad-nets, or it does not bridge power and
+    ground).
+
+    Args:
+        board: the board to search.
+        cap: the candidate decoupling-cap `pcb.Footprint`.
+
+    Returns:
+        ``(ic_ref, candidates, warning)``:
+          - ``ic_ref``: the chosen IC's reference designator, or ``None`` if none
+            could be chosen;
+          - ``candidates``: all plausible IC refdes, nearest first (for a GUI
+            chooser);
+          - ``warning``: a human-readable caveat, or ``None`` when the match is
+            unambiguous.
+    """
+    nets = []
+    for p in cap.pads:
+        if p.net and p.net not in nets:
+            nets.append(p.net)
+    if len(cap.pads) != 2 or len(nets) != 2:
+        return (None, [], f"{cap.ref} has {len(nets)} pad-net(s); a decoupling "
+                          "cap is expected to bridge two")
+
+    grounds = [n for n in nets if _net_kind(n) == "ground"]
+    powers = [n for n in nets if _net_kind(n) == "power"]
+    others = [n for n in nets if _net_kind(n) == "signal"]
+
+    note = None
+    if powers:
+        power_net = powers[0]
+    elif grounds and others:
+        power_net = others[0]            # fallback: the non-ground net is the rail
+        note = (f"{cap.ref}: power net {power_net!r} not recognised by name; "
+                "assuming it is the rail")
+    else:
+        return (None, [], f"{cap.ref} does not bridge power and ground; "
+                          "may not be a decoupling cap")
+
+    # Footprints with a pad on the power net (each counted once), excluding the
+    # cap itself.
+    owner: dict[int, object] = {}
+    for fp in board.footprints:
+        for p in fp.pads:
+            owner[id(p)] = fp
+    cand_fps: list = []
+    seen: set[int] = set()
+    for p in board.pads_by_net().get(power_net, []):
+        fp = owner.get(id(p))
+        if fp is None or fp is cap or id(fp) in seen:
+            continue
+        seen.add(id(fp))
+        cand_fps.append(fp)
+
+    ic_like = [fp for fp in cand_fps if _is_ic_like(fp)]
+    pool = ic_like if ic_like else cand_fps
+    if not pool:
+        return (None, [], f"no IC found on net {power_net!r} for {cap.ref}")
+    fallback_note = None if ic_like else (
+        f"{cap.ref}: no obvious IC on net {power_net!r}; using nearest part")
+
+    ccx, ccy = _fp_centroid(cap)
+
+    def _dist(fp) -> float:
+        x, y = _fp_centroid(fp)
+        return math.hypot(x - ccx, y - ccy)
+
+    pool.sort(key=_dist)
+    candidates = [fp.ref for fp in pool]
+    chosen = pool[0]
+    warning = note or fallback_note
+
+    if len(pool) >= 2 and _dist(pool[1]) <= _dist(pool[0]) * 1.15:
+        warning = (f"{cap.ref} could serve {pool[0].ref} or {pool[1].ref}; "
+                   f"chose nearest ({pool[0].ref}) — verify or pick manually")
+    if sum(1 for fp in board.footprints if fp.ref == chosen.ref) > 1:
+        dup = f"refdes {chosen.ref} is not unique on the board"
+        warning = f"{warning}; {dup}" if warning else dup
+
+    return (chosen.ref, candidates, warning)

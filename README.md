@@ -302,14 +302,25 @@ Footprint attributes steer it:
   (higher = harder). The two properties are independent, so a part can carry both.
   By default the "edge" is the regenerated outline's boundary; with `--keep-outline`
   it is the board's existing Edge.Cuts (below).
+- **`Autoroute-decouple = <IC>`** — mark a capacitor as a **decoupling cap** so it
+  stays next to the IC it serves. Add a property named `Autoroute-decouple` with the
+  IC's reference designator (e.g. `U3`), or `auto` to have PyAutoRoute find the IC by
+  searching the cap's power net for the nearest IC-like part. The cap is then *softly*
+  pulled toward that IC during placement (strength `--place-decouple-weight`, default
+  5.0; 0 disables) — a more flexible alternative to a rigid group: the cap settles
+  beside the IC but still rotates and shuffles freely. Easiest to set from the GUI
+  (right-click → **Decoupling cap**), which resolves the IC as you open the menu, lets
+  you pick among candidates, and **warns** if the choice is ambiguous or the part
+  doesn't look like a decoupling cap (e.g. it doesn't bridge a power net and ground).
+  Unresolved targets are reported in the placement summary.
 - **KiCad native groups** — footprints grouped together in KiCad (select parts →
   Edit → Group, or `Ctrl+G`) move as a **rigid body** during placement: translate,
-  rotate, and swap all apply to every member simultaneously. This is the natural way
-  to keep a decoupling capacitor co-located with its IC, for example. No extra
-  properties are needed — PyAutoRoute reads the board's existing `(group …)` nodes
-  directly. Groups where any member is locked are excluded from rigid-body movement
-  (conservative policy). Grouped footprints are shown in the GUI with a teal diamond
-  marker and dashed connecting lines.
+  rotate, and swap all apply to every member simultaneously. This is one way to keep a
+  decoupling capacitor co-located with its IC (the `Autoroute-decouple` property above
+  is the softer, more flexible alternative). No extra properties are needed —
+  PyAutoRoute reads the board's existing `(group …)` nodes directly. Groups where any
+  member is locked are excluded from rigid-body movement (conservative policy). Grouped
+  footprints are shown in the GUI with a teal diamond marker and dashed connecting lines.
 
 On startup the CLI lists any footprints carrying these constraints — those with an
 edge affinity, a lock, or the overlap flag — with their reference and value (e.g.
@@ -342,6 +353,7 @@ Placement options (all also work with `--place-only`):
 | `--place-overlap-weight W` / `--place-compact-weight W` | Energy weights for overlap area and layout compactness. |
 | `--place-spread-weight W` | Density-uniformity weight (default 0 = off). Divides the board into a grid and penalises Σ count² across cells, driving a uniform footprint distribution. Useful with `--keep-outline` and locked corner parts, where `--place-compact-weight` is inert (the bounding box is pinned to the board size). A value of ~3.0 is a good starting point. |
 | `--place-edge-weight W` | Pull/alignment strength (cost per mm from the target edge) for footprints flagged `Autoroute-edge=<side>` (default 2.0). Higher pulls edge parts out harder and aligns them flatter against the edge. |
+| `--place-decouple-weight W` | Attraction strength (cost per mm) pulling a cap flagged `Autoroute-decouple=<IC>` toward its IC (default 5.0; 0 disables). Keeps decoupling caps next to their IC; see the property above. |
 | `--place-polish` | After annealing, refine the placement by **steepest-descent gradient descent** — relaxes close contacts and slides parts into their local energy minimum (the classic *anneal to explore, descend to exploit* hybrid). Translations only (rotation is left to annealing). It is **monotone**: only strictly-improving steps are taken, so it can never worsen the annealed result, and locks/KiCad groups are respected. Off by default. |
 | `--place-polish-iters N` / `--place-polish-time S` | Polish budget: max descent sweeps over all movable units (default 20) and/or an optional wall-clock cap (seconds). |
 | `--place-polish-eps MM` | Finite-difference step (mm) used to estimate the polish gradient (default 0.05). |
@@ -460,6 +472,10 @@ set per-footprint placement constraints:
    - **Lock** — freeze a footprint's position; it won't move during placement
      optimization. Locked footprints are visualized with red square markers.
    - **Overlap OK** — allow this footprint to overlap with others (normally forbidden).
+   - **Decoupling cap** — mark a capacitor to stay next to an IC. The menu resolves
+     the associated IC as it opens (shown as *Auto → U3*) and lists other plausible
+     ICs to pick from; the status bar **warns** if the choice is ambiguous or the part
+     doesn't look like a decoupling cap.
 3. **Save Constraints** button (next to "Apply to Project") writes the changes to
    the `.kicad_pcb` file with a timestamped backup.
 
@@ -468,8 +484,8 @@ immediately to show the edge arrows or lock markers. Before running the optimiza
 or opening a different board, you're prompted to save unsaved constraints.
 
 These constraints are stored as hidden custom properties on the footprints (`Autoroute-edge`,
-`Autoroute-overlap`, and the `locked` field) and are preserved when you re-open the
-board in KiCad or PyAutoRoute.
+`Autoroute-overlap`, `Autoroute-decouple`, and the `locked` field) and are preserved when you
+re-open the board in KiCad or PyAutoRoute.
 
 ## Comparing boards (`pyautoroute-compare`)
 
