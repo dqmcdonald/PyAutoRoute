@@ -264,8 +264,22 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     # Vias span F.Cu and the pour layer — check obstacles on both so the
     # annular ring on each layer stays clear of other-net copper.
     via_layers = {"F.Cu", layer}
+
+    # Build per-mode obstacle list.  In clear mode every original segment and
+    # free via is stripped from the output; using them as obstacles here would
+    # block via positions that are actually free in the final board.  Only pad
+    # copper is permanent; new routing is added below from routed_nodes.
+    if keep_existing_segments:
+        _raw_obs = geometry.board_obstacles(board)
+    else:
+        _raw_obs = []
+        for _pad in board.pads:
+            _poly = geometry.pad_polygon(_pad)
+            for _lyr in _pad.copper_layers:
+                _raw_obs.append(geometry.Obstacle(_poly, _pad.net, _lyr))
+
     all_obstacles = [
-        o for o in geometry.board_obstacles(board)
+        o for o in _raw_obs
         if o.layer in via_layers and o.net != gnd_net and o.net
     ]
     if routed_nodes:
@@ -338,12 +352,25 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     # must always contribute to connectivity.  Without this, SMD pads that the
     # router just connected via GND traces would still look isolated here and
     # trigger (usually failing) connectivity-via attempts.
+    #
+    # Net-reference format depends on the board style:
+    #   name-only boards  → (net "GND")  → _atom_text returns "GND"
+    #   numbered-net boards → (net 11)   → _atom_text returns "11"
+    # Pre-compute the expected token so we match regardless of format.
+    if getattr(board, 'name_only_nets', True):
+        _gnd_tok = gnd_net
+    else:
+        _gnd_tok = str(
+            next((c for c, n in getattr(board, 'numbered_nets', {}).items()
+                  if n == gnd_net), gnd_net)
+        )
+
     if routed_nodes:
         for node in routed_nodes:
             head = _node_head(node)
             if head == "segment":
                 net_n = _child(node, "net")
-                if not net_n or _atom_text(net_n, 1) != gnd_net:
+                if not net_n or _atom_text(net_n, 1) != _gnd_tok:
                     continue
                 start_n = _child(node, "start")
                 end_n   = _child(node, "end")
@@ -358,7 +385,7 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
                 _union(p1, p2)
             elif head == "via":
                 net_n = _child(node, "net")
-                if not net_n or _atom_text(net_n, 1) != gnd_net:
+                if not net_n or _atom_text(net_n, 1) != _gnd_tok:
                     continue
                 at_n = _child(node, "at")
                 if not at_n:

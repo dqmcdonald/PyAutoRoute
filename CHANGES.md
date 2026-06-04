@@ -5,6 +5,11 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.43.5
+
+- **Fix**: connectivity-via obstacle tree used old routing segments as blockers in `--existing-routes clear` mode, even though those segments are stripped from the output. This caused the spiral search to find zero valid via positions for pads surrounded by original routing, leaving R9/R10/R17/R16/J3 unconnected. In clear mode the obstacle tree is now built from pad copper only (permanent) plus fresh routing from `routed_nodes`.
+- **Fix**: new GND segments from `routed_nodes` were not matched against `gnd_net` on numbered-net boards (KiCad 9 format), because `make_segment` stores a net code (`11`) while the comparison used the net name (`"GND"`). Pre-compute the expected token in the board's own reference style.
+
 ## 0.43.4
 
 - **Fix**: SMD GND pads already connected by the router's fresh GND traces were incorrectly flagged as isolated in `--existing-routes clear` mode, because `routed_nodes` was only used for obstacle checking, not for the union-find. This caused spurious (usually failed) connectivity-via attempts and left pads unconnected. Freshly-routed GND segments and vias are now registered in the union-find.
