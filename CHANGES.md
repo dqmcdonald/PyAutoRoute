@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.44.1
+
+- **Fix**: board-level silkscreen `gr_text` keep-out boxes were computed as squares using the circumscribed-circle half-diagonal, producing a ~30× area overestimate for wide, flat title-block text (e.g. a 52-character label at 1.5 mm font height produced a 56×56 mm square keep-out instead of a 54×2 mm rectangle). The keep-out now uses a tight rotated rectangle matching the actual text extent, so a long title block no longer blocks a large fraction of the board from footprint placement.
+
 ## 0.44.0
 
 - **Feature**: `--place-spread-weight` (placement parameter `spread_weight`). Adds a density-uniformity term to placement energy: the board is divided into a grid and `Σ count²` across cells is penalised, which by Cauchy-Schwarz is minimised by a uniform distribution. Fixes the cluster-in-one-corner failure mode when `--keep-outline` is used with locked corner parts — the locked parts pin the bounding-box term to a constant, making `--place-compact-weight` inert and leaving no force to spread the layout. A value of `~3.0` works well for most boards. Default `0.0` (off) preserves existing behaviour.

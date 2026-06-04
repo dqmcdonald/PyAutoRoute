@@ -607,8 +607,10 @@ def test_board_silk_text_boxes_parsed():
     from pyautoroute.placement import _board_silk_text_boxes
     boxes = _board_silk_text_boxes(board)
     assert len(boxes) == 1                       # only the visible silk text
-    cx, cy, hr = boxes[0]
-    assert hr > 0.0
+    poly = boxes[0]
+    cx, cy = poly.centroid.x, poly.centroid.y
+    minx, miny, maxx, maxy = poly.bounds
+    assert (maxx - minx) > (maxy - miny)         # wider than tall (long text)
     # justify left/bottom puts the anchor at the box's left/bottom (y-down),
     # so the centre is to the right of and above the (20, 30) anchor.
     assert cx > 20.0 and cy < 30.0

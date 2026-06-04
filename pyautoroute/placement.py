@@ -173,26 +173,25 @@ def _fp_silk_text_extents(fp: Footprint) -> list[tuple[float, float, float]]:
     return extents
 
 
-def _board_silk_text_boxes(board: Board) -> list[tuple[float, float, float]]:
-    """Return ``(cx, cy, half_diag)`` for each visible board-level silk text.
+def _board_silk_text_boxes(board: Board):
+    """Return a Shapely polygon for each visible board-level silk text.
 
     Board-level ``gr_text`` items — connector pin labels, a title block, etc. —
     are not footprints, so the placer would otherwise ignore them and happily
     drop a footprint on top (the locked "Bus Indicator" / pin-label text on the
-    Test1 board). Each tuple is the text's centre and a rotation-invariant
-    half-diagonal radius of its extent, in board coordinates, mirroring the
-    estimate `_fp_silk_text_extents` uses for footprint text, so footprints can
-    be pushed clear of the text.
+    Test1 board). Each polygon is a tight rotated rectangle that covers the text
+    extent, in board coordinates.
 
     Args:
         board: the board whose top-level ``gr_text`` nodes are scanned.
 
     Returns:
-        One tuple per visible, non-hidden silkscreen ``gr_text`` on the board.
+        One Shapely polygon per visible, non-hidden silkscreen ``gr_text``.
     """
     from .pcb import children, child, strings, floats, atoms_after_head
+    from shapely.affinity import rotate as sh_rotate
 
-    out: list[tuple[float, float, float]] = []
+    out = []
     for txt in children(board.tree, "gr_text"):
         h = child(txt, "hide")
         if h is not None:
@@ -232,7 +231,15 @@ def _board_silk_text_boxes(board: Board) -> list[tuple[float, float, float]]:
         sin_a = math.sin(math.radians(angle))
         cx = x + dx * cos_a + dy * sin_a
         cy = y - dx * sin_a + dy * cos_a
-        out.append((cx, cy, 0.5 * math.hypot(w, th)))
+
+        # Build a tight axis-aligned rectangle at angle=0 centred at (cx,cy),
+        # then rotate it into place. This avoids the ~30× area overestimate
+        # that the old half-diagonal (circumscribed-circle) approximation
+        # produces for wide, flat text strings.
+        rect = box(cx - w / 2, cy - th / 2, cx + w / 2, cy + th / 2)
+        if angle:
+            rect = sh_rotate(rect, -angle, origin=(cx, cy))
+        out.append(rect)
     return out
 
 
@@ -318,12 +325,12 @@ class _Placer:
             id(fp): _fp_silk_text_extents(fp) for fp in self.boxed
         }
         # Fixed board-level silkscreen text (pin labels, title block): static
-        # keep-out boxes footprints must avoid, so they aren't dropped on top.
-        self._fixed_text = [
-            box(cx - hr - self.half_buffer, cy - hr - self.half_buffer,
-                cx + hr + self.half_buffer, cy + hr + self.half_buffer)
-            for cx, cy, hr in _board_silk_text_boxes(board)
-        ]
+        # keep-out polygons footprints must avoid, so they aren't dropped on top.
+        _text_polys = _board_silk_text_boxes(board)
+        self._fixed_text = (
+            [p.buffer(self.half_buffer) for p in _text_polys]
+            if _text_polys else []
+        )
         self._fixed_tree = STRtree(self._fixed_text) if self._fixed_text else None
 
         # Incremental-energy cache (populated by `_rebuild_cache`).
