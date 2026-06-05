@@ -1326,12 +1326,12 @@ def _move_gr_text_node(text_node: "sexpr.SList", cx: float, cy: float,
                        anchor_x: float, anchor_y: float, angle_delta: float) -> None:
     """Move a gr_text node by the same transformation as a group's footprints.
 
-    Modifies the `(at ...)` node within the text node to apply the translation
+    Replaces the `(at ...)` node within the text node to apply the translation
     and rotation. The text is moved relative to the group centroid (cx, cy) and
     placed at the anchor position (anchor_x, anchor_y).
 
     Args:
-        text_node: the gr_text s-expression node to move.
+        text_node: the gr_text s-expression node to move (mutated).
         cx: group centroid x.
         cy: group centroid y.
         anchor_x: new group anchor x.
@@ -1341,11 +1341,11 @@ def _move_gr_text_node(text_node: "sexpr.SList", cx: float, cy: float,
     from . import pcb as pcb_module
     from . import sexpr
 
-    at_node = pcb_module.child(text_node, "at")
-    if at_node is None:
+    old_at_node = pcb_module.child(text_node, "at")
+    if old_at_node is None:
         return
 
-    vals = pcb_module.floats(at_node)
+    vals = pcb_module.floats(old_at_node)
     if len(vals) < 2:
         return
 
@@ -1366,13 +1366,19 @@ def _move_gr_text_node(text_node: "sexpr.SList", cx: float, cy: float,
     new_y = anchor_y + rotated_y
     new_angle = (text_angle + angle_delta) % 360.0
 
-    # Rebuild the (at ...) node with new coordinates.
-    at_node.clear()
-    at_node.append(sexpr.Atom("at"))
-    at_node.append(sexpr.Atom(str(new_x)))
-    at_node.append(sexpr.Atom(str(new_y)))
+    # Clear the text_node's span so it gets re-serialized.
+    text_node.span = None
+
+    # Build a new (at ...) node and replace the old one.
+    new_at_node = sexpr.SList([sexpr.sym("at"), sexpr.number(new_x), sexpr.number(new_y)])
     if abs(new_angle) > 1e-6:
-        at_node.append(sexpr.Atom(str(new_angle)))
+        new_at_node.append(sexpr.number(new_angle))
+
+    # Find and replace the old at_node in text_node.
+    for i, ch in enumerate(text_node):
+        if ch is old_at_node:
+            text_node[i] = new_at_node
+            break
 
 
 def scatter_footprints(board: Board, seed: int) -> None:
@@ -1415,14 +1421,41 @@ def scatter_footprints(board: Board, seed: int) -> None:
         ox1 = max(xs) + span_x * 0.1
         oy1 = max(ys) + span_y * 0.1
 
-    # Build groups: exclude groups with locked members, include only 2+ movable members.
+    # Build groups: exclude groups with locked members. A group is treated as such if:
+    # - it has 2+ movable footprints, OR
+    # - it has 1 movable footprint + other members (text items, etc.)
+    from . import sexpr
+
     movable_set = {id(fp) for fp in movable}
     locked_ids = {fp.group_id for fp in board.footprints if fp.locked and fp.group_id}
     groups_dict: dict[str, list[Footprint]] = {}
     for fp in movable:
         if fp.group_id and fp.group_id not in locked_ids:
             groups_dict.setdefault(fp.group_id, []).append(fp)
-    groups = [fps for fps in groups_dict.values() if len(fps) >= 2]
+
+    # Parse all group members to find which groups have non-footprint members.
+    group_has_other_members: set[str] = set()
+    for node in board.tree:
+        if not (isinstance(node, sexpr.SList) and sexpr.head_symbol(node) == "group"):
+            continue
+        group_uuid = ""
+        member_count = 0
+        for child_node in node:
+            if isinstance(child_node, sexpr.SList) and sexpr.head_symbol(child_node) == "uuid":
+                vals = pcb_module.atoms_after_head(child_node)
+                if vals:
+                    group_uuid = vals[0].text
+            elif isinstance(child_node, sexpr.SList) and sexpr.head_symbol(child_node) == "members":
+                member_count = len(pcb_module.atoms_after_head(child_node))
+        # If group has members but not all are footprints, it has "other members"
+        if group_uuid and member_count > 0:
+            fp_count = len(groups_dict.get(group_uuid, []))
+            if fp_count > 0 and member_count > fp_count:
+                group_has_other_members.add(group_uuid)
+
+    # Include groups with 2+ footprints OR groups with 1+ footprints that have other members.
+    groups = [fps for gid, fps in groups_dict.items()
+              if len(fps) >= 2 or (len(fps) >= 1 and gid in group_has_other_members)]
     grouped_ids = {id(fp) for group in groups for fp in group}
     ungrouped = [fp for fp in movable if id(fp) not in grouped_ids]
 
@@ -1434,7 +1467,6 @@ def scatter_footprints(board: Board, seed: int) -> None:
 
     # Parse all member UUIDs in each group from board.tree so we can find text items.
     all_group_members: dict[str, list[str]] = {}  # group_uuid -> [member_uuids]
-    from . import sexpr
     for node in board.tree:
         if not (isinstance(node, sexpr.SList) and sexpr.head_symbol(node) == "group"):
             continue
