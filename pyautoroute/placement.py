@@ -1322,23 +1322,77 @@ def recenter(board: Board) -> tuple[float, float]:
     return dx, dy
 
 
+def _move_gr_text_node(text_node: "sexpr.SList", cx: float, cy: float,
+                       anchor_x: float, anchor_y: float, angle_delta: float) -> None:
+    """Move a gr_text node by the same transformation as a group's footprints.
+
+    Modifies the `(at ...)` node within the text node to apply the translation
+    and rotation. The text is moved relative to the group centroid (cx, cy) and
+    placed at the anchor position (anchor_x, anchor_y).
+
+    Args:
+        text_node: the gr_text s-expression node to move.
+        cx: group centroid x.
+        cy: group centroid y.
+        anchor_x: new group anchor x.
+        anchor_y: new group anchor y.
+        angle_delta: rotation to apply (degrees).
+    """
+    from . import pcb as pcb_module
+    from . import sexpr
+
+    at_node = pcb_module.child(text_node, "at")
+    if at_node is None:
+        return
+
+    vals = pcb_module.floats(at_node)
+    if len(vals) < 2:
+        return
+
+    tx, ty = vals[0], vals[1]
+    text_angle = vals[2] if len(vals) >= 3 else 0.0
+
+    # Compute relative position from group centroid.
+    rel_x = tx - cx
+    rel_y = ty - cy
+
+    # Apply the same rotation and translation as footprints.
+    if angle_delta != 0.0:
+        rotated_x, rotated_y = rotate(rel_x, rel_y, angle_delta)
+    else:
+        rotated_x, rotated_y = rel_x, rel_y
+
+    new_x = anchor_x + rotated_x
+    new_y = anchor_y + rotated_y
+    new_angle = (text_angle + angle_delta) % 360.0
+
+    # Rebuild the (at ...) node with new coordinates.
+    at_node.clear()
+    at_node.append(sexpr.Atom("at"))
+    at_node.append(sexpr.Atom(str(new_x)))
+    at_node.append(sexpr.Atom(str(new_y)))
+    if abs(new_angle) > 1e-6:
+        at_node.append(sexpr.Atom(str(new_angle)))
+
+
 def scatter_footprints(board: Board, seed: int) -> None:
     """Randomly scatter unlocked footprints across the board area.
 
     Gives each ``--cycles`` run or ``--place-runs`` pass a genuinely different
     starting layout so the placement annealer explores different basins of
     attraction rather than always refining the as-designed configuration. KiCad
-    groups are treated as rigid units: all members move together, preserving
-    their relative positions and angles. Positions are drawn uniformly within
-    the board outline's bounding box (or the current layout bounding box when no
-    real outline exists). Rotations are sampled from {0, 90, 180, 270}°. Locked
-    footprints are untouched.
+    groups are treated as rigid units: all members (footprints and text items)
+    move together, preserving their relative positions and angles. Positions are
+    drawn uniformly within the board outline's bounding box (or the current
+    layout bounding box when no real outline exists). Rotations are sampled from
+    {0, 90, 180, 270}°. Locked footprints are untouched.
 
     Args:
         board: the board to scatter (mutated in place).
         seed: RNG seed for reproducibility.
     """
     import random
+    from . import pcb as pcb_module
 
     movable = [fp for fp in board.footprints if not fp.locked]
     if not movable:
@@ -1372,6 +1426,39 @@ def scatter_footprints(board: Board, seed: int) -> None:
     grouped_ids = {id(fp) for group in groups for fp in group}
     ungrouped = [fp for fp in movable if id(fp) not in grouped_ids]
 
+    # Build a map of group_id -> UUID so we can find text items in the same group.
+    group_id_to_uuid: dict[str, str] = {}
+    for fp in movable:
+        if fp.group_id:
+            group_id_to_uuid[fp.group_id] = fp.group_id
+
+    # Parse all member UUIDs in each group from board.tree so we can find text items.
+    all_group_members: dict[str, list[str]] = {}  # group_uuid -> [member_uuids]
+    from . import sexpr
+    for node in board.tree:
+        if not (isinstance(node, sexpr.SList) and sexpr.head_symbol(node) == "group"):
+            continue
+        group_uuid = ""
+        for child_node in node:
+            if isinstance(child_node, sexpr.SList) and sexpr.head_symbol(child_node) == "uuid":
+                vals = pcb_module.atoms_after_head(child_node)
+                if vals:
+                    group_uuid = vals[0].text
+            elif isinstance(child_node, sexpr.SList) and sexpr.head_symbol(child_node) == "members":
+                members = [atom.text for atom in pcb_module.atoms_after_head(child_node)]
+                if group_uuid:
+                    all_group_members[group_uuid] = members
+
+    # Build uuid -> gr_text node mapping for efficient lookup.
+    gr_text_by_uuid: dict[str, sexpr.SList] = {}
+    for node in board.tree:
+        if isinstance(node, sexpr.SList) and sexpr.head_symbol(node) == "gr_text":
+            uuid_node = pcb_module.child(node, "uuid")
+            if uuid_node:
+                vals = pcb_module.atoms_after_head(uuid_node)
+                if vals:
+                    gr_text_by_uuid[vals[0].text] = node
+
     rng = random.Random(seed)
     ortho = [0.0, 90.0, 180.0, 270.0]
 
@@ -1393,6 +1480,7 @@ def scatter_footprints(board: Board, seed: int) -> None:
         cx = sum(fp.x for fp in group) / len(group)
         cy = sum(fp.y for fp in group) / len(group)
 
+        # Move footprints in the group.
         for fp in group:
             # Preserve relative position within the group by rotating and
             # translating from the group centroid to the new anchor position.
@@ -1406,6 +1494,14 @@ def scatter_footprints(board: Board, seed: int) -> None:
             fp.y = anchor_y + rotated_y
             fp.angle = (fp.angle + angle_delta) % 360.0
             fp.sync_pads()
+
+        # Move text items in the same group.
+        group_uuid = group[0].group_id
+        if group_uuid and group_uuid in all_group_members:
+            for member_uuid in all_group_members[group_uuid]:
+                if member_uuid in gr_text_by_uuid:
+                    text_node = gr_text_by_uuid[member_uuid]
+                    _move_gr_text_node(text_node, cx, cy, anchor_x, anchor_y, angle_delta)
 
 
 def place(board: Board, params: PlaceParams | None = None,
