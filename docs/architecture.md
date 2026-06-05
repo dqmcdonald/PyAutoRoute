@@ -668,7 +668,9 @@ on reload and during routing). `autoroute._add_mounting_holes` calls it once, af
 any placement has finalised the outline and before the grid is built, so the holes
 are fixed keep-outs. With `--cycles` (each cycle routes a board reloaded from disk)
 the holes are injected into the winning board instead, and a track crossing a hole
-is reported by the self-/drill-check rather than avoided.
+is reported by the self-/drill-check rather than avoided. The GUI worker
+(`gui/worker.py`) mirrors this with `Worker._add_mounting_holes`, injecting at the
+same point (after placement, before the grid) so the GUI and CLI stay in step.
 
 ### `pyautoroute.sh` — helper menu
 A repo-root Bash script offering a menu of common tasks (install, regenerate API

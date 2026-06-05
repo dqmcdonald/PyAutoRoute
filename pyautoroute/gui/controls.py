@@ -126,6 +126,11 @@ class RunConfig:
     ground_plane_layer: object = None
     ground_plane_margin: object = None
     stitch_vias: object = None
+    mounting_holes: object = None
+    hole_diameter: object = None
+    hole_margin: object = None
+    hole_pattern: object = None
+    hole_at: object = None
     existing_routes: object = None
     greedy_order: object = None
 
@@ -214,6 +219,12 @@ class ControlsPanel(ttk.Frame):
         self._ground_plane_layer = tk.StringVar(value="B.Cu")
         self._ground_plane_margin = tk.StringVar(value="")
         self._stitch_vias = tk.StringVar(value="")
+        # Mounting holes
+        self._mounting_holes = tk.BooleanVar(value=False)
+        self._hole_diameter = tk.StringVar(value="3.2")
+        self._hole_margin = tk.StringVar(value="5.0")
+        self._hole_pattern = tk.StringVar(value="corners")
+        self._hole_at = tk.StringVar(value="")
 
         self._build_ui()
         self._mode.trace_add("write", self._on_mode_change)
@@ -642,6 +653,15 @@ class ControlsPanel(ttk.Frame):
             self._ground_plane_layer.set(d["ground_plane_layer"])
         _sv("ground_plane_margin", self._ground_plane_margin)
         _sv("stitch_vias", self._stitch_vias)
+        if "mounting_holes" in d:
+            self._mounting_holes.set(bool(d["mounting_holes"]))
+        _sv("hole_diameter", self._hole_diameter)
+        _sv("hole_margin", self._hole_margin)
+        if "hole_pattern" in d and d["hole_pattern"] in ("corners", "custom"):
+            self._hole_pattern.set(d["hole_pattern"])
+        if "hole_at" in d and d["hole_at"]:
+            val = d["hole_at"]
+            self._hole_at.set(",".join(val) if isinstance(val, list) else str(val))
         if "existing_routes" in d and d["existing_routes"] in ("clear", "preserve"):
             self._existing_routes.set(d["existing_routes"])
         if "greedy_order" in d and d["greedy_order"] in ("short", "long", "shuffle"):
@@ -772,6 +792,49 @@ class ControlsPanel(ttk.Frame):
         add_tooltip(e_stitch,
                     "Pitch for a regular grid of stitching vias. Leave empty to disable.")
 
+        cb_mh = ttk.Checkbutton(pp_lf, text="Mounting holes",
+                                variable=self._mounting_holes)
+        cb_mh.grid(row=3, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(6, 2))
+        add_tooltip(cb_mh,
+                    "Add NPTH mounting holes as fixed routing keep-outs "
+                    "(the router avoids them).")
+
+        # Mounting-hole sub-fields (indented)
+        mh_inner = ttk.Frame(pp_lf)
+        mh_inner.grid(row=4, column=0, columnspan=4, sticky=tk.EW, padx=(20, 4), pady=(0, 4))
+        mh_inner.columnconfigure(1, weight=1)
+        mh_inner.columnconfigure(3, weight=1)
+
+        ttk.Label(mh_inner, text="Drill (mm):").grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
+        e_hdia = ttk.Entry(mh_inner, textvariable=self._hole_diameter, width=10)
+        e_hdia.grid(row=0, column=1, sticky=tk.EW, padx=4, pady=2)
+        add_tooltip(e_hdia, "Mounting-hole drill diameter (default 3.2 mm, for M3).")
+
+        ttk.Label(mh_inner, text="Edge margin (mm):").grid(row=0, column=2, sticky=tk.W,
+                                                           padx=(12, 4), pady=2)
+        e_hmargin = ttk.Entry(mh_inner, textvariable=self._hole_margin, width=10)
+        e_hmargin.grid(row=0, column=3, sticky=tk.EW, padx=4, pady=2)
+        add_tooltip(e_hmargin, "Inset of corner/edge holes from the board edge.")
+
+        ttk.Label(mh_inner, text="Pattern:").grid(row=1, column=0, sticky=tk.W, padx=4, pady=2)
+        pat_f = ttk.Frame(mh_inner)
+        pat_f.grid(row=1, column=1, sticky=tk.EW, padx=4, pady=2)
+        for pat in ("corners", "custom"):
+            ttk.Radiobutton(pat_f, text=pat, variable=self._hole_pattern,
+                            value=pat).pack(side=tk.LEFT, padx=2)
+        add_tooltip(pat_f,
+                    "'corners' seeds TL,TR,BL,BR; 'custom' uses only the "
+                    "positions below.")
+
+        ttk.Label(mh_inner, text="Positions:").grid(row=1, column=2, sticky=tk.W,
+                                                    padx=(12, 4), pady=2)
+        e_hat = ttk.Entry(mh_inner, textvariable=self._hole_at, width=12)
+        e_hat.grid(row=1, column=3, sticky=tk.EW, padx=4, pady=2)
+        add_tooltip(e_hat,
+                    "Extra hole positions: codes (TL/TR/BL/BR/T/B/L/R/C; Y is "
+                    "down, so 'top' = min y) or 'x,y' in mm, comma-separated. "
+                    "Leave empty for the chosen pattern only.")
+
         # ── Output (full width) ──
         os_lf = ttk.LabelFrame(outer, text="Output", padding=(8, 4))
         os_lf.pack(fill=tk.X, pady=(0, 6))
@@ -897,6 +960,11 @@ class ControlsPanel(ttk.Frame):
             ground_plane_layer=self._ground_plane_layer.get(),
             ground_plane_margin=_f(self._ground_plane_margin),
             stitch_vias=_f(self._stitch_vias),
+            mounting_holes=self._mounting_holes.get(),
+            hole_diameter=_f(self._hole_diameter, 3.2),
+            hole_margin=_f(self._hole_margin, 5.0),
+            hole_pattern=self._hole_pattern.get() or "corners",
+            hole_at=([self._hole_at.get()] if self._hole_at.get().strip() else None),
             existing_routes=self._existing_routes.get() or "clear",
             greedy_order=self._greedy_order.get() or "short",
         )
@@ -952,6 +1020,11 @@ class ControlsPanel(ttk.Frame):
             ground_plane_layer=cfg.ground_plane_layer or "B.Cu",
             ground_plane_margin=cfg.ground_plane_margin,
             stitch_vias=cfg.stitch_vias,
+            mounting_holes=cfg.mounting_holes or False,
+            hole_diameter=cfg.hole_diameter or 3.2,
+            hole_margin=cfg.hole_margin or 5.0,
+            hole_pattern=cfg.hole_pattern or "corners",
+            hole_at=cfg.hole_at,
             existing_routes=cfg.existing_routes or "clear",
             greedy_order=cfg.greedy_order or "short",
         )

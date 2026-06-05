@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.51.0
+
+- **GUI**: mounting holes (drill-hole plan, phase 4). A **Mounting holes** checkbox with drill-diameter / edge-margin fields, a corners/custom pattern picker, and an extra-positions entry now live in the GUI's Post-processing panel. The worker injects the holes after placement and before the grid is built — the same point as the CLI — so they act as fixed routing obstacles. The GUI self-check count now also includes hole-to-hole (drill) violations.
+
 ## 0.50.0
 
 - **Feature**: auto-add NPTH mounting holes, `--mounting-holes` (drill-hole plan, phases 2–3). New flags `--hole-diameter` (default 3.2 mm, M3), `--hole-margin` (default 5 mm), `--hole-pattern {corners,custom}`, and a repeatable `--hole-at` taking either a location code (`TL`/`TR`/`BL`/`BR` corners, `T`/`B`/`L`/`R` edge mid-points, `C` centre — Y-down) or an explicit `x,y` in mm. Holes are emitted by the new `pcb.make_npth()` as `MountingHole` footprints and injected (after placement finalises the outline, before the grid is built) as fixed routing keep-outs, so the router never crosses a barrel. Holes that fall outside the outline, overlap copper, or sit too close to another hole are skipped with a warning. New `pyautoroute.mountingholes` module.

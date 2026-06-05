@@ -603,6 +603,10 @@ board after routing (each cycle routes a board reloaded from disk), so a track
 that happens to cross a hole is reported by the self-/drill-check rather than
 avoided — prefer the non-`--cycles` path when mounting-hole keep-outs matter.
 
+The same controls are available in the GUI under **Post-processing → Mounting
+holes** (drill diameter, edge margin, corners/custom pattern, and an extra
+positions field).
+
 ## Helper script
 
 `./pyautoroute.sh` is an interactive menu of common tasks — install the package,

@@ -1,7 +1,7 @@
 # Plan: drill geometry, hole-to-hole DRC, and auto-added mounting holes
 
-Status: **Phases 1–3 shipped** (0.49.0 drill DRC; 0.50.0 mounting holes).
-Phase 4 (GUI) deferred. This is a design record. It expands
+Status: **Shipped** (0.49.0 drill DRC; 0.50.0 mounting holes; 0.51.0 GUI).
+All four phases landed. This is a design record. It expands
 roadmap items **#5 (drill geometry + hole-to-hole DRC)** and **#6 (auto-add
 mounting holes, `--mounting-holes`)** from
 [`feature-suggestions.md`](feature-suggestions.md), and adds the requested
@@ -346,8 +346,11 @@ post-route one.
    grammar (`TL`/edge/`C`/`x,y`), `--hole-pattern custom`, and post-placement /
    pre-grid injection so holes sit on the finalised outline and the router
    respects them. Shipped in 0.50.0.
-4. **(Optional) GUI exposure** — a "Mounting holes" checkbox + diameter/margin
-   and a corner picker, mirroring the ground-plane controls. CLI-first; deferred.
+4. ✅ **GUI exposure** — a "Mounting holes" checkbox + drill / edge-margin
+   fields, a corners/custom pattern picker, and an extra-positions entry in the
+   Post-processing panel, mirroring the ground-plane controls; the worker injects
+   the holes before the grid is built (after placement), like the CLI. Shipped in
+   0.51.0.
 
 > **Implementation note (vs. the original plan).** Injection happens at a single
 > point in `autoroute.run` — after any placement finalises the outline and before

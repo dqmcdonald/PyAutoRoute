@@ -41,7 +41,9 @@ _DEFAULTS = dict(
     place_runs=1, cycles=1, place_feedback=False, congestion_weight=5.0,
     snapshots=0, silk_labels=False, keep_outline=False,
     ground_plane=False, ground_net=None, ground_plane_layer="B.Cu",
-    ground_plane_margin=None, stitch_vias=None)
+    ground_plane_margin=None, stitch_vias=None,
+    mounting_holes=False, hole_diameter=3.2, hole_margin=5.0,
+    hole_pattern="corners", hole_at=None)
 
 
 def _copy_board(tmp_path):
@@ -125,6 +127,20 @@ def test_worker_cycles_with_feedback_clean(tmp_path):
     assert len(done) == 1
     assert done[0].routed > 0 and done[0].violations == []
     assert any(isinstance(e, Phase) and "best of" in e.name for e in events)
+
+
+def test_worker_mounting_holes_clean(tmp_path):
+    # mounting holes injected before routing, as fixed obstacles
+    board = _copy_board(tmp_path)
+    events = _drive(_cfg(board, mounting_holes=True, hole_margin=5.0))
+    _no_error(events)
+    done = [e for e in events if isinstance(e, Done)]
+    assert len(done) == 1
+    # the run stays DRC-clean (router avoided the holes; spacing respected)
+    assert done[0].routed > 0 and done[0].violations == []
+    # the mounting-holes step ran and reported a count
+    assert any(isinstance(e, Phase) and e.name.startswith("mounting holes:")
+               for e in events)
 
 
 def test_worker_ground_plane_clean(tmp_path):
