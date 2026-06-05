@@ -140,6 +140,7 @@ class ControlsPanel(ttk.Frame):
         on_run: callback(RunConfig) invoked when Run is pressed.
         on_stop: callback() invoked when Stop is pressed.
         on_apply: callback() invoked when Apply to Project is pressed.
+        on_save_as: callback() invoked when Save As… is pressed.
     """
 
     def __init__(self, parent,
@@ -147,6 +148,7 @@ class ControlsPanel(ttk.Frame):
                  on_apply: Callable,
                  on_open: Callable | None = None,
                  on_save_constraints: Callable | None = None,
+                 on_save_as: Callable | None = None,
                  **kw):
         super().__init__(parent, **kw)
         self._on_run = on_run
@@ -154,6 +156,7 @@ class ControlsPanel(ttk.Frame):
         self._on_apply = on_apply
         self._on_open = on_open
         self._on_save_constraints = on_save_constraints
+        self._on_save_as = on_save_as
 
         # ── vars ──
         self._input_path = tk.StringVar()
@@ -454,6 +457,12 @@ class ControlsPanel(ttk.Frame):
         add_tooltip(self._apply_btn,
                     "Back up the original .kicad_pcb and replace it with the "
                     "routed result. Requires a completed run.")
+        self._save_as_btn = ttk.Button(af, text="Save As…",
+                                        command=lambda: self._on_save_as and self._on_save_as(),
+                                        state=tk.DISABLED)
+        self._save_as_btn.pack(side=tk.LEFT, padx=2)
+        add_tooltip(self._save_as_btn,
+                    "Save the routed result to a chosen file. Requires a completed run.")
         self._save_constraints_btn = ttk.Button(af, text="Save Constraints",
                                                  command=self._on_save_constraints,
                                                  state=tk.DISABLED)
@@ -790,6 +799,8 @@ class ControlsPanel(ttk.Frame):
 
     def set_apply_enabled(self, enabled: bool) -> None:
         self._apply_btn.configure(
+            state=tk.NORMAL if enabled else tk.DISABLED)
+        self._save_as_btn.configure(
             state=tk.NORMAL if enabled else tk.DISABLED)
 
     def set_save_constraints_enabled(self, enabled: bool) -> None:

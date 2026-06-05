@@ -9,7 +9,7 @@ import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from pyautoroute import __version__
 
@@ -195,6 +195,7 @@ class App:
             on_apply=self._apply_to_project,
             on_open=self._open_board,
             on_save_constraints=self._save_constraints,
+            on_save_as=self._save_as,
         )
         pw.add(self._controls, weight=0)
 
@@ -413,6 +414,26 @@ class App:
                             f"Replaced {orig.name}.\n"
                             f"Backup: {bak.name}")
         self._status_var.set(f"Applied — backup: {bak.name}")
+
+    def _save_as(self) -> None:
+        if self._last_done is None:
+            return
+        out_path = Path(self._last_done.out_path)
+        dest = filedialog.asksaveasfilename(
+            title="Save board as",
+            initialdir=str(out_path.parent),
+            initialfile=out_path.name,
+            defaultextension=".kicad_pcb",
+            filetypes=[("KiCad PCB", "*.kicad_pcb"), ("All files", "*.*")],
+        )
+        if not dest:
+            return
+        try:
+            shutil.copy2(out_path, dest)
+        except OSError as exc:
+            messagebox.showerror("Save failed", str(exc))
+            return
+        self._status_var.set(f"Saved → {Path(dest).name}")
 
     # ── board open ────────────────────────────────────────────────────
 
