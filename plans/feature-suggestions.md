@@ -107,6 +107,9 @@ limitation.
 
 ### 5. Drill geometry + hole-to-hole DRC
 
+> Design record: [`drill-hole-plan.md`](drill-hole-plan.md) (covers this item
+> and item #6 together, plus a location-code extension for #6).
+
 The richest low-hanging item, because the scaffolding is already half-built:
 
 - `min_hole_to_hole` is **parsed and stored but never read** anywhere
@@ -124,6 +127,10 @@ holes as routing obstacles. Closes a real DRC gap with machinery that mostly
 exists.
 
 ### 6. Auto-add mounting holes (`--mounting-holes`)
+
+> Design record: [`drill-hole-plan.md`](drill-hole-plan.md), including the
+> `--hole-at` location-code grammar (`TL`/`TR`/`BL`/`BR`, edge midpoints, `C`,
+> and explicit `x,y`).
 
 A common post-routing task: add NPTH (non-plated through-hole) mounting holes
 at the corners (or other standard positions) of the board outline so the PCB
