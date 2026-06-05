@@ -585,8 +585,8 @@ class ControlsPanel(ttk.Frame):
         _sv("place_runs", self._place_runs)
         _sv("cycles", self._cycles)
         _sv("congestion_weight", self._congestion_weight)
-        if "scatter_start" in d:
-            self._scatter_start.set(bool(d["scatter_start"]))
+        if "scatter" in d:
+            self._scatter_start.set(bool(d["scatter"]))
         if "place_feedback" in d:
             self._place_feedback.set(bool(d["place_feedback"]))
         _sv("place_margin", self._place_margin)
@@ -618,6 +618,8 @@ class ControlsPanel(ttk.Frame):
         _sv("place_overlap_weight", self._place_ow)
         _sv("place_compact_weight", self._place_cw)
         _sv("place_edge_weight", self._place_ew)
+        if "log" in d:
+            self._log.set(d["log"] is not None)
         if "quiet" in d:
             self._quiet.set(bool(d["quiet"]))
         if "silk_labels" in d:
@@ -874,7 +876,7 @@ class ControlsPanel(ttk.Frame):
             congestion_weight=_f(self._congestion_weight, 5.0),
             snapshots=0,
             quiet=self._quiet.get(),
-            log=None,
+            log="" if self._log.get() else None,
             auto=False,
             auto_yes=False,
             silk_labels=self._silk_labels.get(),
@@ -929,7 +931,7 @@ class ControlsPanel(ttk.Frame):
             congestion_weight=cfg.congestion_weight or 5.0,
             snapshots=0,
             quiet=cfg.quiet,
-            log=None,
+            log=cfg.log,
             auto=False,
             auto_yes=False,
             silk_labels=cfg.silk_labels or False,
