@@ -1,6 +1,7 @@
 # Plan: drill geometry, hole-to-hole DRC, and auto-added mounting holes
 
-Status: **Proposed.** This is a design record, not yet implemented. It expands
+Status: **Phases 1–3 shipped** (0.49.0 drill DRC; 0.50.0 mounting holes).
+Phase 4 (GUI) deferred. This is a design record. It expands
 roadmap items **#5 (drill geometry + hole-to-hole DRC)** and **#6 (auto-add
 mounting holes, `--mounting-holes`)** from
 [`feature-suggestions.md`](feature-suggestions.md), and adds the requested
@@ -336,17 +337,26 @@ post-route one.
 
 ## Phasing
 
-1. **Drill DRC core (#5).** `Drill` / `board_drills` / `drill_violations`, the
-   `board_obstacles` barrel keep-out, self-check integration + reporting. No new
-   CLI surface beyond a line in the DRC summary. Lowest risk, immediate value,
-   and it builds the obstacle machinery #6 depends on.
-2. **`make_npth` + `--mounting-holes corners`.** Four-corner NPTH holes injected
-   as fixed obstacles in the route-only path; warnings for collisions.
-3. **Location codes + `--hole-at` + `--place` interaction.** The full code
-   grammar (`TL`/edge/`C`/`x,y`), `--hole-pattern custom`, and pre-place
-   injection so the annealer respects holes.
+1. ✅ **Drill DRC core (#5)** — `Drill` / `board_drills` / `drill_violations`, the
+   `board_obstacles` barrel keep-out, self-check integration + a `drill-check:`
+   report line. Shipped in 0.49.0.
+2. ✅ **`make_npth` + `--mounting-holes corners`** — NPTH holes injected as fixed
+   obstacles; warnings for collisions. Shipped in 0.50.0.
+3. ✅ **Location codes + `--hole-at` + placement interaction** — the full code
+   grammar (`TL`/edge/`C`/`x,y`), `--hole-pattern custom`, and post-placement /
+   pre-grid injection so holes sit on the finalised outline and the router
+   respects them. Shipped in 0.50.0.
 4. **(Optional) GUI exposure** — a "Mounting holes" checkbox + diameter/margin
    and a corner picker, mirroring the ground-plane controls. CLI-first; deferred.
+
+> **Implementation note (vs. the original plan).** Injection happens at a single
+> point in `autoroute.run` — after any placement finalises the outline and before
+> the grid is built — covering the place-only, place+route, and route-only paths
+> uniformly (rather than a separate pre-place hook). The `--cycles` path routes
+> each cycle on a board reloaded from disk, so holes are injected into the winning
+> board afterwards; a track crossing a hole is then surfaced by the self-/drill-
+> check rather than avoided. Collisions are skipped-with-warning (no auto-nudge),
+> as planned.
 
 ## Risks & open questions
 

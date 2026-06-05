@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.50.0
+
+- **Feature**: auto-add NPTH mounting holes, `--mounting-holes` (drill-hole plan, phases 2–3). New flags `--hole-diameter` (default 3.2 mm, M3), `--hole-margin` (default 5 mm), `--hole-pattern {corners,custom}`, and a repeatable `--hole-at` taking either a location code (`TL`/`TR`/`BL`/`BR` corners, `T`/`B`/`L`/`R` edge mid-points, `C` centre — Y-down) or an explicit `x,y` in mm. Holes are emitted by the new `pcb.make_npth()` as `MountingHole` footprints and injected (after placement finalises the outline, before the grid is built) as fixed routing keep-outs, so the router never crosses a barrel. Holes that fall outside the outline, overlap copper, or sit too close to another hole are skipped with a warning. New `pyautoroute.mountingholes` module.
+
 ## 0.49.0
 
 - **Feature**: drill geometry + hole-to-hole DRC (drill-hole plan, phase 1). The previously-parsed-but-unused `min_hole_to_hole` rule is now enforced by a new `geometry.drill_violations` self-check, printed as a `drill-check:` line and folded into the exit code. Drilled through-hole / NPTH pads are now registered as all-layer routing keep-outs (`board_obstacles` emits a barrel disk on the layers a pad lacks copper), so the router never drives copper across a hole. `RoutingStats` gains a `drill_violations` field.

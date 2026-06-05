@@ -654,6 +654,22 @@ skips filled zones, so PyAutoRoute's self-check cannot verify the pour's clearan
 that is delegated to KiCad's fill / `kicad-cli`. The self-check passes for the routed
 traces; the zone boundary is emitted but unfilled if `kicad-cli` is absent (warned).
 
+### `mountingholes.py` — auto-add NPTH mounting holes
+
+`--mounting-holes` resolves hole positions from **location codes** (`TL`/`TR`/`BL`/
+`BR` corners, `T`/`B`/`L`/`R` edge mid-points, `C` centre — Y-down, so "top" = min y)
+and/or explicit `x,y`, inset from the outline's bounding box by `--hole-margin`.
+`build()` validates each against the outline, existing copper (`board_obstacles`),
+and other holes (`board_drills` + `min_hole_to_hole`), skipping any that collide
+with a warning. Accepted holes are emitted by `pcb.make_npth()` (a `MountingHole`
+footprint with a netless `np_thru_hole` pad, `size == drill`) and appended to both
+`board.tree` (so they are written) and `board.pads` (so they are seen as obstacles
+on reload and during routing). `autoroute._add_mounting_holes` calls it once, after
+any placement has finalised the outline and before the grid is built, so the holes
+are fixed keep-outs. With `--cycles` (each cycle routes a board reloaded from disk)
+the holes are injected into the winning board instead, and a track crossing a hole
+is reported by the self-/drill-check rather than avoided.
+
 ### `pyautoroute.sh` — helper menu
 A repo-root Bash script offering a menu of common tasks (install, regenerate API
 docs via the `pdoc` recipe, run the short/long test suite, run the performance
