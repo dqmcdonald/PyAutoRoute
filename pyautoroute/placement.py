@@ -1327,9 +1327,11 @@ def scatter_footprints(board: Board, seed: int) -> None:
 
     Gives each ``--cycles`` run or ``--place-runs`` pass a genuinely different
     starting layout so the placement annealer explores different basins of
-    attraction rather than always refining the as-designed configuration.  Positions are drawn uniformly within
+    attraction rather than always refining the as-designed configuration. KiCad
+    groups are treated as rigid units: all members move together, preserving
+    their relative positions and angles. Positions are drawn uniformly within
     the board outline's bounding box (or the current layout bounding box when no
-    real outline exists).  Rotations are sampled from {0, 90, 180, 270}°. Locked
+    real outline exists). Rotations are sampled from {0, 90, 180, 270}°. Locked
     footprints are untouched.
 
     Args:
@@ -1359,13 +1361,51 @@ def scatter_footprints(board: Board, seed: int) -> None:
         ox1 = max(xs) + span_x * 0.1
         oy1 = max(ys) + span_y * 0.1
 
+    # Build groups: exclude groups with locked members, include only 2+ movable members.
+    movable_set = {id(fp) for fp in movable}
+    locked_ids = {fp.group_id for fp in board.footprints if fp.locked and fp.group_id}
+    groups_dict: dict[str, list[Footprint]] = {}
+    for fp in movable:
+        if fp.group_id and fp.group_id not in locked_ids:
+            groups_dict.setdefault(fp.group_id, []).append(fp)
+    groups = [fps for fps in groups_dict.values() if len(fps) >= 2]
+    grouped_ids = {id(fp) for group in groups for fp in group}
+    ungrouped = [fp for fp in movable if id(fp) not in grouped_ids]
+
     rng = random.Random(seed)
     ortho = [0.0, 90.0, 180.0, 270.0]
-    for fp in movable:
+
+    # Scatter ungrouped footprints independently.
+    for fp in ungrouped:
         fp.x = rng.uniform(ox0, ox1)
         fp.y = rng.uniform(oy0, oy1)
         fp.angle = rng.choice(ortho)
         fp.sync_pads()
+
+    # Scatter groups as rigid units.
+    for group in groups:
+        # Pick a random position and rotation for the group.
+        anchor_x = rng.uniform(ox0, ox1)
+        anchor_y = rng.uniform(oy0, oy1)
+        angle_delta = rng.choice(ortho) - group[0].angle
+
+        # Compute the group's centroid and offsets from it (before moving).
+        cx = sum(fp.x for fp in group) / len(group)
+        cy = sum(fp.y for fp in group) / len(group)
+
+        for fp in group:
+            # Preserve relative position within the group by rotating and
+            # translating from the group centroid to the new anchor position.
+            rel_x = fp.x - cx
+            rel_y = fp.y - cy
+            if angle_delta != 0.0:
+                rotated_x, rotated_y = rotate(rel_x, rel_y, angle_delta)
+            else:
+                rotated_x, rotated_y = rel_x, rel_y
+            fp.x = anchor_x + rotated_x
+            fp.y = anchor_y + rotated_y
+            fp.angle = (fp.angle + angle_delta) % 360.0
+            fp.sync_pads()
 
 
 def place(board: Board, params: PlaceParams | None = None,
