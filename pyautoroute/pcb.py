@@ -1157,6 +1157,55 @@ def make_edge_rect(x1: float, y1: float, x2: float, y2: float,
     ])
 
 
+def make_npth(x: float, y: float, drill: float, *, ref: str = "MH1") -> SList:
+    """Build an NPTH mounting-hole ``(footprint ...)`` node.
+
+    The footprint carries a single non-plated through-hole pad with no copper
+    annular ring (``size == drill``) on every copper layer, matching KiCad's
+    ``MountingHole`` library style. It has no net, and is excluded from the BoM
+    and position files (``(attr ...)``). Because the pad round-trips through
+    `load_board` as an `np_thru_hole` `Pad` with a `drill`, the hole is picked up
+    by `pyautoroute.geometry.board_drills` / `board_obstacles` on reload.
+
+    Args:
+        x: hole centre x (mm).
+        y: hole centre y (mm).
+        drill: drill diameter (mm).
+        ref: reference designator for the footprint (e.g. ``"MH1"``).
+
+    Returns:
+        A ``(footprint ...)`` node with a fresh uuid, ready for
+        `write_board(..., new_nodes=...)`.
+    """
+    def _u() -> SList:
+        return SList([sexpr.sym("uuid"), sexpr.string(str(_uuid.uuid4()))])
+
+    pad = SList([
+        sexpr.sym("pad"),
+        sexpr.string(""), sexpr.sym("np_thru_hole"), sexpr.sym("circle"),
+        _xy_node("at", 0.0, 0.0),
+        SList([sexpr.sym("size"), sexpr.number(drill), sexpr.number(drill)]),
+        SList([sexpr.sym("drill"), sexpr.number(drill)]),
+        SList([sexpr.sym("layers"), sexpr.string("*.Cu"), sexpr.string("*.Mask")]),
+        _u(),
+    ])
+    return SList([
+        sexpr.sym("footprint"),
+        sexpr.string("MountingHole"),
+        SList([sexpr.sym("layer"), sexpr.string("F.Cu")]),
+        _u(),
+        _xy_node("at", x, y),
+        SList([sexpr.sym("attr"),
+               sexpr.sym("exclude_from_pos_files"),
+               sexpr.sym("exclude_from_bom")]),
+        SList([sexpr.sym("property"), sexpr.string("Reference"), sexpr.string(ref),
+               _xy_node("at", 0.0, 0.0),
+               SList([sexpr.sym("layer"), sexpr.string("F.SilkS")]),
+               _u()]),
+        pad,
+    ])
+
+
 def _pad_half_extent(pad: Pad) -> float:
     """Rotation-independent half-extent of a pad (half its bounding diagonal).
 

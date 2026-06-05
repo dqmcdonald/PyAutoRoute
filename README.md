@@ -382,12 +382,16 @@ positions and the outline, inspect the output in KiCad before relying on it.
   wirelength:    1039.7 mm
   vias:          51
   self-check:    clean (0 clearance violations)
+  drill-check:   clean (0 hole-to-hole violations)
   runtime:       12.34s real, 12.10s cpu
 ```
 
 The tool runs an in-repo geometric **self-check** on its own output and reports
-any clearance violation it finds (there should be none). Open the
-`*_routed.kicad_pcb` in KiCad to inspect it.
+any clearance violation it finds (there should be none). A second **drill-check**
+reports any pair of through-hole/NPTH holes closer than the board's
+`min_hole_to_hole` rule; drilled holes are also treated as routing keep-outs, so
+copper is never routed across a barrel. Either check finding a violation makes
+the exit code non-zero. Open the `*_routed.kicad_pcb` in KiCad to inspect it.
 
 ## Verifying with KiCad (optional)
 
@@ -559,6 +563,49 @@ to fill.
 Works with `--place` and `--cycles` (applies to the winning routed board before
 write). Auto-detects the GND net by name (exact `GND` first, then glob match on
 `gnd*` / `*ground*`); use `--ground-net` to specify if multiple grounds exist.
+
+## Mounting holes (`--mounting-holes`)
+
+Auto-add non-plated through-hole (NPTH) mounting holes and treat them as fixed
+routing obstacles:
+
+```bash
+pyautoroute board.kicad_pcb --mounting-holes \
+    [--hole-diameter 3.2] \      # M3 by default
+    [--hole-margin 5.0] \        # inset from the board edge
+    [--hole-pattern corners|custom] \
+    [--hole-at TL,TR,BL,BR] [--hole-at 25,15] ...
+```
+
+Holes are placed before routing (after placement, if `--place` is used, so they
+sit on the finalised outline) and registered as keep-outs, so the router never
+drives copper across a barrel. Each hole's spacing is checked against the
+board's `min_hole_to_hole` rule.
+
+**Positions.** `--hole-pattern corners` (the default) seeds the four corners
+`TL,TR,BL,BR`; `custom` uses only `--hole-at`. Each `--hole-at` is a **location
+code** or an explicit **`x,y`** coordinate (mm), and codes may be comma-separated:
+
+| Code | Anchor (inset by `--hole-margin`) |
+|---|---|
+| `TL` `TR` `BL` `BR` | the four corners |
+| `T` `B` `L` `R` | the mid-point of that edge |
+| `C` | the board centre |
+| `x,y` | an explicit absolute coordinate (mm) |
+
+> **Note:** KiCad board coordinates are **Y-down**, so "top" means *minimum y* —
+> `TL` is the corner with the smallest x and y.
+
+A hole that lands outside the outline, overlaps existing copper, or sits too
+close to another hole is **skipped with a warning** rather than nudged, so
+positions stay predictable. With `--cycles`, holes are added to the winning
+board after routing (each cycle routes a board reloaded from disk), so a track
+that happens to cross a hole is reported by the self-/drill-check rather than
+avoided — prefer the non-`--cycles` path when mounting-hole keep-outs matter.
+
+The same controls are available in the GUI under **Post-processing → Mounting
+holes** (drill diameter, edge margin, corners/custom pattern, and an extra
+positions field).
 
 ## Helper script
 

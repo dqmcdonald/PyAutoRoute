@@ -127,6 +127,17 @@ a shared vertex — common in hand-edited KiCad boards) still close into a polyg
 re-derives copper per layer and reports any different-net pair closer than the
 required clearance, using an STRtree.
 
+**Drill geometry.** `board_drills(board)` collects every drilled through-hole
+pad (`thru_hole` / `np_thru_hole` with a `Pad.drill`) as a net-agnostic,
+all-layer `Drill`. `drill_violations(board, rules)` is a second self-check: a
+single STRtree pass that reports any hole pair whose edge-to-edge gap is below
+the board's flat `min_hole_to_hole` rule. Unlike copper clearance there is **no
+same-net exemption** — two holes on the same net still need spacing.
+`board_obstacles` also emits an **all-layer barrel keep-out** for each drilled
+pad on the copper layers it lacks a ring (the common case being a layerless NPTH
+mounting hole), so the router never drives copper across a hole — see the
+"DRC-clean by construction" invariant below.
+
 ### `grid.py` — static occupancy
 A uniform node grid over the board's bounding box. `owner[layer, row, col]` holds
 *static* occupancy:
@@ -643,6 +654,24 @@ skips filled zones, so PyAutoRoute's self-check cannot verify the pour's clearan
 that is delegated to KiCad's fill / `kicad-cli`. The self-check passes for the routed
 traces; the zone boundary is emitted but unfilled if `kicad-cli` is absent (warned).
 
+### `mountingholes.py` — auto-add NPTH mounting holes
+
+`--mounting-holes` resolves hole positions from **location codes** (`TL`/`TR`/`BL`/
+`BR` corners, `T`/`B`/`L`/`R` edge mid-points, `C` centre — Y-down, so "top" = min y)
+and/or explicit `x,y`, inset from the outline's bounding box by `--hole-margin`.
+`build()` validates each against the outline, existing copper (`board_obstacles`),
+and other holes (`board_drills` + `min_hole_to_hole`), skipping any that collide
+with a warning. Accepted holes are emitted by `pcb.make_npth()` (a `MountingHole`
+footprint with a netless `np_thru_hole` pad, `size == drill`) and appended to both
+`board.tree` (so they are written) and `board.pads` (so they are seen as obstacles
+on reload and during routing). `autoroute._add_mounting_holes` calls it once, after
+any placement has finalised the outline and before the grid is built, so the holes
+are fixed keep-outs. With `--cycles` (each cycle routes a board reloaded from disk)
+the holes are injected into the winning board instead, and a track crossing a hole
+is reported by the self-/drill-check rather than avoided. The GUI worker
+(`gui/worker.py`) mirrors this with `Worker._add_mounting_holes`, injecting at the
+same point (after placement, before the grid) so the GUI and CLI stay in step.
+
 ### `pyautoroute.sh` — helper menu
 A repo-root Bash script offering a menu of common tasks (install, regenerate API
 docs via the `pdoc` recipe, run the short/long test suite, run the performance
@@ -706,6 +735,14 @@ Clearance is enforced discretely on the grid, not checked after the fact.
   clear of it. Without this, tightly-packed pads (e.g. a DIP switch flanked by
   other nets) have their interiors flooded by neighbours' clearance and the router
   stops one cell short, producing unconnected tracks.
+
+- **Drill barrels are keep-outs too.** A drilled through-hole pad contributes an
+  all-layer barrel disk to `board_obstacles` on any copper layer it lacks a ring
+  (e.g. a non-plated mounting hole with no copper). The barrel is inflated by the
+  same `margin`, so copper can never be routed across a hole — for the same
+  reason it can't cross a pad: the keep-out is baked into the grid before A\*
+  runs. Hole-*to-hole* spacing (`min_hole_to_hole`) is not a routing constraint
+  but a placement/DRC one, reported by `geometry.drill_violations`.
 
 Net result: a route returned by A* over this occupancy is clearance-legal as a
 continuous shape, so the written board passes DRC. Connections that can't be

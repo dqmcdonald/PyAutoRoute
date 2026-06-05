@@ -401,6 +401,35 @@ def _dup_free_via_ids(board, new_nodes: list) -> set[int]:
     return dup_ids
 
 
+def _add_mounting_holes(args, board, rules, rep: Reporter) -> None:
+    """Inject ``--mounting-holes`` NPTH holes into the board (no-op if disabled).
+
+    Resolves and validates the requested holes against the (now-finalised)
+    outline and appends them to the board model so they are written and treated
+    as fixed routing obstacles. Warnings are logged and printed.
+
+    Args:
+        args: the parsed CLI namespace.
+        board: the board to mutate.
+        rules: the design rules.
+        rep: the reporter (for logging).
+    """
+    if not getattr(args, "mounting_holes", False):
+        return
+    from . import mountingholes
+    nodes, warnings = mountingholes.build(
+        board, rules, diameter=args.hole_diameter, margin=args.hole_margin,
+        pattern=args.hole_pattern, hole_at=args.hole_at)
+    msg = f"mounting holes: {len(nodes)} added"
+    rep.log(msg)
+    if not args.quiet:
+        print(f"  {msg}")
+    for w in warnings:
+        rep.log(f"mounting holes: {w}")
+        if not args.quiet:
+            print(f"  ⚠ {w}")
+
+
 def _results_to_nodes(board, grid: Grid, results) -> list:
     """Flatten routed results into the KiCad nodes to append to the board.
 
@@ -694,6 +723,11 @@ def run(args: argparse.Namespace, _print_version: bool = True,
             if not args.quiet:
                 print(f"  ⚠ {w}")
 
+    # Mounting holes: inject now — after any placement has finalised the outline,
+    # before the grid is built — so the holes become fixed routing obstacles and
+    # are written to both the place-only and routed outputs.
+    _add_mounting_holes(args, board, rules, rep)
+
     if args.place_only:
         rep.phase("writing placed board")
         _stamp(board, "placed")
@@ -710,9 +744,10 @@ def run(args: argparse.Namespace, _print_version: bool = True,
                 print("  note: kicad-cli not available; open in KiCad to refill copper zones")
         placed_board = pcb.load_board(out_path)
         violations = geometry.clearance_violations(placed_board, rules)
+        drill_viol = geometry.drill_violations(placed_board, rules)
         rep.done()
-        _report_placed(rep, out_path, board, violations)
-        return _finish(rep, args, out_path, placed_board, violations)
+        _report_placed(rep, out_path, board, violations, drill_viol)
+        return _finish(rep, args, out_path, placed_board, violations, drill_viol)
 
     if args.auto:
         from . import tune
@@ -1016,13 +1051,15 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     # reload the written board and self-check clearances
     routed_board = pcb.load_board(out_path)
     violations = geometry.clearance_violations(routed_board, rules)
+    drill_viol = geometry.drill_violations(routed_board, rules)
     final_stats = routing_stats(routed_board, rules, exclude=args.exclude_net)
     rep.done()
 
     total_conns = len(conns) + n_pre_routed
     _report(rep, out_path, total_conns, routed + n_pre_routed, unrouted, length, vias,
             violations, excluded, init_stats=init_stats, final_stats=final_stats,
-            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
+            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight,
+            drill_viol=drill_viol)
 
     if dp_route_results:
         from .report import diff_pair_stats, format_diff_pair_table
@@ -1037,7 +1074,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         rep.log(table)
 
     _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
-    return _finish(rep, args, out_path, routed_board, violations)
+    return _finish(rep, args, out_path, routed_board, violations, drill_viol)
 
 
 def _save_cycle(args, rules, rep, out_path: Path, cr, cycle_num: int,
@@ -1268,6 +1305,11 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
 
     rep.phase("writing placed + routed board")
     _stamp(sel_board, "placed + routed")
+    # With --cycles each cycle routed on a board reloaded from disk, so the holes
+    # weren't obstacles during routing; inject them into the winning board so the
+    # output carries them. A track that happens to cross a hole is surfaced by the
+    # self-/drill-check rather than silently routed through.
+    _add_mounting_holes(args, sel_board, rules, rep)
     new_nodes = _results_to_nodes(sel_board, grid, final_results)
     if args.ground_plane:
         from . import groundplane
@@ -1303,14 +1345,16 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
 
     routed_board = pcb.load_board(out_path)
     violations = geometry.clearance_violations(routed_board, rules)
+    drill_viol = geometry.drill_violations(routed_board, rules)
     final_stats = routing_stats(routed_board, rules, exclude=args.exclude_net)
     rep.done()
 
     _report(rep, out_path, best.n_conns, best.routed, best.unrouted, best.length,
             best.vias, violations, excluded, init_stats=init_stats, final_stats=final_stats,
-            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
+            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight,
+            drill_viol=drill_viol)
     _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
-    return _finish(rep, args, out_path, routed_board, violations)
+    return _finish(rep, args, out_path, routed_board, violations, drill_viol)
 
 
 def _maybe_replace_in_place(
@@ -1356,7 +1400,8 @@ def _maybe_replace_in_place(
         rep.log(msg)
 
 
-def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
+def _finish(rep: Reporter, args, out_path: Path, board, violations,
+            drill_viol=()) -> int:
     """Report timing and close the log; the shared tail of the routing and
     place-only paths.
 
@@ -1365,10 +1410,11 @@ def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
         args: the parsed CLI namespace.
         out_path: the output board path (basis for the log name).
         board: the reloaded output board (unused; kept for signature symmetry).
-        violations: the self-check violations (empty == clean) for the exit code.
+        violations: the clearance self-check violations (empty == clean).
+        drill_viol: the hole-to-hole self-check violations (empty == clean).
 
     Returns:
-        Process exit code: 0 if `violations` is empty, else 2.
+        Process exit code: 0 if both self-checks are clean, else 2.
     """
     real, cpu = rep.runtime()
     timing = f"runtime:       {real:.2f}s real, {cpu:.2f}s cpu"
@@ -1378,12 +1424,13 @@ def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
     if rep.log_file is not None and not args.quiet:
         print(f"  log:           {_resolve_log_path(args, out_path)}")
     rep.close()
-    return 0 if not violations else 2
+    return 0 if not (violations or drill_viol) else 2
 
 
 def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
             violations, excluded, *, init_stats=None, final_stats=None,
-            via_weight: float = 2.0, unrouted_weight: float = 100.0) -> None:
+            via_weight: float = 2.0, unrouted_weight: float = 100.0,
+            drill_viol=()) -> None:
     """Print the final metrics summary and mirror it to the log.
 
     Args:
@@ -1419,6 +1466,11 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
                      f"e.g. {violations[0]}")
     else:
         lines.append("self-check:    clean (0 clearance violations)")
+    if drill_viol:
+        lines.append(f"DRILL-CHECK:   {len(drill_viol)} hole-to-hole violation(s)! "
+                     f"e.g. {drill_viol[0]}")
+    else:
+        lines.append("drill-check:   clean (0 hole-to-hole violations)")
     print()
     for ln in lines:
         print(f"  {ln}")
@@ -1461,7 +1513,7 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
             rep.log(ln)
 
 
-def _report_placed(rep: Reporter, out_path, board, violations) -> None:
+def _report_placed(rep: Reporter, out_path, board, violations, drill_viol=()) -> None:
     """Print the place-only metrics summary and mirror it to the log.
 
     Args:
@@ -1470,6 +1522,8 @@ def _report_placed(rep: Reporter, out_path, board, violations) -> None:
         board: the placed board (for the moved-footprint count and outline size).
         violations: clearance-violation tuples from the self-check (empty ==
             clean).
+        drill_viol: hole-to-hole violation tuples from the drill self-check
+            (empty == clean).
     """
     moved = sum(1 for fp in board.footprints if fp.moved)
     rect = next((s for s in board.outline if s.kind == "rect"), None)
@@ -1485,6 +1539,11 @@ def _report_placed(rep: Reporter, out_path, board, violations) -> None:
                      f"e.g. {violations[0]}")
     else:
         lines.append("self-check:    clean (0 clearance violations)")
+    if drill_viol:
+        lines.append(f"DRILL-CHECK:   {len(drill_viol)} hole-to-hole violation(s)! "
+                     f"e.g. {drill_viol[0]}")
+    else:
+        lines.append("drill-check:   clean (0 hole-to-hole violations)")
     print()
     for ln in lines:
         print(f"  {ln}")
@@ -2055,6 +2114,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stitch-vias", type=float, nargs="?", const=5.0, metavar="PITCH",
                    help="add stitching vias at PITCH mm intervals (default 5.0 mm; "
                         "most useful with --ground-plane-layer both)")
+    p.add_argument("--mounting-holes", action="store_true",
+                   help="add NPTH mounting holes (default pattern: four corners). "
+                        "Holes are fixed routing obstacles.")
+    p.add_argument("--hole-diameter", type=float, default=3.2, metavar="MM",
+                   help="mounting-hole drill diameter (default 3.2 mm, for M3)")
+    p.add_argument("--hole-margin", type=float, default=5.0, metavar="MM",
+                   help="inset of corner/edge holes from the board edge (default 5.0 mm)")
+    p.add_argument("--hole-pattern", choices=["corners", "custom"], default="corners",
+                   help="'corners' = TL,TR,BL,BR; 'custom' = use --hole-at only "
+                        "(default: %(default)s)")
+    p.add_argument("--hole-at", action="append", default=None, metavar="POS",
+                   help="hole position: a code (TL/TR/BL/BR/T/B/L/R/C; note Y is "
+                        "down, so 'top' = min y) or 'x,y' in mm. Repeatable; codes "
+                        "may also be comma-separated (e.g. --hole-at TL,BR).")
     p.add_argument("--seed", type=int, default=None,
                    help="random seed (default: seconds since epoch, printed in the log "
                         "so results are reproducible)")

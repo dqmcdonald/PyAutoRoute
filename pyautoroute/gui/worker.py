@@ -366,6 +366,32 @@ class Worker:
 
         return nodes
 
+    def _add_mounting_holes(self, cfg, board, rules):
+        """Inject ``--mounting-holes`` NPTH holes into *board* (no-op if disabled).
+
+        Mirrors ``autoroute._add_mounting_holes``: must be called after any
+        placement has finalised the outline and before the grid is built, so the
+        holes are written and seen as fixed routing obstacles. Posts a summary and
+        per-hole warnings to the event queue.
+
+        Args:
+            cfg: the run configuration.
+            board: the board to mutate (tree + pads).
+            rules: the design rules.
+        """
+        if not getattr(cfg, "mounting_holes", False):
+            return
+        from pyautoroute import mountingholes
+        nodes, warnings = mountingholes.build(
+            board, rules,
+            diameter=cfg.hole_diameter if cfg.hole_diameter is not None else 3.2,
+            margin=cfg.hole_margin if cfg.hole_margin is not None else 5.0,
+            pattern=getattr(cfg, "hole_pattern", "corners") or "corners",
+            hole_at=getattr(cfg, "hole_at", None))
+        self._post(Phase(f"mounting holes: {len(nodes)} added"))
+        for w in warnings:
+            self._post(Phase(f"  ⚠ mounting holes: {w}"))
+
     def _place_params(self, cfg, rules):
         """Build the `placement.PlaceParams` from the run config.
 
@@ -531,6 +557,10 @@ class Worker:
                                    seed=cfg.seed, place_margin=margin,
                                    hooks=hooks, cancel=self._cancel)
 
+        # Mounting holes: inject after placement finalises the outline and before
+        # the grid is built, so they are fixed obstacles and reach both outputs.
+        self._add_mounting_holes(cfg, board, rules)
+
         if place_only:
             self._post(Phase("writing placed board"))
             pcb.stamp_comment(board,
@@ -542,7 +572,8 @@ class Worker:
             if fill_nets:
                 pcb.try_refill_zones(out_path)
             placed = pcb.load_board(out_path)
-            violations = geometry.clearance_violations(placed, rules)
+            violations = (geometry.clearance_violations(placed, rules)
+                          + geometry.drill_violations(placed, rules))
             self._post(Done(str(out_path), 0, 0, 0, 0.0, 0, violations, placed))
             return
 
@@ -604,7 +635,8 @@ class Worker:
         if fill_nets or getattr(cfg, "ground_plane", False):
             pcb.try_refill_zones(out_path)
         routed_board = pcb.load_board(out_path)
-        violations = geometry.clearance_violations(routed_board, rules)
+        violations = (geometry.clearance_violations(routed_board, rules)
+                      + geometry.drill_violations(routed_board, rules))
         total = routed + unrouted + n_pre_routed
         self._post(BoardSnap(routed_board))
         self._post(Done(str(out_path), total, routed + n_pre_routed, unrouted,
@@ -704,6 +736,10 @@ class Worker:
         pcb.stamp_comment(best.board,
             f"PyAutoRoute v{__version__} — placed + routed "
             f"{datetime.date.today().isoformat()}")
+        # Each cycle routed a board reloaded from disk, so holes weren't obstacles;
+        # inject them into the winning board (a track crossing a hole is then
+        # surfaced by the self-/drill-check rather than avoided).
+        self._add_mounting_holes(cfg, best.board, rules)
         new_nodes = _results_to_nodes(best.board, best.grid, best.results)
         new_nodes.extend(self._ground_plane_nodes(cfg, best.board, rules, out_path,
                                                   routed_nodes=new_nodes))
@@ -713,7 +749,8 @@ class Worker:
         if fill_nets or getattr(cfg, "ground_plane", False):
             pcb.try_refill_zones(out_path)
         routed_board = pcb.load_board(out_path)
-        violations = geometry.clearance_violations(routed_board, rules)
+        violations = (geometry.clearance_violations(routed_board, rules)
+                      + geometry.drill_violations(routed_board, rules))
         total = best.routed + best.unrouted
         self._post(BoardSnap(routed_board))
         self._post(Done(str(out_path), total, best.routed, best.unrouted,

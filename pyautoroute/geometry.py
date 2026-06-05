@@ -229,8 +229,56 @@ class Obstacle:
     layer: str
 
 
+@dataclass
+class Drill:
+    """A drilled hole on the board (a plated or non-plated through-hole).
+
+    Drills are net-agnostic, all-layer keep-outs: a barrel passes through every
+    copper layer regardless of any annular ring, and ``min_hole_to_hole`` spacing
+    applies between *any* two holes (even on the same net), unlike copper
+    clearance. They are therefore tracked separately from `Obstacle`.
+    """
+    geom: Point          # barrel centre
+    radius: float        # drill_diameter / 2 (mm)
+    plated: bool         # True for thru_hole, False for np_thru_hole
+    ref: str             # owning footprint reference designator (for messages)
+
+
+def board_drills(board: Board) -> list[Drill]:
+    """Collect every drilled hole on the board.
+
+    Through-hole pads (`thru_hole` / `np_thru_hole`) with a non-`None`
+    `pyautoroute.pcb.Pad.drill` become a `Drill`. Routed vias are *not* included:
+    their spacing is governed by the grid's via-clearance model, not
+    ``min_hole_to_hole``.
+
+    Args:
+        board: the board whose pads are scanned.
+
+    Returns:
+        One `Drill` per drilled through-hole pad.
+    """
+    drills: list[Drill] = []
+    for pad in board.pads:
+        if pad.pad_type not in ("thru_hole", "np_thru_hole") or not pad.drill:
+            continue
+        drills.append(Drill(
+            geom=Point(pad.cx, pad.cy),
+            radius=pad.drill / 2.0,
+            plated=(pad.pad_type == "thru_hole"),
+            ref=pad.fp_ref,
+        ))
+    return drills
+
+
 def board_obstacles(board: Board) -> list[Obstacle]:
     """Collect raw (un-inflated) copper obstacles tagged with net and layer.
+
+    Drilled through-hole pads also contribute an **all-layer barrel keep-out**:
+    on any copper layer the pad lacks an annular ring (e.g. a non-plated mounting
+    hole with no copper), a disk of the drill radius is added so the router never
+    drives copper across the hole. On layers where the pad already has copper the
+    ring already covers the barrel, so no duplicate is emitted.
 
     Args:
         board: the board whose pads, segments, free vias, and zones become
@@ -244,6 +292,14 @@ def board_obstacles(board: Board) -> list[Obstacle]:
         poly = pad_polygon(pad)
         for layer in pad.copper_layers:
             obs.append(Obstacle(poly, pad.net, layer))
+        # A drilled hole reserves its barrel on every copper layer. Layers the
+        # pad already coppers are covered by the ring above; add a bare barrel
+        # disk for the rest (the common case being a layerless NPTH hole).
+        if pad.pad_type in ("thru_hole", "np_thru_hole") and pad.drill:
+            barrel = Point(pad.cx, pad.cy).buffer(pad.drill / 2.0)
+            for layer in board.copper_layers:
+                if layer not in pad.copper_layers:
+                    obs.append(Obstacle(barrel, pad.net, layer))
     for seg in board.segments:
         obs.append(Obstacle(segment_polygon(seg), seg.net, seg.layer))
     for via in board.free_vias:
@@ -298,6 +354,42 @@ def clearance_violations(board: Board, rules) -> list[tuple[str, str, str, float
                 gap = o.geom.distance(other.geom)
                 if gap < req - 1e-6:
                     violations.append((layer, o.net, other.net, gap))
+    return violations
+
+
+def drill_violations(board: Board, rules) -> list[tuple[str, str, float]]:
+    """Run the in-repo hole-to-hole spacing self-check.
+
+    Checks every pair of drilled holes against the board's flat
+    ``min_hole_to_hole`` rule. Holes are net-agnostic: two holes on the *same*
+    net still must respect the spacing, so (unlike `clearance_violations`) there
+    is no same-net exemption and a single all-layer STRtree pass suffices.
+
+    Args:
+        board: the board to check.
+        rules: the `pyautoroute.rules.DesignRules` giving ``min_hole_to_hole``.
+
+    Returns:
+        One ``(ref_a, ref_b, gap)`` tuple per hole pair whose edge-to-edge gap is
+        below ``min_hole_to_hole``; an empty list means the drills are clean.
+    """
+    drills = board_drills(board)
+    if len(drills) < 2:
+        return []
+    need = max(rules.min_hole_to_hole, 0.0)
+    max_r = max(d.radius for d in drills)
+    tree = STRtree([d.geom for d in drills])
+    violations = []
+    for i, d in enumerate(drills):
+        # neighbours whose centre could be within (need + r_d + r_other)
+        probe = d.geom.buffer(d.radius + need + max_r + 0.01)
+        for j in tree.query(probe):
+            if j <= i:
+                continue
+            other = drills[j]
+            gap = d.geom.distance(other.geom) - d.radius - other.radius
+            if gap < need - 1e-6:
+                violations.append((d.ref, other.ref, gap))
     return violations
 
 

@@ -7,8 +7,8 @@ import pathlib
 
 import pytest
 
-from pyautoroute import geometry, pcb
-from pyautoroute.pcb import OutlineShape, Pad
+from pyautoroute import geometry, pcb, rules as rules_mod
+from pyautoroute.pcb import Board, OutlineShape, Pad
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PCB = REPO / "TestProjects" / "Test1" / "Test1.kicad_pcb"
@@ -18,6 +18,19 @@ def _pad(shape, w, h, cx=0, cy=0, angle=0, rratio=None, delta=None):
     return Pad(net="N", pad_type="smd", shape=shape, cx=cx, cy=cy, w=w, h=h,
                angle=angle, copper_layers=["F.Cu"], roundrect_rratio=rratio,
                rect_delta=delta)
+
+
+def _hole(cx, cy, drill=3.2, pad_type="np_thru_hole", net="", layers=None, ref="MH"):
+    """A drilled through-hole pad (defaults to a layerless NPTH mounting hole)."""
+    return Pad(net=net, pad_type=pad_type, shape="circle", cx=cx, cy=cy,
+               w=drill, h=drill, angle=0, copper_layers=layers or [],
+               drill=drill, fp_ref=ref)
+
+
+def _board(pads, copper=("F.Cu", "B.Cu")):
+    """Minimal Board carrying just the pads the geometry helpers read."""
+    return Board(tree=None, copper_layers=list(copper), pads=pads,
+                 free_vias=[], segments=[], zones=[], outline=[])
 
 
 def test_rect_pad_area_and_center():
@@ -86,3 +99,56 @@ def test_obstacle_index_layers():
     idx = geometry.ObstacleIndex(geometry.board_obstacles(board))
     assert set(idx.layers()) <= {"F.Cu", "B.Cu"}
     assert "F.Cu" in idx.layers()
+
+
+# --- drill geometry / hole-to-hole DRC ---------------------------------------
+
+def test_board_drills_collects_through_holes_only():
+    board = _board([
+        _hole(0, 0, drill=3.2, pad_type="np_thru_hole"),
+        _hole(10, 0, drill=1.0, pad_type="thru_hole", net="GND"),
+        _pad("rect", 1.0, 1.0, cx=20, cy=0),            # SMD: no drill
+    ])
+    drills = geometry.board_drills(board)
+    assert len(drills) == 2
+    assert {round(d.radius, 3) for d in drills} == {1.6, 0.5}
+    assert {d.plated for d in drills} == {True, False}
+
+
+def test_drill_violations_flags_close_holes():
+    rules = rules_mod.default_rules()       # min_hole_to_hole == 0.25
+    # edge-to-edge gap = 3.3 - 1.6 - 1.6 = 0.1 mm < 0.25 -> violation
+    near = _board([_hole(0, 0), _hole(3.3, 0)])
+    assert len(geometry.drill_violations(near, rules)) == 1
+    # spaced well apart -> clean
+    far = _board([_hole(0, 0), _hole(20, 0)])
+    assert geometry.drill_violations(far, rules) == []
+
+
+def test_drill_violations_no_same_net_exemption():
+    """Two holes on the same net still must respect hole-to-hole spacing."""
+    rules = rules_mod.default_rules()
+    board = _board([_hole(0, 0, net="GND"), _hole(3.3, 0, net="GND")])
+    assert len(geometry.drill_violations(board, rules)) == 1
+
+
+def test_board_obstacles_reserve_npth_barrel_all_layers():
+    """A layerless NPTH hole becomes an all-layer barrel keep-out."""
+    board = _board([_hole(5, 5, drill=3.2)])
+    obs = geometry.board_obstacles(board)
+    # one barrel disk per copper layer, net-agnostic (empty net)
+    assert {o.layer for o in obs} == {"F.Cu", "B.Cu"}
+    for o in obs:
+        assert o.net == ""
+        assert o.geom.distance(geometry.Point(5, 5)) == 0    # disk covers centre
+        assert math.isclose(o.geom.area, math.pi * 1.6 ** 2, rel_tol=1e-2)
+
+
+def test_board_obstacles_no_duplicate_barrel_where_copper_exists():
+    """A plated THT pad coppered on all layers needs no extra barrel disk."""
+    board = _board([_hole(0, 0, drill=1.0, pad_type="thru_hole", net="GND",
+                          layers=["F.Cu", "B.Cu"])])
+    obs = geometry.board_obstacles(board)
+    # exactly the two copper-ring obstacles, no bare barrels added
+    assert len(obs) == 2
+    assert all(o.net == "GND" for o in obs)
