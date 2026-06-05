@@ -366,18 +366,20 @@ class Worker:
 
         return nodes
 
-    def _add_mounting_holes(self, cfg, board, rules):
+    def _add_mounting_holes(self, cfg, board, rules, *, lock=False):
         """Inject ``--mounting-holes`` NPTH holes into *board* (no-op if disabled).
 
-        Mirrors ``autoroute._add_mounting_holes``: must be called after any
-        placement has finalised the outline and before the grid is built, so the
-        holes are written and seen as fixed routing obstacles. Posts a summary and
-        per-hole warnings to the event queue.
+        Mirrors ``autoroute._add_mounting_holes``. With ``lock``, holes are also
+        registered as locked footprints so the placement annealer is pushed away
+        from them (call before placement); otherwise they are injected after
+        placement, before the grid is built. Posts a summary and per-hole warnings
+        to the event queue.
 
         Args:
             cfg: the run configuration.
-            board: the board to mutate (tree + pads).
+            board: the board to mutate (tree + pads, and footprints when locked).
             rules: the design rules.
+            lock: register holes as locked footprints (placement keep-outs).
         """
         if not getattr(cfg, "mounting_holes", False):
             return
@@ -387,8 +389,9 @@ class Worker:
             diameter=cfg.hole_diameter if cfg.hole_diameter is not None else 3.2,
             margin=cfg.hole_margin if cfg.hole_margin is not None else 5.0,
             pattern=getattr(cfg, "hole_pattern", "corners") or "corners",
-            hole_at=getattr(cfg, "hole_at", None))
-        self._post(Phase(f"mounting holes: {len(nodes)} added"))
+            hole_at=getattr(cfg, "hole_at", None), lock=lock)
+        where = " (placement keep-outs)" if lock else ""
+        self._post(Phase(f"mounting holes: {len(nodes)} added{where}"))
         for w in warnings:
             self._post(Phase(f"  ⚠ mounting holes: {w}"))
 
@@ -549,6 +552,22 @@ class Worker:
 
         hooks = self._build_hooks(cfg, margin, board, rules=rules)
 
+        # Mounting holes with outline-independent positions can be injected before
+        # placement as locked footprints, so the annealer is pushed away from them
+        # (and they show during the placement animation). Corner/edge holes on an
+        # auto-generated outline aren't known until placement ends — those fall
+        # back to a post-placement injection.
+        from pyautoroute import mountingholes as _mh
+        will_place = bool(place or place_only)
+        keep_outline = (bool(getattr(cfg, "keep_outline", False))
+                        and bool(board.outline) and not board.outline_synthesized)
+        mh_preplace = (getattr(cfg, "mounting_holes", False) and will_place
+                       and _mh.positions_known_preplacement(
+                           getattr(cfg, "hole_pattern", "corners") or "corners",
+                           getattr(cfg, "hole_at", None), keep_outline))
+        if mh_preplace:
+            self._add_mounting_holes(cfg, board, rules, lock=True)
+
         # ---- placement -----------------------------------------------
         if place or place_only:
             pp = self._place_params(cfg, rules)
@@ -557,9 +576,11 @@ class Worker:
                                    seed=cfg.seed, place_margin=margin,
                                    hooks=hooks, cancel=self._cancel)
 
-        # Mounting holes: inject after placement finalises the outline and before
-        # the grid is built, so they are fixed obstacles and reach both outputs.
-        self._add_mounting_holes(cfg, board, rules)
+        # Mounting holes: unless pre-placed above, inject after placement finalises
+        # the outline and before the grid is built, so they are fixed obstacles and
+        # reach both outputs.
+        if not mh_preplace:
+            self._add_mounting_holes(cfg, board, rules)
 
         if place_only:
             self._post(Phase("writing placed board"))

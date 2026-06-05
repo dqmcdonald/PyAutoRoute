@@ -598,10 +598,22 @@ code** or an explicit **`x,y`** coordinate (mm), and codes may be comma-separate
 
 A hole that lands outside the outline, overlaps existing copper, or sits too
 close to another hole is **skipped with a warning** rather than nudged, so
-positions stay predictable. With `--cycles`, holes are added to the winning
-board after routing (each cycle routes a board reloaded from disk), so a track
-that happens to cross a hole is reported by the self-/drill-check rather than
-avoided — prefer the non-`--cycles` path when mounting-hole keep-outs matter.
+positions stay predictable. Boards that **already have holes** are handled: a
+requested position that coincides with an existing hole is reported as already
+drilled (so re-running is idempotent), existing drills are honoured for
+hole-to-hole spacing, and new reference designators never collide with refs
+already on the board.
+
+**Placement interaction (`--place`).** When a hole's position is known before
+placement runs, the hole is injected as a **locked footprint** *before* the
+annealer, so footprints are pushed away from it (and the hole is visible
+throughout the placement animation). Positions are known up front for explicit
+`x,y` holes always, and for corner/edge codes when `--keep-outline` is set. With
+an **auto-generated** outline the corners aren't known until placement finishes,
+so those holes are added afterward (the tool prints a note, and suggests
+`--keep-outline`). With `--cycles`, holes are always added to the winning board
+after routing (each cycle routes a board reloaded from disk), so a track that
+crosses a hole is reported by the self-/drill-check rather than avoided.
 
 The same controls are available in the GUI under **Post-processing → Mounting
 holes** (drill diameter, edge margin, corners/custom pattern, and an extra

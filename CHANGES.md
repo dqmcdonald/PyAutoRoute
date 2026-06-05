@@ -5,6 +5,11 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.52.0
+
+- **Feature**: mounting holes are now "felt" during placement. When a hole's position is known before the annealer runs — explicit `x,y` always, or corner/edge codes under `--keep-outline` — it is injected as a **locked footprint** so footprints are pushed away from it (and it shows during the placement animation); `mountingholes.positions_known_preplacement()` decides this, and corner holes on an auto-generated outline fall back to post-placement injection with a printed note. Applied symmetrically in the CLI and GUI worker.
+- **Feature**: boards that already carry holes are handled — a requested position coinciding with an existing hole is reported as already-drilled (re-running `--mounting-holes` is now idempotent), existing drills are honoured for hole-to-hole spacing, and new `MH<n>` reference designators no longer collide with refs already on the board.
+
 ## 0.51.0
 
 - **GUI**: mounting holes (drill-hole plan, phase 4). A **Mounting holes** checkbox with drill-diameter / edge-margin fields, a corners/custom pattern picker, and an extra-positions entry now live in the GUI's Post-processing panel. The worker injects the holes after placement and before the grid is built — the same point as the CLI — so they act as fixed routing obstacles. The GUI self-check count now also includes hole-to-hole (drill) violations.
