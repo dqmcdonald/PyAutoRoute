@@ -1325,9 +1325,9 @@ def recenter(board: Board) -> tuple[float, float]:
 def scatter_footprints(board: Board, seed: int) -> None:
     """Randomly scatter unlocked footprints across the board area.
 
-    Gives each ``--cycles`` run a genuinely different starting layout so the
-    placement annealer explores different basins of attraction rather than always
-    refining the as-designed configuration.  Positions are drawn uniformly within
+    Gives each ``--cycles`` run or ``--place-runs`` pass a genuinely different
+    starting layout so the placement annealer explores different basins of
+    attraction rather than always refining the as-designed configuration.  Positions are drawn uniformly within
     the board outline's bounding box (or the current layout bounding box when no
     real outline exists).  Rotations are sampled from {0, 90, 180, 270}°. Locked
     footprints are untouched.
@@ -1419,9 +1419,12 @@ def place(board: Board, params: PlaceParams | None = None,
     for k in range(runs):
         if cancel is not None and cancel.is_set():
             break
-        for fp, x, y, a in orig:                 # restart from the original layout
-            fp.x, fp.y, fp.angle = x, y, a
-            fp.sync_pads()
+        if params.scatter_start:
+            scatter_footprints(board, params.seed + k)
+        else:
+            for fp, x, y, a in orig:             # restart from the original layout
+                fp.x, fp.y, fp.angle = x, y, a
+                fp.sync_pads()
         result = _Placer(board, replace(params, seed=params.seed + k)).run(
             on_progress, cancel, on_polish_progress=on_polish_progress)
         if best is None or result.best_energy < best.best_energy:
