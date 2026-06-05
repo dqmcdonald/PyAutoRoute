@@ -635,9 +635,11 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         print("  note: --place-feedback needs --cycles > 1 (it learns from each "
               "cycle's routing); ignoring")
         args.place_feedback = False
-    if getattr(args, "scatter", False) and cycles <= 1:
-        print("  note: --scatter is most useful with --cycles > 1 (it diversifies "
-              "starting layouts across cycles); running a single scattered placement")
+    place_runs = max(1, getattr(args, "place_runs", 1))
+    if getattr(args, "scatter", False) and cycles <= 1 and place_runs <= 1:
+        print("  note: --scatter is most useful with --cycles > 1 or --place-runs > 1 "
+              "(it diversifies starting layouts across runs); running a single "
+              "scattered placement")
     if cycles > 1:
         return _run_cycles(args, rep, input_path, out_path, rules, pitch,
                            board, fill_nets, cycles, init_stats=init_stats)
