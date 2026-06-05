@@ -401,26 +401,29 @@ def _dup_free_via_ids(board, new_nodes: list) -> set[int]:
     return dup_ids
 
 
-def _add_mounting_holes(args, board, rules, rep: Reporter) -> None:
+def _add_mounting_holes(args, board, rules, rep: Reporter, *, lock: bool = False) -> None:
     """Inject ``--mounting-holes`` NPTH holes into the board (no-op if disabled).
 
-    Resolves and validates the requested holes against the (now-finalised)
-    outline and appends them to the board model so they are written and treated
-    as fixed routing obstacles. Warnings are logged and printed.
+    Resolves and validates the requested holes against the outline and appends
+    them to the board model so they are written and treated as fixed routing
+    obstacles. With ``lock``, holes are also registered as locked footprints so
+    the placement annealer is pushed away from them. Warnings are logged/printed.
 
     Args:
         args: the parsed CLI namespace.
         board: the board to mutate.
         rules: the design rules.
         rep: the reporter (for logging).
+        lock: register holes as locked footprints (placement keep-outs).
     """
     if not getattr(args, "mounting_holes", False):
         return
     from . import mountingholes
     nodes, warnings = mountingholes.build(
         board, rules, diameter=args.hole_diameter, margin=args.hole_margin,
-        pattern=args.hole_pattern, hole_at=args.hole_at)
-    msg = f"mounting holes: {len(nodes)} added"
+        pattern=args.hole_pattern, hole_at=args.hole_at, lock=lock)
+    where = " (placement keep-outs)" if lock else ""
+    msg = f"mounting holes: {len(nodes)} added{where}"
     rep.log(msg)
     if not args.quiet:
         print(f"  {msg}")
@@ -673,6 +676,25 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         return _run_cycles(args, rep, input_path, out_path, rules, pitch,
                            board, fill_nets, cycles, init_stats=init_stats)
 
+    # Mounting holes whose positions don't depend on the (auto-generated) outline
+    # can be injected *before* placement as locked footprints, so the annealer is
+    # pushed away from them (and they show during the placement animation).
+    # Corner/edge holes on an auto-generated outline aren't known until placement
+    # finishes, so they fall back to a post-placement injection (noted below).
+    from . import mountingholes as _mh
+    _will_place = bool(args.place or args.place_only)
+    _keep_outline = (bool(getattr(args, "keep_outline", False))
+                     and bool(board.outline) and not board.outline_synthesized)
+    _mh_preplace = (getattr(args, "mounting_holes", False) and _will_place
+                    and _mh.positions_known_preplacement(
+                        args.hole_pattern, args.hole_at, _keep_outline))
+    if _mh_preplace:
+        _add_mounting_holes(args, board, rules, rep, lock=True)
+    elif getattr(args, "mounting_holes", False) and _will_place and not args.quiet:
+        print("  note: mounting holes added after placement (not used as "
+              "placement keep-outs); pass --keep-outline to place holes before "
+              "footprints")
+
     if args.place or args.place_only:
         pp, _ = _place_params_from_args(args, board, rules, rep)
         place_runs = max(1, args.place_runs)
@@ -723,10 +745,12 @@ def run(args: argparse.Namespace, _print_version: bool = True,
             if not args.quiet:
                 print(f"  ⚠ {w}")
 
-    # Mounting holes: inject now — after any placement has finalised the outline,
-    # before the grid is built — so the holes become fixed routing obstacles and
-    # are written to both the place-only and routed outputs.
-    _add_mounting_holes(args, board, rules, rep)
+    # Mounting holes: unless they were pre-placed as locked footprints above,
+    # inject now — after any placement has finalised the outline, before the grid
+    # is built — so the holes become fixed routing obstacles and reach both the
+    # place-only and routed outputs.
+    if not _mh_preplace:
+        _add_mounting_holes(args, board, rules, rep)
 
     if args.place_only:
         rep.phase("writing placed board")

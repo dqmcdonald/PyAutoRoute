@@ -20,6 +20,13 @@ def _rect_board(w=50.0, h=30.0, pads=None):
                  outline=[OutlineShape("rect", {"start": (0, 0), "end": (w, h)})])
 
 
+def _hole(cx, cy, drill=3.2, ref="MH", net="", layers=None):
+    """A drilled NPTH pad (defaults to a layerless mounting hole)."""
+    return Pad(net=net, pad_type="np_thru_hole", shape="circle", cx=cx, cy=cy,
+               w=drill, h=drill, angle=0, copper_layers=layers or [],
+               drill=drill, fp_ref=ref)
+
+
 # --- location-code grammar ---------------------------------------------------
 
 def test_expand_entry_coord_vs_codes():
@@ -112,6 +119,65 @@ def test_build_no_outline_warns():
     nodes, warns = mountingholes.build(board, rules, diameter=3.2, margin=5.0)
     assert nodes == []
     assert any("outline" in w for w in warns)
+
+
+# --- placement interaction ---------------------------------------------------
+
+def test_positions_known_preplacement():
+    f = mountingholes.positions_known_preplacement
+    # corner codes need the outline -> only known if it's kept fixed
+    assert f("corners", None, keep_outline=False) is False
+    assert f("corners", None, keep_outline=True) is True
+    # explicit coords are always known up front
+    assert f("custom", ["10,10", "20,20"], keep_outline=False) is True
+    # a code under custom still needs the outline
+    assert f("custom", ["TL"], keep_outline=False) is False
+    assert f("custom", ["TL"], keep_outline=True) is True
+    assert f("custom", None, keep_outline=False) is False
+
+
+def test_build_lock_adds_locked_footprints():
+    board = _rect_board()
+    rules = rules_mod.default_rules()
+    nodes, _ = mountingholes.build(board, rules, diameter=3.2, margin=5.0,
+                                   pattern="corners", hole_at=None, lock=True)
+    assert len(nodes) == 4
+    holes = [fp for fp in board.footprints if fp.locked]
+    assert len(holes) == 4
+    for fp in holes:
+        assert len(fp.pads) == 1 and fp.pads[0].drill == 3.2
+        assert fp.at_node is not None and fp.fp_node is not None    # wired to tree
+
+
+# --- boards that already have holes -------------------------------------------
+
+def test_build_skips_coincident_existing_hole_and_keeps_refs_unique():
+    from pyautoroute.pcb import Footprint
+    existing = _hole(5, 5, drill=3.2, ref="MH1")        # already-drilled TL corner
+    board = _rect_board(pads=[existing])
+    board.footprints.append(Footprint(
+        ref="MH1", x=5, y=5, angle=0, locked=True, overlap_ok=False,
+        pads=[existing], local_offsets=[(0, 0, 0)], at_node=None, fp_node=None))
+    rules = rules_mod.default_rules()
+    nodes, warns = mountingholes.build(board, rules, diameter=3.2, margin=5.0,
+                                       pattern="corners", hole_at=None)
+    # TL is already drilled -> reported as existing, the other 3 corners added
+    assert len(nodes) == 3
+    assert any("already exists" in w for w in warns)
+    new_refs = [p.fp_ref for p in board.pads
+                if p.pad_type == "np_thru_hole" and p is not existing]
+    assert "MH1" not in new_refs                         # no refdes collision
+    assert len(set(new_refs)) == 3                        # all unique
+
+
+def test_build_is_idempotent_on_rerun():
+    board = _rect_board()
+    rules = rules_mod.default_rules()
+    n1, _ = mountingholes.build(board, rules, diameter=3.2, margin=5.0)
+    assert len(n1) == 4
+    n2, warns = mountingholes.build(board, rules, diameter=3.2, margin=5.0)
+    assert n2 == []                                       # nothing added a 2nd time
+    assert warns and all("already exists" in w for w in warns)
 
 
 # --- make_npth round-trip ----------------------------------------------------

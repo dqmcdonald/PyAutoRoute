@@ -580,6 +580,13 @@ constraint editing. Main components:
   view bar. When on, `_heat_data(board)` calls `placement.energy_heatmap` and passes
   the result through `_render → canvas.show_board → draw_board` as `fp_heat`/`conn_heat`,
   overlaying footprints and connections with a `RdYlBu_r` cost colour scale.
+- **Run-summary dialog** — the worker accumulates non-fatal warnings (mounting
+  holes, ground plane, placement) via `Worker._warn` and carries them on the
+  `Done` event's `warnings` field. `events.collect_issues(done)` (tkinter-free, so
+  unit-tested) folds those together with unrouted connections and DRC violations
+  (clearance vs hole-to-hole told apart by tuple shape); `app._show_issues_summary`
+  shows a single `messagebox` **only when the list is non-empty**, replacing the
+  former clearance-only popup.
 
 ### `tune.py` — parameter sweep & scoring
 Scores a routing with a single objective
@@ -661,16 +668,26 @@ traces; the zone boundary is emitted but unfilled if `kicad-cli` is absent (warn
 and/or explicit `x,y`, inset from the outline's bounding box by `--hole-margin`.
 `build()` validates each against the outline, existing copper (`board_obstacles`),
 and other holes (`board_drills` + `min_hole_to_hole`), skipping any that collide
-with a warning. Accepted holes are emitted by `pcb.make_npth()` (a `MountingHole`
-footprint with a netless `np_thru_hole` pad, `size == drill`) and appended to both
-`board.tree` (so they are written) and `board.pads` (so they are seen as obstacles
-on reload and during routing). `autoroute._add_mounting_holes` calls it once, after
-any placement has finalised the outline and before the grid is built, so the holes
-are fixed keep-outs. With `--cycles` (each cycle routes a board reloaded from disk)
-the holes are injected into the winning board instead, and a track crossing a hole
-is reported by the self-/drill-check rather than avoided. The GUI worker
-(`gui/worker.py`) mirrors this with `Worker._add_mounting_holes`, injecting at the
-same point (after placement, before the grid) so the GUI and CLI stay in step.
+with a warning. It also handles boards that **already have holes**: a requested
+position coinciding with an existing drill is reported as already-present (so
+re-runs are idempotent), and `_ref_allocator` picks `MH<n>` refs that don't
+collide with refs already on the board. Accepted holes are emitted by
+`pcb.make_npth()` (a `MountingHole` footprint with a netless `np_thru_hole` pad,
+`size == drill`) and appended to `board.tree` (so they are written) and
+`board.pads` (so they are seen as obstacles on reload and during routing).
+
+**Placement keep-out.** When `build(..., lock=True)` the hole is *also* registered
+as a **locked footprint** in `board.footprints`, which the placement annealer
+treats as a fixed obstacle (it only repels footprints from other footprints, not
+loose pads — `placement.py`). `mountingholes.positions_known_preplacement()`
+decides timing: explicit `x,y` holes (always) and code holes under `--keep-outline`
+are injected *before* placement (locked, felt and animated); corner/edge holes on
+an auto-generated outline can't be known until placement finishes, so they fall
+back to a post-placement injection (with a printed note). `autoroute.run` and
+`gui/worker.py` apply this split symmetrically. With `--cycles` (each cycle routes
+a board reloaded from disk) holes are always injected into the winning board after
+routing, and a track crossing a hole is reported by the self-/drill-check rather
+than avoided.
 
 ### `pyautoroute.sh` — helper menu
 A repo-root Bash script offering a menu of common tasks (install, regenerate API

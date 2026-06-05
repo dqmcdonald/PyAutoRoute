@@ -52,6 +52,7 @@ class Done:
     vias: int
     violations: list = field(default_factory=list)
     board: Any = None
+    warnings: list = field(default_factory=list)  # non-fatal issues raised during the run
 
 
 @dataclass
@@ -65,3 +66,33 @@ class Error:
     """An exception terminated the pipeline."""
     exc: BaseException
     tb: str = ""
+
+
+def collect_issues(done: "Done") -> list[str]:
+    """Gather every non-fatal issue from a finished run into display lines.
+
+    Combines unrouted connections, DRC self-check violations (clearance and
+    hole-to-hole, told apart by tuple shape), and the warnings collected during
+    the run (mounting holes, ground plane, placement). Kept tkinter-free so it
+    can be unit-tested and reused by the app's end-of-run summary dialog.
+
+    Args:
+        done: the `Done` event for the finished run.
+
+    Returns:
+        One human-readable line per issue (empty list when the run was clean).
+    """
+    issues: list[str] = []
+    if done.unrouted > 0:
+        issues.append(f"{done.unrouted} unrouted connection(s)")
+    # violations is a combined list: clearance tuples are (layer, a, b, gap);
+    # hole-to-hole tuples are (ref_a, ref_b, gap).
+    clearance = [v for v in done.violations if len(v) == 4]
+    holes = [v for v in done.violations if len(v) == 3]
+    if clearance:
+        issues.append(f"{len(clearance)} clearance violation(s) — "
+                      "review the board in KiCad")
+    if holes:
+        issues.append(f"{len(holes)} hole-to-hole spacing violation(s)")
+    issues.extend(done.warnings)
+    return issues

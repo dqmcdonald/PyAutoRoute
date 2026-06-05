@@ -352,14 +352,26 @@ post-route one.
    the holes before the grid is built (after placement), like the CLI. Shipped in
    0.51.0.
 
-> **Implementation note (vs. the original plan).** Injection happens at a single
-> point in `autoroute.run` — after any placement finalises the outline and before
-> the grid is built — covering the place-only, place+route, and route-only paths
-> uniformly (rather than a separate pre-place hook). The `--cycles` path routes
-> each cycle on a board reloaded from disk, so holes are injected into the winning
-> board afterwards; a track crossing a hole is then surfaced by the self-/drill-
-> check rather than avoided. Collisions are skipped-with-warning (no auto-nudge),
-> as planned.
+> **Implementation note (vs. the original plan).** Holes are injected before the
+> grid is built. When `--place` is used and the positions are knowable up front
+> (explicit `x,y`, or codes under `--keep-outline`,
+> `mountingholes.positions_known_preplacement`), they are injected *before*
+> placement as **locked footprints** so the annealer is pushed away from them and
+> they animate during placement — this is what makes them "felt during placing"
+> (the placement energy only repels footprints from other footprints, not loose
+> pads, so a locked footprint is the mechanism). Corner/edge holes on an
+> auto-generated outline aren't known until placement finishes, so they fall back
+> to a post-placement injection with a printed note suggesting `--keep-outline`.
+> The CLI (`autoroute.run`) and GUI (`gui/worker.py`) apply this split
+> symmetrically. The `--cycles` path routes each cycle on a board reloaded from
+> disk, so holes are injected into the winning board afterwards; a track crossing
+> a hole is then surfaced by the self-/drill-check rather than avoided.
+>
+> **Existing holes.** `build()` is idempotent and collision-aware: a requested
+> position coinciding with an existing drill is reported as already-present,
+> existing drills are honoured for hole-to-hole spacing, and `_ref_allocator`
+> avoids `MH<n>` refdes collisions. Collisions are skipped-with-warning (no
+> auto-nudge), as planned.
 
 ## Risks & open questions
 

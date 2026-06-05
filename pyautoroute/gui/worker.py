@@ -157,6 +157,7 @@ class Worker:
         self._q = event_queue
         self._cancel = cancel_event
         self._thread: threading.Thread | None = None
+        self._issues: list[str] = []     # non-fatal warnings collected this run
 
     def start(self, cfg) -> None:
         """Launch the pipeline for the given ``RunConfig`` *cfg*."""
@@ -174,7 +175,20 @@ class Worker:
     def _post(self, event) -> None:
         self._q.put(event)
 
+    def _warn(self, text: str) -> None:
+        """Record a non-fatal issue and surface it as a live status phase.
+
+        Accumulated issues are carried on the final `Done` event so the app can
+        show one end-of-run summary, in addition to the transient status line.
+
+        Args:
+            text: the issue message (without the warning glyph).
+        """
+        self._issues.append(text)
+        self._post(Phase(f"  ⚠ {text}"))
+
     def _run(self, cfg) -> None:
+        self._issues = []
         try:
             self._pipeline(cfg)
         except Exception as exc:
@@ -341,7 +355,7 @@ class Worker:
         try:
             from pyautoroute import groundplane
         except ImportError:
-            self._post(Phase("⚠ ground-plane: not available"))
+            self._warn("ground-plane: not available")
             return []
 
         nodes = []
@@ -352,9 +366,9 @@ class Worker:
                   else [cfg.ground_plane_layer])
 
         if len(layers) == 1 and cfg.stitch_vias:
-            self._post(Phase(
-                "  ⚠ ground-plane: stitching vias skipped — requires "
-                "--ground-plane-layer both (vias would float on the non-pour layer)"))
+            self._warn("ground-plane: stitching vias skipped — requires "
+                       "--ground-plane-layer both (vias would float on the "
+                       "non-pour layer)")
         for i, layer in enumerate(layers):
             sp = cfg.stitch_vias if (len(layers) > 1 and i == 0) else None
             gp_nodes, gp_warns = groundplane.build(
@@ -362,22 +376,24 @@ class Worker:
                 stitch_pitch=sp, routed_nodes=routed_nodes or [])
             nodes.extend(gp_nodes)
             for w in gp_warns:
-                self._post(Phase(f"  ⚠ ground-plane: {w}"))
+                self._warn(f"ground-plane: {w}")
 
         return nodes
 
-    def _add_mounting_holes(self, cfg, board, rules):
+    def _add_mounting_holes(self, cfg, board, rules, *, lock=False):
         """Inject ``--mounting-holes`` NPTH holes into *board* (no-op if disabled).
 
-        Mirrors ``autoroute._add_mounting_holes``: must be called after any
-        placement has finalised the outline and before the grid is built, so the
-        holes are written and seen as fixed routing obstacles. Posts a summary and
-        per-hole warnings to the event queue.
+        Mirrors ``autoroute._add_mounting_holes``. With ``lock``, holes are also
+        registered as locked footprints so the placement annealer is pushed away
+        from them (call before placement); otherwise they are injected after
+        placement, before the grid is built. Posts a summary and per-hole warnings
+        to the event queue.
 
         Args:
             cfg: the run configuration.
-            board: the board to mutate (tree + pads).
+            board: the board to mutate (tree + pads, and footprints when locked).
             rules: the design rules.
+            lock: register holes as locked footprints (placement keep-outs).
         """
         if not getattr(cfg, "mounting_holes", False):
             return
@@ -387,10 +403,11 @@ class Worker:
             diameter=cfg.hole_diameter if cfg.hole_diameter is not None else 3.2,
             margin=cfg.hole_margin if cfg.hole_margin is not None else 5.0,
             pattern=getattr(cfg, "hole_pattern", "corners") or "corners",
-            hole_at=getattr(cfg, "hole_at", None))
-        self._post(Phase(f"mounting holes: {len(nodes)} added"))
+            hole_at=getattr(cfg, "hole_at", None), lock=lock)
+        where = " (placement keep-outs)" if lock else ""
+        self._post(Phase(f"mounting holes: {len(nodes)} added{where}"))
         for w in warnings:
-            self._post(Phase(f"  ⚠ mounting holes: {w}"))
+            self._warn(f"mounting holes: {w}")
 
     def _place_params(self, cfg, rules):
         """Build the `placement.PlaceParams` from the run config.
@@ -549,17 +566,37 @@ class Worker:
 
         hooks = self._build_hooks(cfg, margin, board, rules=rules)
 
+        # Mounting holes with outline-independent positions can be injected before
+        # placement as locked footprints, so the annealer is pushed away from them
+        # (and they show during the placement animation). Corner/edge holes on an
+        # auto-generated outline aren't known until placement ends — those fall
+        # back to a post-placement injection.
+        from pyautoroute import mountingholes as _mh
+        will_place = bool(place or place_only)
+        keep_outline = (bool(getattr(cfg, "keep_outline", False))
+                        and bool(board.outline) and not board.outline_synthesized)
+        mh_preplace = (getattr(cfg, "mounting_holes", False) and will_place
+                       and _mh.positions_known_preplacement(
+                           getattr(cfg, "hole_pattern", "corners") or "corners",
+                           getattr(cfg, "hole_at", None), keep_outline))
+        if mh_preplace:
+            self._add_mounting_holes(cfg, board, rules, lock=True)
+
         # ---- placement -----------------------------------------------
         if place or place_only:
             pp = self._place_params(cfg, rules)
-            pipeline.run_placement(board, place_params=pp,
-                                   place_runs=max(1, cfg.place_runs),
-                                   seed=cfg.seed, place_margin=margin,
-                                   hooks=hooks, cancel=self._cancel)
+            pout = pipeline.run_placement(board, place_params=pp,
+                                          place_runs=max(1, cfg.place_runs),
+                                          seed=cfg.seed, place_margin=margin,
+                                          hooks=hooks, cancel=self._cancel)
+            for w in getattr(pout, "warnings", None) or []:
+                self._warn(f"placement: {w}")
 
-        # Mounting holes: inject after placement finalises the outline and before
-        # the grid is built, so they are fixed obstacles and reach both outputs.
-        self._add_mounting_holes(cfg, board, rules)
+        # Mounting holes: unless pre-placed above, inject after placement finalises
+        # the outline and before the grid is built, so they are fixed obstacles and
+        # reach both outputs.
+        if not mh_preplace:
+            self._add_mounting_holes(cfg, board, rules)
 
         if place_only:
             self._post(Phase("writing placed board"))
@@ -574,7 +611,8 @@ class Worker:
             placed = pcb.load_board(out_path)
             violations = (geometry.clearance_violations(placed, rules)
                           + geometry.drill_violations(placed, rules))
-            self._post(Done(str(out_path), 0, 0, 0, 0.0, 0, violations, placed))
+            self._post(Done(str(out_path), 0, 0, 0, 0.0, 0, violations, placed,
+                            warnings=list(self._issues)))
             return
 
         if self._cancel.is_set():
@@ -640,7 +678,8 @@ class Worker:
         total = routed + unrouted + n_pre_routed
         self._post(BoardSnap(routed_board))
         self._post(Done(str(out_path), total, routed + n_pre_routed, unrouted,
-                        length, vias, violations, routed_board))
+                        length, vias, violations, routed_board,
+                        warnings=list(self._issues)))
 
     def _run_cycles(self, cfg, board, rules, pitch, margin, input_path,
                     out_path, fill_nets, cycles) -> None:
@@ -754,4 +793,5 @@ class Worker:
         total = best.routed + best.unrouted
         self._post(BoardSnap(routed_board))
         self._post(Done(str(out_path), total, best.routed, best.unrouted,
-                        best.length, best.vias, violations, routed_board))
+                        best.length, best.vias, violations, routed_board,
+                        warnings=list(self._issues)))
