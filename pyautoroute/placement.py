@@ -1439,3 +1439,52 @@ def place(board: Board, params: PlaceParams | None = None,
     if do_recenter:
         recenter(board)                          # undo translation-invariant drift
     return best
+
+
+def energy_heatmap(board, params=None):
+    """Compute per-footprint and per-connection energy data for heat-map rendering.
+
+    Builds the placer's connection index and computes the current energy
+    breakdown without running the annealer. Fast enough to call on-demand
+    after placement or on a live snapshot.
+
+    Args:
+        board: the placed board to analyse.
+        params: placement parameters (weights); ``None`` uses defaults.
+
+    Returns:
+        A ``(fp_heat, conn_heat)`` pair:
+
+        - ``fp_heat``: ``{ref: (minx, miny, maxx, maxy, norm)}`` — per-footprint
+          bounding box and a 0–1 normalized combined energy (ratsnest + overlap).
+        - ``conn_heat``: ``[(x1, y1, x2, y2, norm)]`` — per MST connection with
+          0–1 normalized length (0 = shortest, 1 = longest on this board).
+    """
+    params = params or PlaceParams()
+    p = _Placer(board, params)
+    p._rebuild_cache()
+
+    # Per-footprint ratsnest contribution (sum of incident connection lengths).
+    fp_rats = {i: sum(p._conn_len[ci] for ci in p._fp_conns.get(i, []))
+               for i in range(len(p.boxed))}
+
+    # Per-footprint overlap cost (weighted).
+    fp_overlap = {i: p._overlap_touching({i}, p._boxes) * params.overlap_weight
+                  for i in range(len(p.boxed))}
+
+    costs = {i: fp_rats[i] + fp_overlap[i] for i in range(len(p.boxed))}
+    max_cost = max(costs.values(), default=0.0) or 1.0
+
+    fp_heat = {}
+    for i, fp in enumerate(p.boxed):
+        if i < len(p._boxes):
+            minx, miny, maxx, maxy = p._boxes[i].bounds
+            fp_heat[fp.ref] = (minx, miny, maxx, maxy, costs[i] / max_cost)
+
+    max_len = max(p._conn_len, default=0.0) or 1.0
+    conn_heat = [
+        (c.a.cx, c.a.cy, c.b.cx, c.b.cy, p._conn_len[ci] / max_len)
+        for ci, c in enumerate(p._conns)
+    ]
+
+    return fp_heat, conn_heat

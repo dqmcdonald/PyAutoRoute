@@ -143,6 +143,7 @@ class App:
         self._overall_best_snap: BoardSnap | None = None
         self._view_mode = tk.StringVar(value="current")
         self._show_rats = tk.BooleanVar(value=False)   # rats-nest overlay toggle
+        self._show_heat = tk.BooleanVar(value=False)   # energy heat-map overlay
         self._constraints_dirty: bool = False
 
         self._build_menu()
@@ -222,6 +223,10 @@ class App:
             view_bar, text="Rats-nest", variable=self._show_rats,
             command=self._on_view_change)
         rats_cb.pack(side=tk.LEFT, padx=2)
+        heat_cb = ttk.Checkbutton(
+            view_bar, text="Energy heat", variable=self._show_heat,
+            command=self._on_view_change)
+        heat_cb.pack(side=tk.LEFT, padx=2)
 
         # Right: metrics + energy graph (vertical stack)
         right = ttk.Frame(pw)
@@ -520,11 +525,23 @@ class App:
                 segs.append((c.a.cx, c.a.cy, c.b.cx, c.b.cy))
         return segs
 
+    def _heat_data(self, board):
+        """Compute energy heat-map data for *board*; returns (fp_heat, conn_heat) or (None, None)."""
+        if not self._show_heat.get() or board is None or not board.footprints:
+            return None, None
+        try:
+            from pyautoroute.placement import energy_heatmap
+            return energy_heatmap(board)
+        except Exception:
+            return None, None
+
     def _render(self, board, results=None, grid=None, title=None) -> None:
         """Draw a board on the canvas, adding the rats-nest overlay when enabled."""
+        fp_heat, conn_heat = self._heat_data(board)
         self._board_canvas.show_board(
             board, results, grid, title=title,
-            rats_nest=self._rats_segments(board, results))
+            rats_nest=self._rats_segments(board, results),
+            fp_heat=fp_heat, conn_heat=conn_heat)
 
     def _on_view_change(self) -> None:
         """Switch the canvas to the selected view state."""

@@ -353,13 +353,22 @@ drift to undo and shifting the movable group would only break alignment with the
 the board at the best placement; `autoroute` then calls `pcb.apply_placement` (pads
 + new outline) before building the grid, and `pcb.sync_tree_from_placement` before
 the write. The whole stage is transparent to the router, which already consumes
-`Board.pads` and `Board.outline`. CLI knobs: `--place-iters`/`--place-time`
+`Board.pads` and `Board.outline`. **Best-of-N runs and scatter.** `place(runs=N)` repeats the SA loop N times (seeds
+`seed, seed+1, …`) and keeps the lowest-energy result. When `PlaceParams.scatter_start`
+is set (`--scatter`), each run calls `scatter_footprints(board, seed + k)` before
+placing — randomising every unlocked footprint's position and rotation so each run
+explores a completely different basin of attraction rather than refining the same
+as-designed starting layout. Without scatter, each run starts from the original poses
+(deterministic SA variation only). This is the same randomisation `--cycles` uses
+between cycles; with `--place-runs > 1` it now fires between placement runs too.
+
+CLI knobs: `--place-iters`/`--place-time`
 (budget), `--place-temps` (schedule), `--place-step`, `--place-rotate`,
 `--place-margin`, `--place-buffer` (inter-footprint keep-out),
 `--place-overlap-weight`, `--place-compact-weight`,
 `--place-polish` (+ `--place-polish-iters`/`--place-polish-time`/`--place-polish-eps`,
 post-anneal gradient descent), `--place-decouple-weight` (decoupling-cap
-attraction); `--seed` is shared.
+attraction), `--scatter` (randomise starting layout per run/cycle); `--seed` is shared.
 
 **Silkscreen text in body boxes.** `_fp_silk_text_extents` pre-computes a list of
 `(local_x, local_y, half_diag)` for each visible, non-hidden silkscreen text item
@@ -504,7 +513,7 @@ Two diagnostic options hook into this flow:
   writes regardless of `--quiet`. Bare `--log` uses `<output>.log`.
 
 ### `visualize.py` — board rendering
-`draw_board(ax, board, *, results=None, grid=None, rats_nest=None, title=None)`
+`draw_board(ax, board, *, results=None, grid=None, rats_nest=None, title=None, fp_heat=None, conn_heat=None)`
 paints the outline, pads, tracks, and vias onto a caller-supplied matplotlib Axes
 (clearing it first, so it can refresh a live view). It backs the GUI canvas
 (`gui.canvas.BoardCanvas` embeds a Figure and calls it directly); matplotlib is a
@@ -514,6 +523,20 @@ board; passing `rats_nest` (a list of `(x1, y1, x2, y2)` airwire segments) overl
 the unrouted connections as thin dashed lines beneath the copper — the GUI's
 "Rats-nest" view toggle (`gui.app` computes the segments via `netlist.build_connections`,
 filtering to the connections whose `results[i]` is `None`).
+
+**Energy heat overlay.** `fp_heat` and `conn_heat` (produced by `placement.energy_heatmap`)
+add a placement-energy heat layer on top of the board: `fp_heat` is a dict
+`{ref: (x0, y0, x1, y1, normalised_cost)}` rendered as semi-transparent filled
+rectangles; `conn_heat` is a list of `(x1, y1, x2, y2, normalised_len)` rendered as
+coloured line segments. Both use the `RdYlBu_r` colormap (blue = low, red = high) and
+are drawn at a low z-order beneath footprint outlines so they don't obscure copper.
+
+`energy_heatmap(board, params=None)` in `placement.py` computes the per-footprint and
+per-connection cost breakdown using the `_Placer` machinery (without running annealing):
+it calls `_rebuild_cache()` to compute ratsnest lengths and footprint overlap areas,
+normalises each to `[0, 1]`, and returns `(fp_heat, conn_heat)`. The function is
+intentionally lightweight — it re-uses the incremental energy cache rather than
+re-running any optimisation pass.
 
 **Constraint markers** — in the GUI's Initial view, `draw_board` also renders
 per-footprint constraint visualizations via `_draw_autoroute_markers()`:
@@ -538,8 +561,14 @@ constraint editing. Main components:
 - **`canvas.py`** — matplotlib embedding, board rendering, and click forwarding.
   Exposes `_on_pick(board_x, board_y, mpl_event)` callback for footprint selection.
 - **`controls.py`** — left panel (board input, pipeline options, placement/routing
-  toggles, settings I/O). Hosts the "Save Constraints" button, disabled until
-  constraint edits are made.
+  toggles, settings I/O). Hosts the "Save Constraints" button (disabled until
+  constraint edits are made) and a **Save As…** button (disabled until a routed
+  result is available) that opens a file-save dialog and copies the result board to
+  the chosen path via `shutil.copy2`.
+- **Energy heat map** — `app.py` exposes an *Energy heat* toggle checkbox in the
+  view bar. When on, `_heat_data(board)` calls `placement.energy_heatmap` and passes
+  the result through `_render → canvas.show_board → draw_board` as `fp_heat`/`conn_heat`,
+  overlaying footprints and connections with a `RdYlBu_r` cost colour scale.
 
 ### `tune.py` — parameter sweep & scoring
 Scores a routing with a single objective

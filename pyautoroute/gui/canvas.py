@@ -33,11 +33,13 @@ class BoardCanvas(ttk.Frame):
         self._mpl.mpl_connect("button_press_event", self._on_click)
 
     def show_board(self, board, results=None, grid=None,
-                   title: str | None = None, rats_nest=None) -> None:
+                   title: str | None = None, rats_nest=None,
+                   fp_heat=None, conn_heat=None) -> None:
         """Render *board* onto the canvas (may be called from the main thread)."""
         self._has_board = True
         draw_board(self._ax, board, results=results, grid=grid,
-                   rats_nest=rats_nest, title=title)
+                   rats_nest=rats_nest, title=title,
+                   fp_heat=fp_heat, conn_heat=conn_heat)
         self._ax.axis("on")
         self._mpl.draw()
 

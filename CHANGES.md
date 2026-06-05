@@ -5,6 +5,12 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.48.0
+
+- **Feature**: `--scatter` now also randomises footprint starting positions between `--place-runs` (best-of-N placement) runs, not only between `--cycles`. Previously scatter only fired once per cycle; with `--place-runs N > 1`, each run now gets a freshly randomised layout.
+- **GUI**: **Save As…** button in the results area writes the current best routed board to a user-chosen path (opens a save-file dialog). Disabled until a result is available.
+- **GUI**: **Energy heat map** toggle in the view bar overlays footprints and ratsnest connections with a `RdYlBu_r` colour scale (blue = low placement energy, red = high) using the same placement energy machinery (`energy_heatmap`) as the annealer. Useful for diagnosing which parts and connections are driving placement cost.
+
 ## 0.47.0
 
 - **New**: mark a capacitor as a **decoupling cap** so placement keeps it next to its IC. A footprint with an `Autoroute-decouple` property (value = the IC's reference designator, or `auto` to find it automatically) is softly pulled toward that IC during `--place`, so the cap settles beside it instead of drifting — a flexible alternative to a rigid KiCad group. The IC is found by searching the cap's power net for the nearest IC-like part (`netlist.resolve_decoupling_ic`), warning when the match is ambiguous or the part doesn't look like a decoupling cap. Set it via the GUI right-click menu (*Decoupling cap* → resolves the IC on open and offers a chooser) or the property directly; tune with `--place-decouple-weight` (default 5.0; 0 disables). Unresolved targets are reported in the placement summary. See `plans/decoupling-cap-plan.md`.

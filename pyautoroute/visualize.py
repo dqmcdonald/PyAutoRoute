@@ -340,7 +340,8 @@ def _draw_autoroute_markers(ax, board: Board) -> None:
 
 
 def draw_board(ax, board: Board, *, results=None, grid=None,
-               rats_nest=None, title: str | None = None) -> None:
+               rats_nest=None, title: str | None = None,
+               fp_heat=None, conn_heat=None) -> None:
     """Paint a board (outline, pads, tracks, vias) onto a matplotlib Axes.
 
     Layers are colour-coded (F.Cu red, B.Cu blue) and the Y axis is inverted to
@@ -358,10 +359,33 @@ def draw_board(ax, board: Board, *, results=None, grid=None,
             as thin dashed lines (the unrouted connections); ``None``/empty draws
             nothing. Drawn beneath the copper so tracks stay legible.
         title: optional Axes title.
+        fp_heat: optional ``{ref: (minx, miny, maxx, maxy, norm)}`` from
+            `placement.energy_heatmap` — draws a semi-transparent heat rectangle
+            behind each footprint, blue→red by energy (0=cool, 1=hot).
+        conn_heat: optional ``[(x1, y1, x2, y2, norm)]`` from
+            `placement.energy_heatmap` — draws MST connections coloured by
+            length (blue=short, red=long).
     """
     ax.clear()
     outline = geometry.outline_to_polygon(board.outline)
     ax.plot(*outline.exterior.xy, "k-", lw=1.5)
+
+    # Energy heat-map overlays (drawn first so they sit beneath everything).
+    if fp_heat or conn_heat:
+        import matplotlib.cm as _cm
+        _cmap = _cm.RdYlBu_r   # blue=low energy, red=high energy
+        if fp_heat:
+            rects, fc = [], []
+            for _x0, _y0, _x1, _y1, _n in fp_heat.values():
+                rects.append([(_x0, _y0), (_x1, _y0), (_x1, _y1), (_x0, _y1)])
+                fc.append(_cmap(_n))
+            ax.add_collection(PolyCollection(
+                rects, facecolors=fc, edgecolors="none", alpha=0.38, zorder=0.6))
+        if conn_heat:
+            _segs = [[(x1, y1), (x2, y2)] for x1, y1, x2, y2, _ in conn_heat]
+            _clrs = [_cmap(n) for *_, n in conn_heat]
+            ax.add_collection(LineCollection(
+                _segs, colors=_clrs, linewidths=1.6, alpha=0.75, zorder=0.7))
 
     # Footprint outlines (courtyard / fab / silkscreen)
     fp_segs = _fp_outline_segments(board)
