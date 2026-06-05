@@ -20,7 +20,8 @@ import types
 import pytest
 
 from pyautoroute.gui import worker
-from pyautoroute.gui.events import BoardSnap, Done, Error, Phase, Progress
+from pyautoroute.gui.events import (
+    BoardSnap, Done, Error, Phase, Progress, collect_issues)
 from pyautoroute.placement import PlaceParams
 
 _SRC = pathlib.Path(__file__).resolve().parents[1] / "TestProjects" / "Test3"
@@ -141,6 +142,33 @@ def test_worker_mounting_holes_clean(tmp_path):
     # the mounting-holes step ran and reported a count
     assert any(isinstance(e, Phase) and e.name.startswith("mounting holes:")
                for e in events)
+
+
+def test_worker_done_carries_warnings(tmp_path):
+    # a hole far outside the outline is skipped -> the warning rides on Done
+    board = _copy_board(tmp_path)
+    events = _drive(_cfg(board, mounting_holes=True, hole_pattern="custom",
+                         hole_at=["1000,1000"]))
+    _no_error(events)
+    done = [e for e in events if isinstance(e, Done)][0]
+    assert any("mounting holes" in w and "outside" in w for w in done.warnings)
+
+
+def test_collect_issues_clean_is_empty():
+    done = Done("o.kicad_pcb", total=10, routed=10, unrouted=0, length=1.0, vias=0)
+    assert collect_issues(done) == []
+
+
+def test_collect_issues_combines_every_type():
+    done = Done("o.kicad_pcb", total=10, routed=7, unrouted=3, length=1.0, vias=0,
+                violations=[("F.Cu", "A", "B", 0.1),      # 4-tuple: clearance
+                            ("MH1", "MH2", 0.05)],          # 3-tuple: hole-to-hole
+                warnings=["mounting holes: hole TL overlaps copper — skipped"])
+    issues = collect_issues(done)
+    assert any("3 unrouted" in s for s in issues)
+    assert any("clearance violation" in s for s in issues)
+    assert any("hole-to-hole" in s for s in issues)
+    assert any("mounting holes" in s for s in issues)
 
 
 def test_worker_ground_plane_clean(tmp_path):

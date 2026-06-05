@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.53.0
+
+- **GUI**: a single end-of-run **summary dialog** now lists every non-fatal issue — unrouted connections, DRC self-check violations (clearance and hole-to-hole), and warnings raised during the run (skipped mounting holes, ground-plane, placement) — and is shown **only when there are issues** (a clean run shows nothing). This replaces the old clearance-only popup. The worker collects warnings via `Worker._warn` and carries them on the `Done` event; `events.collect_issues` (tkinter-free, unit-tested) assembles the list.
+
 ## 0.52.0
 
 - **Feature**: mounting holes are now "felt" during placement. When a hole's position is known before the annealer runs — explicit `x,y` always, or corner/edge codes under `--keep-outline` — it is injected as a **locked footprint** so footprints are pushed away from it (and it shows during the placement animation); `mountingholes.positions_known_preplacement()` decides this, and corner holes on an auto-generated outline fall back to post-placement injection with a printed note. Applied symmetrically in the CLI and GUI worker.

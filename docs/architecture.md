@@ -580,6 +580,13 @@ constraint editing. Main components:
   view bar. When on, `_heat_data(board)` calls `placement.energy_heatmap` and passes
   the result through `_render → canvas.show_board → draw_board` as `fp_heat`/`conn_heat`,
   overlaying footprints and connections with a `RdYlBu_r` cost colour scale.
+- **Run-summary dialog** — the worker accumulates non-fatal warnings (mounting
+  holes, ground plane, placement) via `Worker._warn` and carries them on the
+  `Done` event's `warnings` field. `events.collect_issues(done)` (tkinter-free, so
+  unit-tested) folds those together with unrouted connections and DRC violations
+  (clearance vs hole-to-hole told apart by tuple shape); `app._show_issues_summary`
+  shows a single `messagebox` **only when the list is non-empty**, replacing the
+  former clearance-only popup.
 
 ### `tune.py` — parameter sweep & scoring
 Scores a routing with a single objective

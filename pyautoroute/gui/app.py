@@ -15,7 +15,7 @@ from pyautoroute import __version__
 
 from .canvas import BoardCanvas
 from .controls import ControlsPanel
-from .events import BoardSnap, Done, Error, Phase, Progress, SelfCheck
+from .events import BoardSnap, Done, Error, Phase, Progress, SelfCheck, collect_issues
 from .plots import EnergyPlot
 from .worker import Worker
 
@@ -363,7 +363,7 @@ class App:
         self._energy_plot.refresh()
         self._metrics.set_done(ev)
         n_viol = len(ev.violations)
-        check = "PASS" if n_viol == 0 else f"{n_viol} clearance violation(s)"
+        check = "PASS" if n_viol == 0 else f"{n_viol} DRC violation(s)"
         msg = (f"Done — {ev.routed}/{ev.total} routed, "
                f"{ev.length:.0f} mm, {ev.vias} vias.  {check}")
         self._status_var.set(msg)
@@ -372,10 +372,19 @@ class App:
             self._current_snap = final_snap
             self._best_snap = final_snap
             self._overall_best_snap = final_snap
-        if n_viol:
-            messagebox.showwarning("Self-check",
-                                   f"{n_viol} clearance violation(s) found.\n"
-                                   f"Review the board in KiCad.")
+        self._show_issues_summary(ev)
+
+    def _show_issues_summary(self, ev: Done) -> None:
+        """Show one summary dialog if the run raised any issues (else nothing)."""
+        issues = collect_issues(ev)
+        if not issues:
+            return
+        shown = issues[:20]
+        body = ("This run finished with issues:\n\n"
+                + "\n".join(f"  •  {s}" for s in shown))
+        if len(issues) > len(shown):
+            body += f"\n  …  and {len(issues) - len(shown)} more"
+        messagebox.showwarning("Run finished with issues", body)
 
     def _on_error(self, ev: Error) -> None:
         self._controls.set_running(False)

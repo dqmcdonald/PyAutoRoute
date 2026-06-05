@@ -499,6 +499,15 @@ write the current best board to a chosen path via a file dialog — useful when 
 want to keep the output under a specific name or in a different directory without
 re-running the routing.
 
+### Run summary
+
+When a run finishes, a summary dialog appears **only if there were issues** —
+unrouted connections, DRC self-check violations (clearance or hole-to-hole), or
+warnings raised during the run (skipped mounting holes, ground-plane or placement
+warnings). A fully clean run shows no dialog. This replaces the old
+clearance-only popup, so warnings that previously scrolled past in the status bar
+are now collected in one place.
+
 ### Energy heat map
 
 The **Energy heat** toggle in the view bar overlays the board with a placement-energy

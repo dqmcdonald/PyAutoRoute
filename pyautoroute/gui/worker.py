@@ -157,6 +157,7 @@ class Worker:
         self._q = event_queue
         self._cancel = cancel_event
         self._thread: threading.Thread | None = None
+        self._issues: list[str] = []     # non-fatal warnings collected this run
 
     def start(self, cfg) -> None:
         """Launch the pipeline for the given ``RunConfig`` *cfg*."""
@@ -174,7 +175,20 @@ class Worker:
     def _post(self, event) -> None:
         self._q.put(event)
 
+    def _warn(self, text: str) -> None:
+        """Record a non-fatal issue and surface it as a live status phase.
+
+        Accumulated issues are carried on the final `Done` event so the app can
+        show one end-of-run summary, in addition to the transient status line.
+
+        Args:
+            text: the issue message (without the warning glyph).
+        """
+        self._issues.append(text)
+        self._post(Phase(f"  ⚠ {text}"))
+
     def _run(self, cfg) -> None:
+        self._issues = []
         try:
             self._pipeline(cfg)
         except Exception as exc:
@@ -341,7 +355,7 @@ class Worker:
         try:
             from pyautoroute import groundplane
         except ImportError:
-            self._post(Phase("⚠ ground-plane: not available"))
+            self._warn("ground-plane: not available")
             return []
 
         nodes = []
@@ -352,9 +366,9 @@ class Worker:
                   else [cfg.ground_plane_layer])
 
         if len(layers) == 1 and cfg.stitch_vias:
-            self._post(Phase(
-                "  ⚠ ground-plane: stitching vias skipped — requires "
-                "--ground-plane-layer both (vias would float on the non-pour layer)"))
+            self._warn("ground-plane: stitching vias skipped — requires "
+                       "--ground-plane-layer both (vias would float on the "
+                       "non-pour layer)")
         for i, layer in enumerate(layers):
             sp = cfg.stitch_vias if (len(layers) > 1 and i == 0) else None
             gp_nodes, gp_warns = groundplane.build(
@@ -362,7 +376,7 @@ class Worker:
                 stitch_pitch=sp, routed_nodes=routed_nodes or [])
             nodes.extend(gp_nodes)
             for w in gp_warns:
-                self._post(Phase(f"  ⚠ ground-plane: {w}"))
+                self._warn(f"ground-plane: {w}")
 
         return nodes
 
@@ -393,7 +407,7 @@ class Worker:
         where = " (placement keep-outs)" if lock else ""
         self._post(Phase(f"mounting holes: {len(nodes)} added{where}"))
         for w in warnings:
-            self._post(Phase(f"  ⚠ mounting holes: {w}"))
+            self._warn(f"mounting holes: {w}")
 
     def _place_params(self, cfg, rules):
         """Build the `placement.PlaceParams` from the run config.
@@ -571,10 +585,12 @@ class Worker:
         # ---- placement -----------------------------------------------
         if place or place_only:
             pp = self._place_params(cfg, rules)
-            pipeline.run_placement(board, place_params=pp,
-                                   place_runs=max(1, cfg.place_runs),
-                                   seed=cfg.seed, place_margin=margin,
-                                   hooks=hooks, cancel=self._cancel)
+            pout = pipeline.run_placement(board, place_params=pp,
+                                          place_runs=max(1, cfg.place_runs),
+                                          seed=cfg.seed, place_margin=margin,
+                                          hooks=hooks, cancel=self._cancel)
+            for w in getattr(pout, "warnings", None) or []:
+                self._warn(f"placement: {w}")
 
         # Mounting holes: unless pre-placed above, inject after placement finalises
         # the outline and before the grid is built, so they are fixed obstacles and
@@ -595,7 +611,8 @@ class Worker:
             placed = pcb.load_board(out_path)
             violations = (geometry.clearance_violations(placed, rules)
                           + geometry.drill_violations(placed, rules))
-            self._post(Done(str(out_path), 0, 0, 0, 0.0, 0, violations, placed))
+            self._post(Done(str(out_path), 0, 0, 0, 0.0, 0, violations, placed,
+                            warnings=list(self._issues)))
             return
 
         if self._cancel.is_set():
@@ -661,7 +678,8 @@ class Worker:
         total = routed + unrouted + n_pre_routed
         self._post(BoardSnap(routed_board))
         self._post(Done(str(out_path), total, routed + n_pre_routed, unrouted,
-                        length, vias, violations, routed_board))
+                        length, vias, violations, routed_board,
+                        warnings=list(self._issues)))
 
     def _run_cycles(self, cfg, board, rules, pitch, margin, input_path,
                     out_path, fill_nets, cycles) -> None:
@@ -775,4 +793,5 @@ class Worker:
         total = best.routed + best.unrouted
         self._post(BoardSnap(routed_board))
         self._post(Done(str(out_path), total, best.routed, best.unrouted,
-                        best.length, best.vias, violations, routed_board))
+                        best.length, best.vias, violations, routed_board,
+                        warnings=list(self._issues)))
