@@ -111,7 +111,8 @@ def _quick_violations(board, grid, results, rules) -> int:
     return violations
 
 
-def _snap_pads(board, margin: float = 2.0, strip_vias: bool = False):
+def _snap_pads(board, margin: float = 2.0, strip_vias: bool = False,
+               strip_segments: bool = False):
     """Return a Board copy frozen at a consistent instant for live placement.
 
     Both ``board.pads`` and ``board.footprints`` are copied so the snapshot is an
@@ -129,6 +130,9 @@ def _snap_pads(board, margin: float = 2.0, strip_vias: bool = False):
         board: the live board being placed.
         margin: extra space (mm) around the pads when sizing the preview outline;
             pass the placement margin so the preview matches the final outline.
+        strip_vias: when True, omit free vias from the snapshot (placement preview).
+        strip_segments: when True, omit track segments from the snapshot (placement
+            preview — pre-existing tracks are irrelevant while parts are moving).
     """
     from pyautoroute import pcb
 
@@ -137,6 +141,8 @@ def _snap_pads(board, margin: float = 2.0, strip_vias: bool = False):
     kw = dict(pads=pads_copy, footprints=fps_copy)
     if strip_vias:
         kw["free_vias"] = []
+    if strip_segments:
+        kw["segments"] = []
     snap = dataclasses.replace(board, **kw)
     if pads_copy:
         snap.outline = pcb.pad_bounding_outline(pads_copy, margin)
@@ -207,6 +213,11 @@ class Worker:
         def _snap(b=None):
             return _snap_pads(b or board, margin, strip_vias=_strip_vias)
 
+        def _place_snap(b=None):
+            # During placement tracks are meaningless — parts are still moving.
+            return _snap_pads(b or board, margin, strip_vias=True,
+                              strip_segments=True)
+
         def _route_snap(b):
             return dataclasses.replace(b, free_vias=[] if _strip_vias else b.free_vias)
 
@@ -231,23 +242,28 @@ class Worker:
                               0, 0, elapsed=now - st["place_t0"],
                               budget=cfg.place_time or 0.0))
             new_best = best < st["psnap_best"]
-            if now - st["psnap_t"] >= (0.5 if new_best else 2.0):
+            if now - st["psnap_t"] >= 0.5:
                 if new_best:
                     st["psnap_best"] = best
                 st["psnap_t"] = now
-                post(BoardSnap(_snap(),
-                               kind="best" if new_best else "current"))
+                snap = _place_snap()
+                post(BoardSnap(snap, kind="current"))
                 if new_best:
-                    post(BoardSnap(_snap(), kind="overall_best"))
+                    post(BoardSnap(snap, kind="best"))
+                    post(BoardSnap(snap, kind="overall_best"))
 
         def place_polish_progress(sweep, max_sweeps, energy):
             if cancel.is_set():
                 return
             post(Phase(f"polishing: sweep {sweep}/{max_sweeps}  E={energy:.1f}"))
-            post(BoardSnap(_snap(), kind="current"))
+            post(BoardSnap(_place_snap(), kind="current"))
 
         def placed(_board):
-            post(BoardSnap(_snap()))
+            # Placement is done; show the final placement (still no tracks yet).
+            snap = _place_snap()
+            post(BoardSnap(snap, kind="current"))
+            post(BoardSnap(snap, kind="best"))
+            post(BoardSnap(snap, kind="overall_best"))
 
         def route_run(k, n):
             st["tag"] = f"run {k + 1}/{n} " if n > 1 else ""
@@ -444,10 +460,14 @@ class Worker:
             if cancel.is_set():
                 return
             post(Phase(f"{tag}polishing: sweep {sweep}/{max_sweeps}  E={energy:.1f}"))
-            post(BoardSnap(_snap_pads(board, margin)))
+            snap = _snap_pads(board, margin, strip_vias=True, strip_segments=True)
+            post(BoardSnap(snap, kind="current"))
 
         def board_snap(b):
-            post(BoardSnap(_snap_pads(b, margin)))
+            snap = _snap_pads(b, margin, strip_vias=True, strip_segments=True)
+            post(BoardSnap(snap, kind="current"))
+            post(BoardSnap(snap, kind="best"))
+            post(BoardSnap(snap, kind="overall_best"))
 
         return pipeline.CycleHooks(
             phase_cb=phase, place_progress=place_progress,
