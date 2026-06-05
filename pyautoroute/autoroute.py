@@ -710,9 +710,10 @@ def run(args: argparse.Namespace, _print_version: bool = True,
                 print("  note: kicad-cli not available; open in KiCad to refill copper zones")
         placed_board = pcb.load_board(out_path)
         violations = geometry.clearance_violations(placed_board, rules)
+        drill_viol = geometry.drill_violations(placed_board, rules)
         rep.done()
-        _report_placed(rep, out_path, board, violations)
-        return _finish(rep, args, out_path, placed_board, violations)
+        _report_placed(rep, out_path, board, violations, drill_viol)
+        return _finish(rep, args, out_path, placed_board, violations, drill_viol)
 
     if args.auto:
         from . import tune
@@ -1016,13 +1017,15 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     # reload the written board and self-check clearances
     routed_board = pcb.load_board(out_path)
     violations = geometry.clearance_violations(routed_board, rules)
+    drill_viol = geometry.drill_violations(routed_board, rules)
     final_stats = routing_stats(routed_board, rules, exclude=args.exclude_net)
     rep.done()
 
     total_conns = len(conns) + n_pre_routed
     _report(rep, out_path, total_conns, routed + n_pre_routed, unrouted, length, vias,
             violations, excluded, init_stats=init_stats, final_stats=final_stats,
-            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
+            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight,
+            drill_viol=drill_viol)
 
     if dp_route_results:
         from .report import diff_pair_stats, format_diff_pair_table
@@ -1037,7 +1040,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         rep.log(table)
 
     _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
-    return _finish(rep, args, out_path, routed_board, violations)
+    return _finish(rep, args, out_path, routed_board, violations, drill_viol)
 
 
 def _save_cycle(args, rules, rep, out_path: Path, cr, cycle_num: int,
@@ -1303,14 +1306,16 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
 
     routed_board = pcb.load_board(out_path)
     violations = geometry.clearance_violations(routed_board, rules)
+    drill_viol = geometry.drill_violations(routed_board, rules)
     final_stats = routing_stats(routed_board, rules, exclude=args.exclude_net)
     rep.done()
 
     _report(rep, out_path, best.n_conns, best.routed, best.unrouted, best.length,
             best.vias, violations, excluded, init_stats=init_stats, final_stats=final_stats,
-            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight)
+            via_weight=args.via_weight, unrouted_weight=args.unrouted_weight,
+            drill_viol=drill_viol)
     _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
-    return _finish(rep, args, out_path, routed_board, violations)
+    return _finish(rep, args, out_path, routed_board, violations, drill_viol)
 
 
 def _maybe_replace_in_place(
@@ -1356,7 +1361,8 @@ def _maybe_replace_in_place(
         rep.log(msg)
 
 
-def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
+def _finish(rep: Reporter, args, out_path: Path, board, violations,
+            drill_viol=()) -> int:
     """Report timing and close the log; the shared tail of the routing and
     place-only paths.
 
@@ -1365,10 +1371,11 @@ def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
         args: the parsed CLI namespace.
         out_path: the output board path (basis for the log name).
         board: the reloaded output board (unused; kept for signature symmetry).
-        violations: the self-check violations (empty == clean) for the exit code.
+        violations: the clearance self-check violations (empty == clean).
+        drill_viol: the hole-to-hole self-check violations (empty == clean).
 
     Returns:
-        Process exit code: 0 if `violations` is empty, else 2.
+        Process exit code: 0 if both self-checks are clean, else 2.
     """
     real, cpu = rep.runtime()
     timing = f"runtime:       {real:.2f}s real, {cpu:.2f}s cpu"
@@ -1378,12 +1385,13 @@ def _finish(rep: Reporter, args, out_path: Path, board, violations) -> int:
     if rep.log_file is not None and not args.quiet:
         print(f"  log:           {_resolve_log_path(args, out_path)}")
     rep.close()
-    return 0 if not violations else 2
+    return 0 if not (violations or drill_viol) else 2
 
 
 def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
             violations, excluded, *, init_stats=None, final_stats=None,
-            via_weight: float = 2.0, unrouted_weight: float = 100.0) -> None:
+            via_weight: float = 2.0, unrouted_weight: float = 100.0,
+            drill_viol=()) -> None:
     """Print the final metrics summary and mirror it to the log.
 
     Args:
@@ -1419,6 +1427,11 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
                      f"e.g. {violations[0]}")
     else:
         lines.append("self-check:    clean (0 clearance violations)")
+    if drill_viol:
+        lines.append(f"DRILL-CHECK:   {len(drill_viol)} hole-to-hole violation(s)! "
+                     f"e.g. {drill_viol[0]}")
+    else:
+        lines.append("drill-check:   clean (0 hole-to-hole violations)")
     print()
     for ln in lines:
         print(f"  {ln}")
@@ -1461,7 +1474,7 @@ def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
             rep.log(ln)
 
 
-def _report_placed(rep: Reporter, out_path, board, violations) -> None:
+def _report_placed(rep: Reporter, out_path, board, violations, drill_viol=()) -> None:
     """Print the place-only metrics summary and mirror it to the log.
 
     Args:
@@ -1470,6 +1483,8 @@ def _report_placed(rep: Reporter, out_path, board, violations) -> None:
         board: the placed board (for the moved-footprint count and outline size).
         violations: clearance-violation tuples from the self-check (empty ==
             clean).
+        drill_viol: hole-to-hole violation tuples from the drill self-check
+            (empty == clean).
     """
     moved = sum(1 for fp in board.footprints if fp.moved)
     rect = next((s for s in board.outline if s.kind == "rect"), None)
@@ -1485,6 +1500,11 @@ def _report_placed(rep: Reporter, out_path, board, violations) -> None:
                      f"e.g. {violations[0]}")
     else:
         lines.append("self-check:    clean (0 clearance violations)")
+    if drill_viol:
+        lines.append(f"DRILL-CHECK:   {len(drill_viol)} hole-to-hole violation(s)! "
+                     f"e.g. {drill_viol[0]}")
+    else:
+        lines.append("drill-check:   clean (0 hole-to-hole violations)")
     print()
     for ln in lines:
         print(f"  {ln}")

@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.49.0
+
+- **Feature**: drill geometry + hole-to-hole DRC (drill-hole plan, phase 1). The previously-parsed-but-unused `min_hole_to_hole` rule is now enforced by a new `geometry.drill_violations` self-check, printed as a `drill-check:` line and folded into the exit code. Drilled through-hole / NPTH pads are now registered as all-layer routing keep-outs (`board_obstacles` emits a barrel disk on the layers a pad lacks copper), so the router never drives copper across a hole. `RoutingStats` gains a `drill_violations` field.
+
 ## 0.48.0
 
 - **Feature**: `--scatter` now also randomises footprint starting positions between `--place-runs` (best-of-N placement) runs, not only between `--cycles`. Previously scatter only fired once per cycle; with `--place-runs N > 1`, each run now gets a freshly randomised layout.

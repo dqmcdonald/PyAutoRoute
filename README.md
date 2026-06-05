@@ -382,12 +382,16 @@ positions and the outline, inspect the output in KiCad before relying on it.
   wirelength:    1039.7 mm
   vias:          51
   self-check:    clean (0 clearance violations)
+  drill-check:   clean (0 hole-to-hole violations)
   runtime:       12.34s real, 12.10s cpu
 ```
 
 The tool runs an in-repo geometric **self-check** on its own output and reports
-any clearance violation it finds (there should be none). Open the
-`*_routed.kicad_pcb` in KiCad to inspect it.
+any clearance violation it finds (there should be none). A second **drill-check**
+reports any pair of through-hole/NPTH holes closer than the board's
+`min_hole_to_hole` rule; drilled holes are also treated as routing keep-outs, so
+copper is never routed across a barrel. Either check finding a violation makes
+the exit code non-zero. Open the `*_routed.kicad_pcb` in KiCad to inspect it.
 
 ## Verifying with KiCad (optional)
 

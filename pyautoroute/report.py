@@ -50,11 +50,12 @@ class RoutingStats:
     vias: int            # via count
     ideal_length: float = 0.0  # sum of est_length over connections (for directness ratio)
     violations: list = field(default_factory=list)  # clearance violations
+    drill_violations: list = field(default_factory=list)  # hole-to-hole violations
 
     def summary(self) -> str:
         """One-line human-readable summary."""
-        viol = (f", {len(self.violations)} DRC violation(s)"
-                if self.violations else ", DRC clean")
+        n_drc = len(self.violations) + len(self.drill_violations)
+        viol = f", {n_drc} DRC violation(s)" if n_drc else ", DRC clean"
         return (f"{self.routed}/{self.total} connections routed, "
                 f"{self.length:.1f} mm track, {self.vias} vias{viol}")
 
@@ -140,8 +141,10 @@ def routing_stats(board: "Board", rules=None, exclude=None) -> RoutingStats:
 
     # DRC.
     violations: list = []
+    drill_viol: list = []
     if rules is not None:
         violations = geometry.clearance_violations(board, rules)
+        drill_viol = geometry.drill_violations(board, rules)
 
     return RoutingStats(
         total=len(conns),
@@ -151,6 +154,7 @@ def routing_stats(board: "Board", rules=None, exclude=None) -> RoutingStats:
         ideal_length=ideal_length,
         vias=via_count,
         violations=violations,
+        drill_violations=drill_viol,
     )
 
 
