@@ -5,6 +5,20 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.54.0
+
+- **new**: `pyautoroute-assign` — assigns footprints to unassigned KiCad schematic
+  symbols from a TOML preference database (`~/.config/pyautoroute/footprint_prefs.toml`).
+  Supports per-prefix tech defaults (`R:THT`), value-keyed rules for ICs
+  (`U:74AHC244=Package_DIP:DIP-20_W7.62mm_Socket_LongPads`), `--dry-run`, `--all`
+  (reassign existing), and `--init-prefs` to bootstrap the preference file.
+  Round-trip-safe: only changed nodes are reformatted. Adds `CP` (polarised
+  capacitor) prefix to default prefs.
+- **new**: `--rebuild-index` scans all 15 000+ KiCad footprint libraries into a
+  3.5 MB JSON index; unknown-prefix components then receive ranked keyword
+  suggestions from the index automatically. Multi-unit IC symbols are deduplicated
+  so each IC receives exactly one footprint assignment.
+
 ## 0.53.2
 
 - **fix**: grouped `gr_text` items now track their footprint live in the GUI placement preview (`_silk_text_items` computes the current text position from `fp.x/y/angle` at each render frame rather than reading the stale tree position).

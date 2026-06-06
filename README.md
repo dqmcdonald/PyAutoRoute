@@ -108,7 +108,7 @@ The original file is never modified unless you pass `--in-place` — a routed co
 | `--cycles N` | **With `--place`:** run `N` independent place+route cycles and keep the one that *routes* best — fewest unrouted, then lowest energy — selecting on the true objective rather than placement energy alone (default 1). Parallelised by `--jobs`. See *Best-of-cycles* below. |
 | `--save-cycles` | **With `--cycles`:** write each cycle's result to a separate file (`<output>_cycle_NNofMM.kicad_pcb`) as it completes, so you can inspect intermediate results while the job is still running. Includes the ground plane zone boundary (if `--ground-plane`) but skips the zone fill; open in KiCad to refill. |
 | `--scatter` | **With `--cycles` or `--place-runs > 1`:** randomise the position and rotation of every unlocked footprint before each cycle's (or run's) placement pass, giving the annealer a completely fresh starting layout rather than always refining the as-designed configuration. Increases diversity at the cost of needing more placement iterations to recover a good layout; pair with a generous `--place-time` or `--place-iters` budget. |
-| `--place-feedback` | **With `--cycles N`:** feed each cycle's routing back into the next placement as a *congestion field*, spreading footprints out of the cells where routing struggled (PathFinder-style). Cycles then run sequentially; the best-routing cycle is still kept, so feedback can only help. Opt-in and experimental. See *Congestion feedback* below. |
+| `--place-feedback` | **With `--cycles N`:** feed each cycle's routing back into the next placement as a *congestion field*, spreading footprints out of the cells where routing struggled (PathFinder-style). Cycles then run sequentially; the best-routing cycle is still kept, so feedback can only help. Opt-in; effectiveness is board-dependent. See *Congestion feedback* below. |
 | `--congestion-weight W` | With `--place-feedback`: how hard to spread parts out of the routed hot zones (mm-cost per unit congestion at a footprint centroid; default 5.0). |
 | `--auto` | Probe a few grid/via settings on this board, pick the best, and (on a terminal) ask to confirm before routing with them. `--auto-yes` skips the prompt; `--auto-probe-time S` sets the budget per probed setting; `--auto-time-weight W` (default 1.0) adds a score penalty per second of routing time so that a marginally finer grid doesn't automatically win over a faster coarser one — set to 0 to rank by quality only. |
 | `--unrouted-weight W` | Annealing energy penalty per unrouted connection (default 100). Higher ⇒ the optimiser tries harder to complete every connection, at the expense of wirelength/vias; lower ⇒ it tolerates leaving hard nets for manual routing. |
@@ -185,9 +185,11 @@ Each feedback cycle still re-places from scratch (its own seed) under the
 accumulated field — not a tweak of the previous best — so every cycle stays an
 independent, exploratory attempt with the field as the only memory carried
 forward. Because the best cycle is still chosen by **routed** score, feedback can
-only help or be discarded. It is opt-in and experimental: coupled place/route
-loops can oscillate, so the keep-best gate and a decayed blend are the guardrails,
-and `--congestion-weight` bounds how hard parts are pushed. Feedback couples each
+only help or be discarded. It is opt-in: coupled place/route loops can oscillate,
+so the keep-best gate and a decayed blend are the guardrails, and
+`--congestion-weight` bounds how hard parts are pushed. Effectiveness is
+board-dependent — on congested boards it often improves completion; on open
+boards it may do nothing. Feedback couples each
 cycle to the previous one, so it runs the cycles **sequentially** (it overrides
 `--jobs`). Example:
 
@@ -211,7 +213,7 @@ pyautoroute MyBoard.kicad_pcb --exclude-net GND --exclude-net "/VBUS*" -o routed
 pyautoroute MyBoard.kicad_pcb --routing-iters 5000 --snapshots 10 --log
 # -> snapshots/MyBoard_anneal_01of10.kicad_pcb ... 10of10, and MyBoard_routed.log
 
-# Experimental: place the footprints first (30 s budget), then route:
+# Place the footprints first (30 s budget), then route:
 # -> MyBoard_placed_routed.kicad_pcb
 pyautoroute MyBoard.kicad_pcb --place --place-time 30 --routing-time 60
 
@@ -256,7 +258,7 @@ whenever you route that board — no `--config` needed — so the bare
 `--write-config` output and the auto-loaded file are the same `<board>.ini`. Use
 `--config FILE` to point at a different file; it overrides the sibling one.
 
-### Auto-placement (experimental)
+### Auto-placement
 
 `--place` adds an opt-in pass that **arranges the footprints before routing**, the
 placement analogue of the routing annealer: simulated annealing moves footprint
@@ -369,9 +371,10 @@ active, and — when any footprint is flagged `Autoroute-edge` — the total edg
 distance). With `--place-polish` it also reports the number of descent sweeps run
 and the additional energy the polish removed.
 
-It is experimental: it optimises placement heuristically and does not understand
-mechanical/thermal intent, so review the result. Because it rewrites footprint
-positions and the outline, inspect the output in KiCad before relying on it.
+It optimises placement for routability but does not model mechanical or thermal
+intent — connector positions, heat-dissipation proximity, and similar concerns
+must be handled by locking those footprints in place. Because it rewrites footprint
+positions and the outline, inspect the result in KiCad before committing.
 
 ### What you get
 
@@ -516,6 +519,78 @@ ratsnest length and overlap contributions; ratsnest connections are coloured by 
 individual lengths — using the same energy machinery (`energy_heatmap`) as the
 placement annealer. This makes it easy to see which parts are driving placement cost
 before (or after) a run, without needing to interpret raw energy numbers.
+
+## Assigning footprints (`pyautoroute-assign`)
+
+`pyautoroute-assign` fills in empty `Footprint` properties in a `.kicad_sch`
+schematic file using a personal preference database. It reads the preference
+file once (`--init-prefs` bootstraps it), then assigns footprints by component
+prefix (`R`, `C`, `L`, `D`, `LED`, `CP`, `U`, …). Per-invocation overrides let
+you deviate from your defaults for a specific board without touching the global
+preferences. Multi-unit IC symbols (e.g. a quad-gate 74HC00 with units `U1A`–`U1D`)
+are handled correctly — the footprint is assigned once, to the lowest-numbered unit.
+
+```bash
+# First time: bootstrap your preference file and scan the KiCad library
+pyautoroute-assign --init-prefs
+pyautoroute-assign --rebuild-index
+# then edit ~/.config/pyautoroute/footprint_prefs.toml to taste
+
+# Preview what would be assigned (no file written)
+pyautoroute-assign my_board.kicad_sch --dry-run
+
+# Assign using your preferences
+pyautoroute-assign my_board.kicad_sch
+
+# Override: resistors THT, capacitors stay SMD (from prefs)
+pyautoroute-assign my_board.kicad_sch R:THT
+
+# Value-keyed override for a specific IC
+pyautoroute-assign my_board.kicad_sch "U:74AHC244=Package_DIP:DIP-20_W7.62mm_Socket_LongPads"
+
+# Re-assign even already-assigned footprints
+pyautoroute-assign my_board.kicad_sch --all --dry-run
+```
+
+**Preference file** (`~/.config/pyautoroute/footprint_prefs.toml`) maps each
+component prefix to one or more technology variants (`SMD`, `THT`) and picks a
+default. Polarised capacitors use the `CP` prefix. For ICs and other components
+where the footprint depends on the specific part, a `[prefix.U.values]` table
+matches by the symbol's `Value` field:
+
+```toml
+[prefix.R]
+default = "SMD"
+SMD = "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder"
+THT = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal"
+
+[prefix.CP]
+default = "THT"
+THT = "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm"
+SMD = "Capacitor_Tantalum_SMD:CP_EIA-3216-18_Kemet-A"
+
+[prefix.U.values]
+"74AHC244" = "Package_DIP:DIP-20_W7.62mm_Socket_LongPads"
+```
+
+Components whose prefix has no preference entry are skipped with a warning.
+If the footprint index has been built (`--rebuild-index`), up to three ranked
+suggestions from the KiCad library are shown for each unmatched component:
+
+```
+  no preference for:
+    SW1     [SW_DIP_x08]
+             → Button_Switch_THT:SW_DIP_SPSTx08_Slide_6.7x21.88mm_W6.73mm_P2.54mm
+             → Button_Switch_SMD:SW_DIP_SPSTx08_Slide_Copal_CHS-08A_W5.08mm_P1.27mm
+             → Button_Switch_THT:SW_DIP_SPSTx08_Piano_10.8x21.88mm_W7.62mm_P2.54mm
+```
+
+Power symbols (`#PWR`, `#FLG`) are always skipped. Writes are round-trip-safe —
+only changed nodes are reformatted; everything else is emitted verbatim.
+
+**Footprint index** (`~/.config/pyautoroute/footprint_index.json`, ~3.5 MB):
+built by scanning the 15 000+ footprints in your KiCad installation once.
+Rebuild it after upgrading KiCad: `pyautoroute-assign --rebuild-index`.
 
 ## Comparing boards (`pyautoroute-compare`)
 

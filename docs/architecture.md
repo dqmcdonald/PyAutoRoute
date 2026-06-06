@@ -477,8 +477,8 @@ cycle 0 has no field. The **fresh re-placement** strategy (each cycle re-places 
 scratch under the field, not perturbing the best-so-far) keeps every cycle an
 independent attempt with the field as the only memory carried forward — and because
 `select_best` still keeps the lowest **routed** score, feedback can only help or be
-discarded. Opt-in and experimental (coupled place/route loops can oscillate; the
-keep-best gate and decayed blend are the guardrails).
+discarded. Opt-in; effectiveness is board-dependent (coupled place/route loops can oscillate,
+but the keep-best gate and decayed blend ensure routing quality never regresses).
 
 **Shared place→route.** `run()`'s own placement and routing(best-of-N, sequential
 + parallel) loops are not hand-rolled — it calls `pipeline.run_placement` then
@@ -634,6 +634,47 @@ fair metrics across boards.
 New field `ideal_length` = Σ`Connection.est_length` (straight-line sum of connection
 distances) enables directness scoring: `directness = length / ideal_length` (1.0 is
 perfectly straight, higher = more detours).
+
+### `footprint_assigner.py` — schematic footprint assignment
+
+`pyautoroute-assign SCHEMATIC.kicad_sch [OVERRIDE ...]` assigns empty `Footprint`
+properties in a `.kicad_sch` file from a TOML preference database
+(`~/.config/pyautoroute/footprint_prefs.toml`). It parses the schematic with
+`sexpr.loads` (same parser as the PCB side), walks the top-level placed `(symbol …)`
+nodes (skipping the `lib_symbols` block and power/flag refs), and resolves each
+component's footprint by reference prefix (`R`, `C`, `LED`, `U`, …).
+
+**Resolution order** for a given `(prefix, value)` pair:
+
+1. CLI value-keyed override (`U:74AHC244=Package_DIP:DIP-20_W7.62mm…`)
+2. Prefs value-keyed rule (`[prefix.U.values]`) — matches by the symbol's `Value` field
+3. CLI tech override (`R:THT`)
+4. Prefs default tech (`[prefix.R] default = "SMD"`)
+5. Global `[defaults] technology` fallback
+
+Writing back uses the same span-clearing pattern as `pcb.py`: the property node's
+span and the symbol node's span are both cleared (forcing re-serialization of just
+those nodes), then a fresh root `SList()` (no span) is assembled from the original
+children so the writer recurses rather than emitting the full cached file. Unmodified
+nodes keep their spans and are emitted verbatim — the diff is limited to changed nodes.
+
+`--dry-run` computes changes without writing; `--all` reassigns already-assigned
+footprints; `--init-prefs` bootstraps the preference file with defaults inferred from
+the user's existing KiCad projects. Multi-unit IC symbols (same reference, different
+`(unit N)`) are deduplicated — only the lowest-unit instance is yielded by
+`iter_placed_symbols` and receives a footprint assignment.
+
+**Footprint index** (`--rebuild-index`): `build_index` parses the user's
+`fp-lib-table` (auto-detected from `~/Library/Preferences/kicad/<version>/`),
+follows `type "Table"` redirections to the system library table, resolves
+`${KICHADn_FOOTPRINT_DIR}` variables, and walks every `.pretty` directory.
+For each `.kicad_mod` file it reads only the first 1 KB (where `descr` and `tags`
+always appear) via regex, producing a 3.5 MB JSON index of 15 000+ entries.
+`suggest_footprints` scores entries by token-matching the symbol's Value against
+name (3 pts), tags (2 pts), and descr (1 pt), with a +2 library-affinity boost
+when the library name contains the expected family keyword (e.g. `Button_Switch`
+for `SW` prefixes). Results are shown automatically for unmatched prefixes when
+the index exists.
 
 ### `compare.py` — routed board comparison tool
 

@@ -1,4 +1,4 @@
-"""Experimental simulated-annealing footprint placement.
+"""Simulated-annealing footprint placement.
 
 An opt-in pass (``--place``) that arranges the board's footprints *before*
 routing, the placement analogue of `pyautoroute.anneal`: where the annealer moves

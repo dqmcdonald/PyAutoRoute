@@ -43,12 +43,16 @@ back for their own residual TODOs.
 >   cap toward its IC during `--place`; IC resolved by searching the cap's power
 >   net for the nearest IC-like part. Settable via GUI right-click menu.
 >   See [`decoupling-cap-plan.md`](decoupling-cap-plan.md).
+> - **Footprint assigner** (`pyautoroute-assign`) — shipped in 0.54.0. Assigns
+>   footprints to unassigned `.kicad_sch` symbols from a TOML preference database
+>   with per-prefix tech defaults and value-keyed IC rules. Supports `--dry-run`,
+>   `--all`, and per-invocation `PREFIX:TECH` / `PREFIX:VALUE=FP` overrides.
 
 ## Context
 
 PyAutoRoute is a 2-layer KiCad autorouter with a
 parse → grid → A\* route → simulated-annealing pipeline (`pcb.py`, `grid.py`,
-`router.py`, `anneal.py`), an experimental footprint-placement pass
+`router.py`, `anneal.py`), a footprint-placement pass
 (`placement.py`), a parameter-sweep tuner (`tune.py`), and a functional Tkinter
 GUI (`gui/`). Routing is **DRC-clean by construction** — the grid inflates every
 obstacle by `margin = hypot(max_track/2 + max_clearance, safety)` so A\* can only

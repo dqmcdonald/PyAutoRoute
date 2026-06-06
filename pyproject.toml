@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyautoroute"
-version = "0.53.2"
+version = "0.54.0"
 description = "Simulated-annealing autorouter for 2-layer KiCad PCBs"
 license = "MIT"
 requires-python = ">=3.10"
@@ -29,6 +29,7 @@ pyautoroute-gui = "pyautoroute.gui:main"
 pyautoroute-fix = "pyautoroute.fixup:main"
 pyautoroute-compare = "pyautoroute.compare:main"
 pyautoroute-install-plugin = "pyautoroute.kicad_plugin_install:main"
+pyautoroute-assign = "pyautoroute.footprint_assigner:main"
 
 [tool.setuptools.packages.find]
 include = ["pyautoroute*", "kicad_plugin*"]

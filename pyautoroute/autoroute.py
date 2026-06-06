@@ -1967,9 +1967,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "routed output. The output file is always written first.")
     p.add_argument("--grid", type=float, help="grid pitch in mm (default derived from rules)")
     p.add_argument("--place", action="store_true",
-                   help="experimental: place footprints (simulated annealing) before "
-                        "routing — honours locked footprints and the Autoroute-overlap "
-                        "property, and regenerates the Edge.Cuts outline")
+                   help="place footprints (simulated annealing) before routing — "
+                        "honours locked footprints and the Autoroute-overlap property, "
+                        "and regenerates the Edge.Cuts outline")
     p.add_argument("--place-only", action="store_true",
                    help="place the footprints and write the placed board "
                         "(<input>_placed.kicad_pcb) without routing")
@@ -2088,7 +2088,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "footprints out of the cells where routing struggled "
                         "(PathFinder-style). Cycles then run sequentially "
                         "(feedback is inherent); the best-routing cycle is still "
-                        "kept, so feedback can only help. Opt-in and experimental")
+                        "kept, so feedback can only help. Opt-in; effectiveness is "
+                        "board-dependent")
     p.add_argument("--congestion-weight", type=float, default=5.0, metavar="W",
                    help="with --place-feedback: mm-cost per unit congestion at a "
                         "footprint centroid; higher spreads parts harder out of "

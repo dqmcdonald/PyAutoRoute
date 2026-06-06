@@ -126,7 +126,7 @@ order and that's it.
 
 ## 5. Footprint placement — the same idea, applied to the parts (`--place`)
 
-The experimental `--place` pass runs the *same* simulated-annealing idea one level
+The `--place` pass runs the *same* simulated-annealing idea one level
 up: instead of moving wires, it moves the **parts**. Its energy rewards short
 rats-nest connections, penalises parts overlapping, and penalises a sprawling
 layout (to pull everything compact). Locked parts stay put; parts flagged
