@@ -1379,6 +1379,51 @@ def _rotate_text_nodes(fp_node: SList, delta: float) -> None:
                     break
 
 
+def _move_gr_text(text_node: SList, old_cx: float, old_cy: float,
+                  new_cx: float, new_cy: float, angle_delta: float) -> None:
+    """Translate and rotate a top-level gr_text node to follow its group.
+
+    Reads the text's current ``(at x y [angle])`` values, treats them as being
+    expressed relative to ``(old_cx, old_cy)``, rotates by ``angle_delta``, then
+    places the result relative to ``(new_cx, new_cy)``.  The node's span is
+    cleared so the serialiser re-emits the updated position.
+
+    Args:
+        text_node: the ``(gr_text ...)`` s-expression node to transform (mutated).
+        old_cx: group centroid x before movement (from ``fp.x0``).
+        old_cy: group centroid y before movement (from ``fp.y0``).
+        new_cx: group centroid x after movement (from ``fp.x``).
+        new_cy: group centroid y after movement (from ``fp.y``).
+        angle_delta: total rotation applied to the group (degrees).
+    """
+    old_at = child(text_node, "at")
+    if old_at is None:
+        return
+    vals = floats(old_at)
+    if len(vals) < 2:
+        return
+    tx, ty = vals[0], vals[1]
+    text_angle = vals[2] if len(vals) >= 3 else 0.0
+
+    rel_x = tx - old_cx
+    rel_y = ty - old_cy
+    if abs(angle_delta) > 1e-6:
+        rel_x, rel_y = rotate(rel_x, rel_y, angle_delta)
+    new_x = new_cx + rel_x
+    new_y = new_cy + rel_y
+    new_angle = (text_angle + angle_delta) % 360.0
+
+    new_at = SList([sexpr.sym("at"), sexpr.number(new_x), sexpr.number(new_y)])
+    if abs(new_angle) > 1e-6:
+        new_at.append(sexpr.number(new_angle))
+
+    text_node.span = None
+    for i, ch in enumerate(text_node):
+        if ch is old_at:
+            text_node[i] = new_at
+            break
+
+
 def sync_tree_from_placement(board: Board, edge_width: float = 0.05,
                              keep_outline: bool = False) -> None:
     """Rewrite the board tree to match the placement result, in place.
@@ -1386,10 +1431,12 @@ def sync_tree_from_placement(board: Board, edge_width: float = 0.05,
     For each footprint that actually moved, clears its node's source span (so it
     re-serialises from structure rather than verbatim) and replaces the ``(at ...)``
     child with the new pose — children keep their own spans, so the only textual
-    diff is the footprint's ``(at)`` line. Replaces every ``Edge.Cuts`` graphic
-    with a single ``gr_rect`` matching `Board.outline` (set by `apply_placement`)
-    — unless `keep_outline`, in which case the existing Edge.Cuts is left as-is and
-    only the footprint poses are rewritten.
+    diff is the footprint's ``(at)`` line. Top-level ``gr_text`` items that belong
+    to the same KiCad group as a moved footprint are transformed by the same
+    translation and rotation so they travel with their group. Replaces every
+    ``Edge.Cuts`` graphic with a single ``gr_rect`` matching `Board.outline` (set
+    by `apply_placement`) — unless `keep_outline`, in which case the existing
+    Edge.Cuts is left as-is and only the footprint poses are rewritten.
 
     Args:
         board: the board whose tree is mutated (and is then ready for
@@ -1421,6 +1468,11 @@ def sync_tree_from_placement(board: Board, edge_width: float = 0.05,
             _rotate_pad_nodes(fp.fp_node, delta)
             _rotate_text_nodes(fp.fp_node, delta)
 
+    # Move top-level gr_text items that share a KiCad group with moved footprints.
+    # The text's current (at ...) values are its original parsed positions (x0/y0),
+    # so we compute the full transformation from original centroid to final centroid.
+    _sync_group_text(board)
+
     if keep_outline:
         return                            # leave the existing Edge.Cuts untouched
     rect = next((s for s in board.outline if s.kind == "rect"), None)
@@ -1429,6 +1481,74 @@ def sync_tree_from_placement(board: Board, edge_width: float = 0.05,
     board.tree[:] = [ch for ch in board.tree if not _is_edge_graphic(ch)]
     (rx0, ry0), (rx1, ry1) = rect.data["start"], rect.data["end"]
     board.tree.append(make_edge_rect(rx0, ry0, rx1, ry1, edge_width))
+
+
+def _sync_group_text(board: Board) -> None:
+    """Move top-level gr_text nodes that belong to groups containing moved footprints.
+
+    Called by `sync_tree_from_placement` after footprint positions have been
+    written.  Uses ``fp.x0/y0/angle0`` (the original parsed pose) as the
+    reference centroid so the transformation is always computed from the
+    original board file — it is therefore idempotent with respect to how many
+    scatter passes preceded placement.
+
+    Args:
+        board: the board whose tree is mutated in place.
+    """
+    # Parse group_uuid -> [member uuids] from the board tree.
+    all_group_members: dict[str, list[str]] = {}
+    for node in board.tree:
+        if not (isinstance(node, SList) and sexpr.head_symbol(node) == "group"):
+            continue
+        group_uuid = ""
+        member_uuids: list[str] = []
+        for child_node in node:
+            if isinstance(child_node, SList) and sexpr.head_symbol(child_node) == "uuid":
+                vals = atoms_after_head(child_node)
+                if vals:
+                    group_uuid = vals[0].text
+            elif isinstance(child_node, SList) and sexpr.head_symbol(child_node) == "members":
+                member_uuids = [a.text for a in atoms_after_head(child_node)]
+        if group_uuid and member_uuids:
+            all_group_members[group_uuid] = member_uuids
+
+    # Build uuid -> gr_text node.
+    gr_text_by_uuid: dict[str, SList] = {}
+    for node in board.tree:
+        if isinstance(node, SList) and sexpr.head_symbol(node) == "gr_text":
+            uuid_node = child(node, "uuid")
+            if uuid_node:
+                vals = atoms_after_head(uuid_node)
+                if vals:
+                    gr_text_by_uuid[vals[0].text] = node
+
+    if not gr_text_by_uuid:
+        return
+
+    # Group footprints by group_id.
+    groups_by_gid: dict[str, list] = {}
+    for fp in board.footprints:
+        if fp.group_id:
+            groups_by_gid.setdefault(fp.group_id, []).append(fp)
+
+    for gid, fps in groups_by_gid.items():
+        if not any(fp.moved for fp in fps):
+            continue
+        if gid not in all_group_members:
+            continue
+        text_uids = [uid for uid in all_group_members[gid] if uid in gr_text_by_uuid]
+        if not text_uids:
+            continue
+
+        old_cx = sum(fp.x0 for fp in fps) / len(fps)
+        old_cy = sum(fp.y0 for fp in fps) / len(fps)
+        new_cx = sum(fp.x for fp in fps) / len(fps)
+        new_cy = sum(fp.y for fp in fps) / len(fps)
+        angle_delta = fps[0].angle - fps[0].angle0
+
+        for uid in text_uids:
+            _move_gr_text(gr_text_by_uuid[uid], old_cx, old_cy,
+                          new_cx, new_cy, angle_delta)
 
 
 def stamp_comment(board: Board, text: str) -> None:

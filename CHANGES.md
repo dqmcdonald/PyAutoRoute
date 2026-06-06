@@ -5,6 +5,10 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.53.1
+
+- **fix**: `gr_text` items grouped with footprints are now correctly transformed when placement moves their footprint. `sync_tree_from_placement` (called after every placement run) now applies the full original→final transformation to grouped text, using `fp.x0/y0` as the stable reference. Scatter no longer tries to move text nodes directly (which was incorrect across multi-run placements); text exclusively follows via the final sync step.
+
 ## 0.53.0
 
 - **GUI**: a single end-of-run **summary dialog** now lists every non-fatal issue — unrouted connections, DRC self-check violations (clearance and hole-to-hole), and warnings raised during the run (skipped mounting holes, ground-plane, placement) — and is shown **only when there are issues** (a clean run shows nothing). This replaces the old clearance-only popup. The worker collects warnings via `Worker._warn` and carries them on the `Done` event; `events.collect_issues` (tkinter-free, unit-tested) assembles the list.

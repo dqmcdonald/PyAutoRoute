@@ -664,3 +664,110 @@ def test_stackup_defaults_when_no_stackup():
     # The Test1 board has no stackup → should fall back to defaults
     board = pcb.load_board(PCB)
     assert board.stackup.epsilon_r == pytest.approx(4.5)
+
+
+# --- group gr_text sync tests -------------------------------------------------
+
+_GROUP_TEXT_BOARD = (
+    '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+    '  (5 "F.SilkS" user "F.Silkscreen"))'
+    ' (footprint "Lib:A" (layer "F.Cu") (at 10 20)'
+    '  (uuid "aaaa0001-0000-0000-0000-000000000000")'
+    '  (property "Reference" "U1")'
+    '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "N")))'
+    ' (gr_text "Label"'
+    '  (at 15 20 0)'
+    '  (layer "F.SilkS")'
+    '  (uuid "tttt0001-0000-0000-0000-000000000000")'
+    '  (effects (font (size 1 1))))'
+    ' (group ""'
+    '  (uuid "gggg0001-0000-0000-0000-000000000000")'
+    '  (members "aaaa0001-0000-0000-0000-000000000000"'
+    '           "tttt0001-0000-0000-0000-000000000000")))'
+)
+
+
+def test_sync_tree_moves_grouped_gr_text_with_footprint():
+    """gr_text in the same group as a moved footprint follows the footprint translation."""
+    board = _board_from_text(_GROUP_TEXT_BOARD)
+    fp = board.footprints[0]
+    # Translate footprint by (+30, +10); text was 5 mm to the right, 0 mm up.
+    fp.x = 40.0
+    fp.y = 30.0
+    # angle unchanged
+    from pyautoroute.pcb import sync_tree_from_placement, child, floats
+    sync_tree_from_placement(board)
+
+    # Find the gr_text node in the tree.
+    from pyautoroute import sexpr as sx
+    text_node = next(
+        n for n in board.tree
+        if isinstance(n, sx.SList) and sx.head_symbol(n) == "gr_text"
+    )
+    at_vals = floats(child(text_node, "at"))
+    # Original text was at (15, 20); footprint moved from (10, 20) to (40, 30),
+    # so text should move by (+30, +10) to (45, 30).
+    assert math.isclose(at_vals[0], 45.0, abs_tol=1e-6), f"x={at_vals[0]}"
+    assert math.isclose(at_vals[1], 30.0, abs_tol=1e-6), f"y={at_vals[1]}"
+
+
+def test_sync_tree_rotates_grouped_gr_text_with_footprint():
+    """gr_text in the same group as a rotated footprint is rotated about the group centroid."""
+    board = _board_from_text(_GROUP_TEXT_BOARD)
+    fp = board.footprints[0]
+    # Rotate footprint by 90°, keep it at the same position.
+    fp.angle = 90.0
+    from pyautoroute.pcb import sync_tree_from_placement, child, floats
+    sync_tree_from_placement(board)
+
+    from pyautoroute import sexpr as sx
+    text_node = next(
+        n for n in board.tree
+        if isinstance(n, sx.SList) and sx.head_symbol(n) == "gr_text"
+    )
+    at_vals = floats(child(text_node, "at"))
+    # Centroid = footprint at (10, 20). Text was at (15, 20), rel offset (5, 0).
+    # After 90° KiCad rotation: rotate(5, 0, 90) = (0, -5).
+    # New text pos = (10+0, 20-5) = (10, 15).
+    assert math.isclose(at_vals[0], 10.0, abs_tol=1e-6), f"x={at_vals[0]}"
+    assert math.isclose(at_vals[1], 15.0, abs_tol=1e-6), f"y={at_vals[1]}"
+    # Text angle should be updated by 90°.
+    assert len(at_vals) >= 3
+    assert math.isclose(at_vals[2] % 360.0, 90.0, abs_tol=1e-6), f"angle={at_vals[2]}"
+
+
+def test_sync_tree_does_not_move_ungrouped_gr_text():
+    """gr_text not in any group is untouched by sync_tree_from_placement."""
+    # Same board but the text UUID is NOT in the group's member list.
+    txt = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+        '  (5 "F.SilkS" user "F.Silkscreen"))'
+        ' (footprint "Lib:A" (layer "F.Cu") (at 10 20)'
+        '  (uuid "aaaa0001-0000-0000-0000-000000000000")'
+        '  (property "Reference" "U1")'
+        '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "N")))'
+        ' (gr_text "Label"'
+        '  (at 15 20 0)'
+        '  (layer "F.SilkS")'
+        '  (uuid "tttt0001-0000-0000-0000-000000000000")'
+        '  (effects (font (size 1 1))))'
+        ' (group ""'
+        '  (uuid "gggg0001-0000-0000-0000-000000000000")'
+        '  (members "aaaa0001-0000-0000-0000-000000000000")))'
+    )
+    board = _board_from_text(txt)
+    fp = board.footprints[0]
+    fp.x = 40.0
+    fp.y = 30.0
+    from pyautoroute.pcb import sync_tree_from_placement, child, floats
+    sync_tree_from_placement(board)
+
+    from pyautoroute import sexpr as sx
+    text_node = next(
+        n for n in board.tree
+        if isinstance(n, sx.SList) and sx.head_symbol(n) == "gr_text"
+    )
+    at_vals = floats(child(text_node, "at"))
+    # Text not in group — position must be unchanged.
+    assert math.isclose(at_vals[0], 15.0, abs_tol=1e-6)
+    assert math.isclose(at_vals[1], 20.0, abs_tol=1e-6)
