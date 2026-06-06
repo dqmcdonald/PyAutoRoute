@@ -741,6 +741,74 @@ def assign_footprints(
 # CLI
 # ---------------------------------------------------------------------------
 
+def _interactive_pick(
+    unknowns: list[tuple[str, str]],
+    index: dict,
+    n_suggest: int,
+    sch_path: Path,
+) -> None:
+    """Prompt the user to choose a footprint for each unrecognised component.
+
+    Shows a numbered menu of suggestions for each ``(ref, value)`` pair and
+    writes any chosen footprints back to ``sch_path`` in a single pass.
+    Pressing Enter or ``0`` skips a component; Ctrl-C / Ctrl-D aborts.
+    """
+    chosen: dict[str, str] = {}  # ref -> footprint string
+
+    for ref, value in unknowns:
+        suggestions = suggest_footprints(ref_prefix(ref), value, index, n_suggest)
+        if not suggestions:
+            print(f"  {ref:<6}  [{value}]  (no suggestions in index)")
+            continue
+        print(f"\n  {ref}  [{value}]  — no preference found. Pick a footprint:")
+        for i, fp in enumerate(suggestions, 1):
+            print(f"    {i}) {fp}")
+        print(f"    0) Skip")
+        while True:
+            try:
+                raw = input(f"  Choice [0–{len(suggestions)}]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Aborted — no changes written.")
+                return
+            if raw == "" or raw == "0":
+                break
+            try:
+                pick = int(raw)
+                if 1 <= pick <= len(suggestions):
+                    chosen[ref] = suggestions[pick - 1]
+                    print(f"  → {chosen[ref]}")
+                    break
+                print(f"  Please enter a number between 0 and {len(suggestions)}.")
+            except ValueError:
+                print(f"  Please enter a number between 0 and {len(suggestions)}.")
+
+    # List any components that had no suggestions (after the prompts)
+    no_sugg = [
+        (ref, value) for ref, value in unknowns
+        if not suggest_footprints(ref_prefix(ref), value, index, n_suggest)
+    ]
+    if no_sugg:
+        print("\n  No suggestions available for:")
+        for ref, value in no_sugg:
+            print(f"    {ref:<6}  [{value}]")
+
+    if not chosen:
+        return
+
+    # Apply chosen footprints to the (possibly already-written) schematic
+    tree = load_schematic(sch_path)
+    for sym in iter_placed_symbols(tree):
+        r = _get_prop_value(sym, "Reference") or ""
+        if r in chosen:
+            set_footprint(sym, chosen[r])
+    new_root = SList()
+    for ch in tree:
+        new_root.append(ch)
+    sch_path.write_text(sexpr.dump_file(new_root), encoding="utf-8")
+    n = len(chosen)
+    print(f"\n  {n} footprint{'s' if n != 1 else ''} assigned from suggestions.")
+
+
 def _init_prefs(prefs_path: Path) -> None:
     if prefs_path.exists():
         print(f"Preference file already exists: {prefs_path}")
@@ -807,6 +875,11 @@ def main(argv: list[str] | None = None) -> None:
         "--suggest", metavar="N", type=int, default=3,
         help="number of library suggestions for unrecognised prefixes (0 to disable; "
              "requires --rebuild-index to have been run first; default: 3)",
+    )
+    parser.add_argument(
+        "--no-interactive", dest="no_interactive", action="store_true",
+        help="never prompt for unrecognised components; just print suggestions and exit "
+             "(useful for scripts or when stdin is not a terminal)",
     )
 
     args = parser.parse_args(argv)
@@ -877,13 +950,24 @@ def main(argv: list[str] | None = None) -> None:
             print(f"    {ref:<6}  [{value}]  {current_fp}")
 
     if result.skipped_unknown:
-        hint = "" if index else "  (run --rebuild-index to enable suggestions)"
-        print(f"  no preference for:{hint}")
-        for ref, value in result.skipped_unknown:
-            print(f"    {ref:<6}  [{value}]")
-            if index:
-                suggestions = suggest_footprints(
-                    ref_prefix(ref), value, index, args.suggest
-                )
-                for fp in suggestions:
-                    print(f"             → {fp}")
+        interactive = (
+            not args.dry_run
+            and index is not None
+            and args.suggest > 0
+            and sys.stdin.isatty()
+            and not args.no_interactive
+        )
+
+        if interactive:
+            _interactive_pick(result.skipped_unknown, index, args.suggest, sch_path)
+        else:
+            hint = "" if index else "  (run --rebuild-index to enable suggestions)"
+            print(f"  no preference for:{hint}")
+            for ref, value in result.skipped_unknown:
+                print(f"    {ref:<6}  [{value}]")
+                if index:
+                    suggestions = suggest_footprints(
+                        ref_prefix(ref), value, index, args.suggest
+                    )
+                    for fp in suggestions:
+                        print(f"             → {fp}")
