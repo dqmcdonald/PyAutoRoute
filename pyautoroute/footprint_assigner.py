@@ -47,6 +47,8 @@ _TAGS_RE = re.compile(r'\(tags\s+"((?:[^"\\]|\\.)*)"\s*\)')
 _DESCR_RE = re.compile(r'\(descr\s+"((?:[^"\\]|\\.)*)"\s*\)')
 # Resolve ${VAR} in KiCad URIs
 _VAR_RE = re.compile(r'\$\{([^}]+)\}')
+# Extract rows × cols from KiCad connector values like "Conn_01x04_Pin" or "Conn_02x03"
+_CONN_RE = re.compile(r'[Cc]onn[_\-](\d+)[xX](\d+)')
 
 # Known absolute paths to the KiCad system footprint directory (macOS / Linux)
 _KICAD_FP_DIR_CANDIDATES = [
@@ -122,6 +124,12 @@ THT = "LED_THT:LED_D5.0mm"
 default = "THT"
 THT = "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm"
 SMD = "Capacitor_Tantalum_SMD:CP_EIA-3216-18_Kemet-A"
+
+[prefix.J]
+# Connectors — Conn_01x04_Pin, Conn_02x03, etc. map to the right pin header.
+# {rows} and {cols} are extracted from the Conn_RRxCC pattern in the Value field.
+default = "PinHeader"
+PinHeader = "Connector_PinHeader_2.54mm:PinHeader_{rows}x{cols:02d}_P2.54mm_Vertical"
 
 [prefix.Q]
 default = "THT"
@@ -280,6 +288,25 @@ def load_prefs(path: Path) -> dict:
         return tomllib.load(f)
 
 
+def _apply_template(fp: str, value: str) -> str | None:
+    """Substitute ``{rows}`` / ``{cols}`` in a footprint template string.
+
+    If the template contains neither placeholder it is returned unchanged.
+    If it does, the connector dimensions are extracted from the KiCad
+    ``Conn_RRxCC`` pattern in *value* (e.g. ``Conn_01x04_Pin`` → rows=1,
+    cols=4).  Returns ``None`` when the pattern is absent or the format fails.
+    """
+    if '{rows}' not in fp and '{cols}' not in fp:
+        return fp
+    m = _CONN_RE.search(value)
+    if not m:
+        return None
+    try:
+        return fp.format(rows=int(m.group(1)), cols=int(m.group(2)))
+    except (KeyError, ValueError):
+        return None
+
+
 def resolve(prefix: str, value: str, prefs: dict, overrides: dict) -> str | None:
     """Look up the footprint string for a (prefix, value) pair.
 
@@ -308,7 +335,7 @@ def resolve(prefix: str, value: str, prefs: dict, overrides: dict) -> str | None
     # 1. CLI value-keyed override
     if isinstance(prefix_overrides, dict):
         if value in prefix_overrides:
-            return prefix_overrides[value]
+            return _apply_template(prefix_overrides[value], value)
     elif isinstance(prefix_overrides, str):
         # Tech override present; still check value-keyed prefs first
         pass
@@ -316,21 +343,23 @@ def resolve(prefix: str, value: str, prefs: dict, overrides: dict) -> str | None
     # 2. Prefs value-keyed rule
     values_map = prefix_prefs.get("values", {})
     if value in values_map:
-        return values_map[value]
+        return _apply_template(values_map[value], value)
 
     # 3. CLI tech override
     if isinstance(prefix_overrides, str):
         tech = prefix_overrides
         fp = prefix_prefs.get(tech)
         if fp and isinstance(fp, str):
-            return fp
+            return _apply_template(fp, value)
 
     # 4 & 5. Default tech from prefs or global
     if not prefix_prefs:
         return None
     tech = prefix_prefs.get("default") or prefs.get("defaults", {}).get("technology", "SMD")
     fp = prefix_prefs.get(tech)
-    return fp if isinstance(fp, str) else None
+    if not isinstance(fp, str):
+        return None
+    return _apply_template(fp, value)
 
 
 # ---------------------------------------------------------------------------

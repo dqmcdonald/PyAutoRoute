@@ -10,6 +10,7 @@ import pytest
 from pyautoroute.footprint_assigner import (
     AssignResult,
     ParsedOverrides,
+    _apply_template,
     assign_footprints,
     iter_placed_symbols,
     load_prefs,
@@ -36,6 +37,8 @@ _PREFS = {
         "LED": {"default": "SMD",
                 "SMD": "LED_SMD:LED_0805_2012Metric_Pad1.15x1.40mm_HandSolder"},
         "U": {"values": {"74AHC244": "Package_DIP:DIP-20_W7.62mm_Socket_LongPads"}},
+        "J": {"default": "PinHeader",
+              "PinHeader": "Connector_PinHeader_2.54mm:PinHeader_{rows}x{cols:02d}_P2.54mm_Vertical"},
     },
 }
 
@@ -143,6 +146,51 @@ def test_resolve_unknown_prefix():
 def test_resolve_unknown_value_no_default():
     # U has no default tech, only values; unknown value → None
     fp = resolve("U", "LM358", _PREFS, {})
+    assert fp is None
+
+
+# ---------------------------------------------------------------------------
+# _apply_template — Conn_NNxMM substitution
+# ---------------------------------------------------------------------------
+
+def test_apply_template_single_row():
+    fp = _apply_template(
+        "Connector_PinHeader_2.54mm:PinHeader_{rows}x{cols:02d}_P2.54mm_Vertical",
+        "Conn_01x04_Pin",
+    )
+    assert fp == "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical"
+
+
+def test_apply_template_dual_row():
+    fp = _apply_template(
+        "Connector_PinHeader_2.54mm:PinHeader_{rows}x{cols:02d}_P2.54mm_Vertical",
+        "Conn_02x03",
+    )
+    assert fp == "Connector_PinHeader_2.54mm:PinHeader_2x03_P2.54mm_Vertical"
+
+
+def test_apply_template_no_placeholders():
+    fp = _apply_template("Resistor_SMD:R_0805", "10k")
+    assert fp == "Resistor_SMD:R_0805"
+
+
+def test_apply_template_missing_conn_pattern():
+    # Template has placeholders but value has no Conn_NNxMM → None
+    fp = _apply_template(
+        "Connector_PinHeader_2.54mm:PinHeader_{rows}x{cols:02d}_P2.54mm_Vertical",
+        "Barrel_Jack",
+    )
+    assert fp is None
+
+
+def test_resolve_conn_template():
+    fp = resolve("J", "Conn_01x04_Pin", _PREFS, {})
+    assert fp == "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical"
+
+
+def test_resolve_conn_non_conn_value_returns_none():
+    # J pref exists but value has no Conn_NNxMM pattern → None (unknown, show suggestions)
+    fp = resolve("J", "Barrel_Jack", _PREFS, {})
     assert fp is None
 
 
