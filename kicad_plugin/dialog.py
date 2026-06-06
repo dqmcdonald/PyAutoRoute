@@ -97,11 +97,19 @@ class SettingsDialog(wx.Dialog):
         _tooltip(self._grid,
                  "Routing grid pitch in mm. Leave blank to derive from design rules.")
 
+        # ── Placement time ───────────────────────────────────────────────
+        place_time_label = wx.StaticText(self, label="Placement time (s):")
+        self._place_time = wx.TextCtrl(
+            self, value=ini.get("place_time", ""), size=(80, -1))
+        _tooltip(self._place_time,
+                 "Placement-annealing time budget in seconds (Place + Route "
+                 "mode only). Leave blank for the built-in default.")
+
         # ── Routing time ─────────────────────────────────────────────────
         time_label = wx.StaticText(self, label="Routing time (s):")
         self._routing_time = wx.TextCtrl(
             self, value=ini.get("routing_time", "120"), size=(80, -1))
-        _tooltip(self._routing_time, "Annealing time budget in seconds.")
+        _tooltip(self._routing_time, "Routing-annealing time budget in seconds.")
 
         # ── Exclude nets ─────────────────────────────────────────────────
         exc_label = wx.StaticText(self, label="Exclude nets:")
@@ -121,6 +129,16 @@ class SettingsDialog(wx.Dialog):
         _tooltip(self._existing,
                  "clear: strip all tracks before routing.\n"
                  "preserve: keep existing tracks, route only the remainder.")
+
+        # ── Keep outline ─────────────────────────────────────────────────
+        ko_val = ini.get("keep_outline", "true").lower() in ("true", "1", "yes")
+        self._keep_outline = wx.CheckBox(self, label="Keep board outline")
+        self._keep_outline.SetValue(ko_val)
+        _tooltip(self._keep_outline,
+                 "Place + Route mode only. Keep the existing Edge.Cuts outline "
+                 "and constrain footprints to stay inside it, instead of "
+                 "regenerating the outline as a bounding box. Ignored if the "
+                 "board has no real outline.")
 
         # ── Ground plane ─────────────────────────────────────────────────
         gp_val = ini.get("ground_plane", "false").lower() in ("true", "1", "yes")
@@ -161,9 +179,11 @@ class SettingsDialog(wx.Dialog):
         _row(exe_label, exe_row)
         _row(wx.StaticText(self, label="Mode:"), self._mode)
         _row(grid_label, self._grid)
+        _row(place_time_label, self._place_time)
         _row(time_label, self._routing_time)
         _row(exc_label, self._exclude)
         _row(er_label, self._existing)
+        _row(wx.StaticText(self, label=""), self._keep_outline)
         _row(wx.StaticText(self, label=""), self._ground_plane)
         _row(cyc_label, self._cycles)
         _row(wx.StaticText(self, label=""), self._auto_reload)
@@ -202,6 +222,14 @@ class SettingsDialog(wx.Dialog):
         do_place = self._mode.GetSelection() == 1
         if do_place:
             args += ["--place"]
+            # --place-time is rejected by the CLI without --place, so only emit
+            # it in Place + Route mode.
+            pt = self._place_time.GetValue().strip()
+            if pt:
+                args += ["--place-time", pt]
+            # Likewise --keep-outline only applies to a placement pass.
+            if self._keep_outline.GetValue():
+                args += ["--keep-outline"]
         grid = self._grid.GetValue().strip()
         if grid:
             args += ["--grid", grid]
@@ -226,6 +254,7 @@ class SettingsDialog(wx.Dialog):
         values: dict[str, str] = {
             "place": "true" if do_place else "false",
             "existing_routes": self._existing.GetStringSelection(),
+            "keep_outline": "true" if self._keep_outline.GetValue() else "false",
             "ground_plane": "true" if self._ground_plane.GetValue() else "false",
             "cycles": str(self._cycles.GetValue()),
         }
@@ -235,6 +264,9 @@ class SettingsDialog(wx.Dialog):
         rt = self._routing_time.GetValue().strip()
         if rt:
             values["routing_time"] = rt
+        pt = self._place_time.GetValue().strip()
+        if pt:
+            values["place_time"] = pt
         if excl:
             values["exclude_net"] = ", ".join(excl)
         _write_ini(self._board_path, values)
@@ -350,6 +382,12 @@ class ProgressDialog(wx.Dialog):
         self._gauge.SetValue(100 if self._result == 0 else 0)
         self._cancel_btn.SetLabel("Close")
         self._cancel_btn.SetId(wx.ID_OK)
+        # Re-point the button at a "close" handler.  SetId() does not change the
+        # existing EVT_BUTTON binding, so without this the original _on_cancel
+        # still fires and ShowModal() returns ID_CANCEL — which makes the caller
+        # bail out before reloading the routed tracks.
+        self._cancel_btn.Unbind(wx.EVT_BUTTON, handler=self._on_cancel)
+        self._cancel_btn.Bind(wx.EVT_BUTTON, self._on_close)
         if self._result != 0:
             self._append_log(
                 f"\n[PyAutoRoute exited with code {self._result}]")
@@ -358,6 +396,12 @@ class ProgressDialog(wx.Dialog):
         if self._proc is not None and self._proc.poll() is None:
             self._proc.terminate()
         self.EndModal(wx.ID_CANCEL)
+
+    def _on_close(self, _evt) -> None:
+        # The subprocess has finished; report its outcome via the dialog result.
+        # The caller still guards on the exit code, so a non-zero result here is
+        # harmless (it won't trigger a track reload).
+        self.EndModal(wx.ID_OK if self._result == 0 else wx.ID_CANCEL)
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────

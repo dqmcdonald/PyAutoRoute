@@ -5,6 +5,33 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.55.0
+
+- **new**: KiCad plugin gains a "Placement time (s)" field, wired to the
+  autorouter's `--place-time` budget (Place + Route mode only). Previously only
+  the routing-anneal budget was adjustable from the dialog.
+- **new**: KiCad plugin gains a "Keep board outline" checkbox (default on),
+  wired to `--keep-outline`: placement keeps the existing Edge.Cuts and
+  constrains footprints to stay inside it, instead of regenerating the outline
+  as a bounding box. The kept outline also means the live reload no longer needs
+  a reopen to fix the board shape.
+- **fix**: KiCad plugin "Reload tracks into KiCad when done" did nothing. The
+  progress dialog's button kept its original Cancel handler after routing
+  finished, so clicking "Close" returned `ID_CANCEL` and the caller bailed out
+  before injecting the routed tracks. The button is now rebound to a close
+  handler that reports the real outcome.
+- **fix**: KiCad plugin reload then produced a board with *no* tracks. It called
+  `LoadBoard()` on the currently-open board file, which aliases the live editor
+  board, so clearing the editor's tracks also emptied the board being read back.
+  The plugin now routes to an explicit `_routed` sidecar and injects from that
+  (snapshotting the tracks before mutating the editor board).
+- **fix**: Place + Route reload produced a garbled board — the placement pass
+  moves and rotates footprints, but the editor kept the old poses while the new
+  tracks followed the new layout. The reload now also copies each footprint's
+  position and rotation from the routed board (matched by reference). The board
+  outline and copper zones are still not updated in place; reopen the file if
+  placement resized the outline or a ground plane was added.
+
 ## 0.54.0
 
 - **new**: `pyautoroute-assign` — assigns footprints to unassigned KiCad schematic

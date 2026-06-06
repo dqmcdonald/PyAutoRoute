@@ -45,6 +45,17 @@ button and a Tools → PyAutoRoute menu entry). The plugin saves the current boa
 invokes `pyautoroute --in-place` as a subprocess, streams the output to a progress
 dialog, then reloads the result back into pcbnew.
 
+The settings dialog exposes the common knobs — mode (Route only / Place + Route),
+routing grid, separate **placement** and **routing** time budgets, nets to exclude,
+existing-route handling, a "Keep board outline" toggle, a ground-plane toggle, and
+cycle count — and an "Open Full GUI…" button for everything else. "Keep board
+outline" (on by default) keeps the existing Edge.Cuts and constrains placement to
+it rather than regenerating a bounding box. With "Reload tracks into KiCad when
+done" ticked, the routed tracks are injected straight into the live board; in
+Place + Route mode the footprints' new positions and rotations are reloaded too.
+Copper zones are *not* updated in place, so reopen the file and run Edit → Fill All
+Zones if you added a ground plane.
+
 **Install** (after `pip install -e .`):
 
 ```bash

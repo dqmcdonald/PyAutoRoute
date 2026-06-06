@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyautoroute"
-version = "0.54.0"
+version = "0.55.0"
 description = "Simulated-annealing autorouter for 2-layer KiCad PCBs"
 license = "MIT"
 requires-python = ">=3.10"
