@@ -1483,6 +1483,74 @@ def sync_tree_from_placement(board: Board, edge_width: float = 0.05,
     board.tree.append(make_edge_rect(rx0, ry0, rx1, ry1, edge_width))
 
 
+def gr_text_group_fps(board: Board) -> dict[str, tuple[SList, list]]:
+    """Return grouped top-level gr_text items and their associated footprints.
+
+    Identifies every top-level ``gr_text`` that shares a KiCad group with at
+    least one footprint, and returns the information needed to:
+
+    * exclude those texts from fixed-obstacle lists in the placer (they travel
+      with their footprint, not fixed at their original position);
+    * extend the associated footprint's bounding box to cover the text during
+      overlap scoring;
+    * render grouped text at its live position during the GUI placement preview.
+
+    The mapping is built from ``board.tree`` (always the original parsed state)
+    and ``board.footprints`` (which may hold live placement poses).
+
+    Args:
+        board: the board to query.
+
+    Returns:
+        dict mapping each grouped gr_text's UUID to a
+        ``(text_node, footprint_list)`` tuple, where *footprint_list* contains
+        every `Footprint` that shares the same KiCad group.
+    """
+    fp_by_uuid = {fp.uuid: fp for fp in board.footprints if fp.uuid}
+    if not fp_by_uuid:
+        return {}
+
+    # Parse group_uuid -> [member_uuids] from the board tree.
+    group_members: dict[str, list[str]] = {}
+    for node in board.tree:
+        if not (isinstance(node, SList) and sexpr.head_symbol(node) == "group"):
+            continue
+        gid = ""
+        members: list[str] = []
+        for ch in node:
+            if isinstance(ch, SList) and sexpr.head_symbol(ch) == "uuid":
+                vals = atoms_after_head(ch)
+                if vals:
+                    gid = vals[0].text
+            elif isinstance(ch, SList) and sexpr.head_symbol(ch) == "members":
+                members = [a.text for a in atoms_after_head(ch)]
+        if gid and members:
+            group_members[gid] = members
+
+    # Build uuid -> gr_text node.
+    gr_text_nodes: dict[str, SList] = {}
+    for node in board.tree:
+        if isinstance(node, SList) and sexpr.head_symbol(node) == "gr_text":
+            uuid_node = child(node, "uuid")
+            if uuid_node:
+                vals = atoms_after_head(uuid_node)
+                if vals:
+                    gr_text_nodes[vals[0].text] = node
+
+    if not gr_text_nodes:
+        return {}
+
+    result: dict[str, tuple[SList, list]] = {}
+    for gid, members in group_members.items():
+        fps_in_group = [fp_by_uuid[uid] for uid in members if uid in fp_by_uuid]
+        if not fps_in_group:
+            continue
+        for uid in members:
+            if uid in gr_text_nodes:
+                result[uid] = (gr_text_nodes[uid], fps_in_group)
+    return result
+
+
 def _sync_group_text(board: Board) -> None:
     """Move top-level gr_text nodes that belong to groups containing moved footprints.
 
@@ -1495,60 +1563,48 @@ def _sync_group_text(board: Board) -> None:
     Args:
         board: the board whose tree is mutated in place.
     """
-    # Parse group_uuid -> [member uuids] from the board tree.
-    all_group_members: dict[str, list[str]] = {}
-    for node in board.tree:
-        if not (isinstance(node, SList) and sexpr.head_symbol(node) == "group"):
-            continue
-        group_uuid = ""
-        member_uuids: list[str] = []
-        for child_node in node:
-            if isinstance(child_node, SList) and sexpr.head_symbol(child_node) == "uuid":
-                vals = atoms_after_head(child_node)
-                if vals:
-                    group_uuid = vals[0].text
-            elif isinstance(child_node, SList) and sexpr.head_symbol(child_node) == "members":
-                member_uuids = [a.text for a in atoms_after_head(child_node)]
-        if group_uuid and member_uuids:
-            all_group_members[group_uuid] = member_uuids
-
-    # Build uuid -> gr_text node.
-    gr_text_by_uuid: dict[str, SList] = {}
-    for node in board.tree:
-        if isinstance(node, SList) and sexpr.head_symbol(node) == "gr_text":
-            uuid_node = child(node, "uuid")
-            if uuid_node:
-                vals = atoms_after_head(uuid_node)
-                if vals:
-                    gr_text_by_uuid[vals[0].text] = node
-
-    if not gr_text_by_uuid:
+    grouped = gr_text_group_fps(board)
+    if not grouped:
         return
 
-    # Group footprints by group_id.
+    # Collect groups by group_id; only process groups where something moved.
     groups_by_gid: dict[str, list] = {}
     for fp in board.footprints:
         if fp.group_id:
             groups_by_gid.setdefault(fp.group_id, []).append(fp)
 
-    for gid, fps in groups_by_gid.items():
+    # Build text_uuid -> group_id reverse mapping.
+    text_to_gid: dict[str, str] = {}
+    for fp in board.footprints:
+        if fp.group_id and fp.uuid:
+            pass  # footprints aren't text items
+    # Walk grouped items to find their group_id.
+    for node in board.tree:
+        if not (isinstance(node, SList) and sexpr.head_symbol(node) == "group"):
+            continue
+        gid = ""
+        members: list[str] = []
+        for ch in node:
+            if isinstance(ch, SList) and sexpr.head_symbol(ch) == "uuid":
+                vals = atoms_after_head(ch)
+                if vals:
+                    gid = vals[0].text
+            elif isinstance(ch, SList) and sexpr.head_symbol(ch) == "members":
+                members = [a.text for a in atoms_after_head(ch)]
+        if gid:
+            for uid in members:
+                if uid in grouped:
+                    text_to_gid[uid] = gid
+
+    for text_uuid, (text_node, fps) in grouped.items():
         if not any(fp.moved for fp in fps):
             continue
-        if gid not in all_group_members:
-            continue
-        text_uids = [uid for uid in all_group_members[gid] if uid in gr_text_by_uuid]
-        if not text_uids:
-            continue
-
         old_cx = sum(fp.x0 for fp in fps) / len(fps)
         old_cy = sum(fp.y0 for fp in fps) / len(fps)
         new_cx = sum(fp.x for fp in fps) / len(fps)
         new_cy = sum(fp.y for fp in fps) / len(fps)
         angle_delta = fps[0].angle - fps[0].angle0
-
-        for uid in text_uids:
-            _move_gr_text(gr_text_by_uuid[uid], old_cx, old_cy,
-                          new_cx, new_cy, angle_delta)
+        _move_gr_text(text_node, old_cx, old_cy, new_cx, new_cy, angle_delta)
 
 
 def stamp_comment(board: Board, text: str) -> None:

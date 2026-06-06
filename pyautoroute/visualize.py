@@ -154,12 +154,19 @@ def _silk_text_items(board: Board):
     ``is_free`` distinguishes free board text (anchored at the string start in
     KiCad) from footprint-scoped text (position is near the component centroid).
     """
-    from .pcb import children, child, strings, floats, atoms_after_head
+    from .pcb import (children, child, strings, floats, atoms_after_head,
+                      gr_text_group_fps, rotate)
     from .sexpr import SList, head_symbol
 
     def _layer(node) -> str:
         ls = strings(child(node, "layer"))
         return ls[0] if ls else ""
+
+    # Build live-position map for gr_text items that are grouped with footprints.
+    # The board's footprints carry the current (live) poses (x, y, angle) as well
+    # as the original parsed poses (x0, y0, angle0), so we can compute where each
+    # grouped text should appear right now without needing the tree to be updated.
+    _grouped = gr_text_group_fps(board)  # text_uuid -> (node, fps_in_group)
 
     # 1. Top-level gr_text
     for node in board.tree:
@@ -183,6 +190,26 @@ def _silk_text_items(board: Board):
             continue
         x, y = at_vals[0], at_vals[1]
         angle = at_vals[2] if len(at_vals) >= 3 else 0.0
+
+        # For grouped text, compute the live position from the footprint's
+        # current pose so the text tracks the component during placement preview.
+        uuid_node = child(node, "uuid")
+        if uuid_node:
+            uvals = atoms_after_head(uuid_node)
+            if uvals and uvals[0].text in _grouped:
+                _, fps = _grouped[uvals[0].text]
+                cx0 = sum(fp.x0 for fp in fps) / len(fps)
+                cy0 = sum(fp.y0 for fp in fps) / len(fps)
+                cx = sum(fp.x for fp in fps) / len(fps)
+                cy = sum(fp.y for fp in fps) / len(fps)
+                angle_delta = fps[0].angle - fps[0].angle0
+                rel_x, rel_y = x - cx0, y - cy0
+                if abs(angle_delta) > 1e-6:
+                    rel_x, rel_y = rotate(rel_x, rel_y, angle_delta)
+                x = cx + rel_x
+                y = cy + rel_y
+                angle = (angle + angle_delta) % 360.0
+
         yield x, y, content, angle, lay.startswith("B."), True
 
     # 2. Footprint-scoped text

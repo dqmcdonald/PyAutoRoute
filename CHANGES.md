@@ -5,6 +5,12 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.53.2
+
+- **fix**: grouped `gr_text` items now track their footprint live in the GUI placement preview (`_silk_text_items` computes the current text position from `fp.x/y/angle` at each render frame rather than reading the stale tree position).
+- **fix**: grouped `gr_text` items no longer appear in the fixed-obstacle list at their original position; instead their extent is folded into the associated footprint's bounding box (`_fp_box`), so the placer correctly avoids placing other components on top of the group's text label.
+- Adds public helper `pcb.gr_text_group_fps(board)` used by both the placer and the renderer.
+
 ## 0.53.1
 
 - **fix**: `gr_text` items grouped with footprints are now correctly transformed when placement moves their footprint. `sync_tree_from_placement` (called after every placement run) now applies the full original→final transformation to grouped text, using `fp.x0/y0` as the stable reference. Scatter no longer tries to move text nodes directly (which was incorrect across multi-run placements); text exclusively follows via the final sync step.

@@ -183,7 +183,7 @@ def _fp_silk_text_extents(fp: Footprint) -> list[tuple[float, float, float]]:
     return extents
 
 
-def _board_silk_text_boxes(board: Board):
+def _board_silk_text_boxes(board: Board, skip_uuids: frozenset[str] | None = None):
     """Return a Shapely polygon for each visible board-level silk text.
 
     Board-level ``gr_text`` items — connector pin labels, a title block, etc. —
@@ -192,8 +192,13 @@ def _board_silk_text_boxes(board: Board):
     Test1 board). Each polygon is a tight rotated rectangle that covers the text
     extent, in board coordinates.
 
+    Items whose UUID appears in *skip_uuids* are omitted — they are grouped with
+    a footprint and handled as part of that footprint's bounding box instead.
+
     Args:
         board: the board whose top-level ``gr_text`` nodes are scanned.
+        skip_uuids: set of gr_text UUIDs to exclude (grouped text that moves
+            with a footprint rather than acting as a fixed obstacle).
 
     Returns:
         One Shapely polygon per visible, non-hidden silkscreen ``gr_text``.
@@ -203,6 +208,14 @@ def _board_silk_text_boxes(board: Board):
 
     out = []
     for txt in children(board.tree, "gr_text"):
+        # Skip text that is grouped with a footprint — it is included in that
+        # footprint's bounding box and travels with it (not a fixed obstacle).
+        if skip_uuids:
+            uuid_node = child(txt, "uuid")
+            if uuid_node:
+                uvals = atoms_after_head(uuid_node)
+                if uvals and uvals[0].text in skip_uuids:
+                    continue
         h = child(txt, "hide")
         if h is not None:
             vals = atoms_after_head(h)
@@ -363,9 +376,40 @@ class _Placer:
         self._text_extents: dict[int, list[tuple[float, float, float]]] = {
             id(fp): _fp_silk_text_extents(fp) for fp in self.boxed
         }
+        # Extend _text_extents with grouped gr_text items (top-level text that
+        # shares a KiCad group with a footprint).  Their extents are expressed
+        # in the footprint's local pre-rotation frame so _fp_box can use them
+        # at the footprint's current angle.  Exclude their UUIDs from the fixed-
+        # obstacle list since they move with their footprint.
+        from . import pcb as _pcb
+        _grouped_gr = _pcb.gr_text_group_fps(board)
+        _grouped_uuids = frozenset(_grouped_gr.keys())
+        for _tuuid, (_tnode, _fps) in _grouped_gr.items():
+            _at = _pcb.floats(_pcb.child(_tnode, "at"))
+            if len(_at) < 2:
+                continue
+            _tx, _ty = _at[0], _at[1]
+            _atoms = _pcb.atoms_after_head(_tnode)
+            _content = _atoms[0].text if _atoms else ""
+            _eff = _pcb.child(_tnode, "effects")
+            _fnt = _pcb.child(_eff, "font") if _eff is not None else None
+            _sz = _pcb.child(_fnt, "size") if _fnt is not None else None
+            _szv = _pcb.floats(_sz) if _sz is not None else []
+            _fh = _szv[0] if _szv else 1.0
+            _hr = 0.5 * math.hypot(len(_content) * _fh * 0.7, _fh * 1.3)
+            # Add the text extent to every footprint in the group (each
+            # expressed in that footprint's local frame).  The local coord is
+            # constant as the group rotates rigidly (verified by the transform
+            # invariant: rotate(board_rel, -angle) is preserved under rigid motion).
+            for _fp in _fps:
+                _brel_x = _tx - _fp.x0
+                _brel_y = _ty - _fp.y0
+                _lx, _ly = rotate(_brel_x, _brel_y, -_fp.angle0)
+                self._text_extents.setdefault(id(_fp), []).append((_lx, _ly, _hr))
         # Fixed board-level silkscreen text (pin labels, title block): static
-        # keep-out polygons footprints must avoid, so they aren't dropped on top.
-        _text_polys = _board_silk_text_boxes(board)
+        # keep-out polygons footprints must avoid.  Grouped text is excluded
+        # because it moves with its footprint (handled via _text_extents above).
+        _text_polys = _board_silk_text_boxes(board, skip_uuids=_grouped_uuids)
         self._fixed_text = (
             [p.buffer(self.half_buffer) for p in _text_polys]
             if _text_polys else []

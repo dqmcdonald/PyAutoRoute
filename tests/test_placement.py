@@ -1003,3 +1003,45 @@ def test_group_constraint_in_summary():
              group_id="abcd1234-0000-0000-0000-000000000000")
     summary = _footprint_constraint_summary(fp)
     assert summary is not None and "group=abcd1234" in summary
+
+
+# --- grouped gr_text obstacle tests ------------------------------------------
+
+_GROUPED_TEXT_OBSTACLE_BOARD = (
+    '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)'
+    '  (5 "F.SilkS" user "F.Silkscreen"))'
+    ' (footprint "Lib:A" (layer "F.Cu") (at 10 20)'
+    '  (uuid "aaaa0001-0000-0000-0000-000000000000")'
+    '  (property "Reference" "U1")'
+    '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "N")))'
+    ' (gr_text "Label"'
+    '  (at 17 20 0)'           # 7 mm to the right of the footprint
+    '  (layer "F.SilkS")'
+    '  (uuid "tttt0001-0000-0000-0000-000000000000")'
+    '  (effects (font (size 2 2))))'
+    ' (group ""'
+    '  (uuid "gggg0001-0000-0000-0000-000000000000")'
+    '  (members "aaaa0001-0000-0000-0000-000000000000"'
+    '           "tttt0001-0000-0000-0000-000000000000")))'
+)
+
+
+def test_grouped_gr_text_excluded_from_fixed_obstacles():
+    """Grouped gr_text is NOT included in the fixed-obstacle list."""
+    board = _board_from_text(_GROUPED_TEXT_OBSTACLE_BOARD)
+    from pyautoroute.placement import _Placer, PlaceParams
+    placer = _Placer(board, PlaceParams(iters=1, seed=0))
+    # The text UUID should not appear as a fixed obstacle.
+    assert placer._fixed_tree is None or len(placer._fixed_text) == 0
+
+
+def test_grouped_gr_text_extends_fp_box():
+    """Grouped gr_text expands the associated footprint's bounding box."""
+    board = _board_from_text(_GROUPED_TEXT_OBSTACLE_BOARD)
+    from pyautoroute.placement import _Placer, PlaceParams
+    placer = _Placer(board, PlaceParams(iters=1, seed=0))
+    fp = board.footprints[0]
+    fp_box = placer._fp_box(fp)
+    # The text is 7 mm to the right of the footprint centre; the box should
+    # extend to at least x=15 (text centre ~17, minus half-diag ≈ 1.6).
+    assert fp_box.bounds[2] > 14.0, f"box maxx={fp_box.bounds[2]} — text not included"

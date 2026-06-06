@@ -771,3 +771,31 @@ def test_sync_tree_does_not_move_ungrouped_gr_text():
     # Text not in group — position must be unchanged.
     assert math.isclose(at_vals[0], 15.0, abs_tol=1e-6)
     assert math.isclose(at_vals[1], 20.0, abs_tol=1e-6)
+
+
+def test_gr_text_group_fps_identifies_grouped_text():
+    """gr_text_group_fps returns grouped text UUID mapped to its footprint list."""
+    from pyautoroute.pcb import gr_text_group_fps
+    board = _board_from_text(_GROUP_TEXT_BOARD)
+    result = gr_text_group_fps(board)
+    assert "tttt0001-0000-0000-0000-000000000000" in result
+    _, fps = result["tttt0001-0000-0000-0000-000000000000"]
+    assert len(fps) == 1
+    assert fps[0].ref == "U1"
+
+
+def test_gr_text_group_fps_excludes_ungrouped_text():
+    """gr_text_group_fps returns empty when text is not in any group."""
+    from pyautoroute.pcb import gr_text_group_fps
+    txt = (
+        '(kicad_pcb (layers (0 "F.Cu" signal))'
+        ' (footprint "Lib:A" (layer "F.Cu") (at 10 20)'
+        '  (uuid "aaaa0001-0000-0000-0000-000000000000")'
+        '  (property "Reference" "U1")'
+        '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "N")))'
+        ' (gr_text "Label" (at 15 20) (layer "F.SilkS")'
+        '  (uuid "tttt0001-0000-0000-0000-000000000000")'
+        '  (effects (font (size 1 1)))))'
+    )
+    board = _board_from_text(txt)
+    assert gr_text_group_fps(board) == {}
