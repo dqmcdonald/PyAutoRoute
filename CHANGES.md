@@ -5,6 +5,12 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.55.1
+
+- **new**: KiCad plugin toolbar icon. `plugin.py` referenced `icon_24x24.png`
+  but no file existed, so the button was blank. Added a PCB-tile icon (green
+  board, gold traces routing to a via) at 24×24 and 48×48.
+
 ## 0.55.0
 
 - **new**: KiCad plugin gains a "Placement time (s)" field, wired to the
