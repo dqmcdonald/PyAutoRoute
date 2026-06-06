@@ -760,10 +760,16 @@ def _interactive_pick(
         if not suggestions:
             print(f"  {ref:<6}  [{value}]  (no suggestions in index)")
             continue
-        print(f"\n  {ref}  [{value}]  — no preference found. Pick a footprint:")
+        # Left-justify footprint strings: number prefix is fixed-width ("  N)  ")
+        # so all fp names start at the same column regardless of N's digit count.
+        n_digits = len(str(len(suggestions)))
+        fp_col = 2 + n_digits + 3   # "  " + N + ")  "
+        fp_pad = " " * fp_col
+        print(f"\n  {ref:<6}  [{value}]  — no preference found. Pick a footprint:")
         for i, fp in enumerate(suggestions, 1):
-            print(f"    {i}) {fp}")
-        print(f"    0) Skip")
+            num = f"{i})".ljust(n_digits + 1)
+            print(f"  {num}  {fp}")
+        print(f"  {'0)'.ljust(n_digits + 1)}  Skip")
         while True:
             try:
                 raw = input(f"  Choice [0–{len(suggestions)}]: ").strip()
@@ -776,7 +782,7 @@ def _interactive_pick(
                 pick = int(raw)
                 if 1 <= pick <= len(suggestions):
                     chosen[ref] = suggestions[pick - 1]
-                    print(f"  → {chosen[ref]}")
+                    print(f"    →  {chosen[ref]}")
                     break
                 print(f"  Please enter a number between 0 and {len(suggestions)}.")
             except ValueError:
@@ -938,16 +944,24 @@ def main(argv: list[str] | None = None) -> None:
           f"{n_unknown} skipped (unknown prefix), "
           f"{n_already} skipped (already assigned)")
 
+    # Two-line format keeps footprint strings left-justified at a fixed column:
+    #   header:  "  REF     [VALUE]"
+    #   old fp:  "       OLD_FOOTPRINT"   (7-space indent)
+    #   new fp:  "    →  NEW_FOOTPRINT"   (4 spaces + arrow + 2 spaces → same col 7)
+    _FP   = "       "   # 7-space indent for a bare footprint string
+    _ARRW = "    →  "   # 4 spaces + "→" + 2 spaces (footprint starts at same col 7)
+
     for ref, value, old_fp, new_fp in result.assigned:
+        print(f"  {ref:<6}  [{value}]")
         if old_fp:
-            print(f"  {ref:<6}  [{value}]  {old_fp}  →  {new_fp}")
-        else:
-            print(f"  {ref:<6}  [{value}]  →  {new_fp}")
+            print(f"{_FP}{old_fp}")
+        print(f"{_ARRW}{new_fp}")
 
     if result.skipped_assigned:
         print("  already assigned (use --all to reassign):")
         for ref, value, current_fp in result.skipped_assigned:
-            print(f"    {ref:<6}  [{value}]  {current_fp}")
+            print(f"    {ref:<6}  [{value}]")
+            print(f"    {_FP}{current_fp}")
 
     if result.skipped_unknown:
         interactive = (
@@ -970,4 +984,4 @@ def main(argv: list[str] | None = None) -> None:
                         ref_prefix(ref), value, index, args.suggest
                     )
                     for fp in suggestions:
-                        print(f"             → {fp}")
+                        print(f"    {_ARRW}{fp}")
