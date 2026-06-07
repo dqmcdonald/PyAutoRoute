@@ -1,11 +1,24 @@
 # PyAutoRoute
 
+KiCad is a powerful tool for design and layout of printed circuit boards. While the tools in
+KiCad are very useful, there is limited support for automatically placing or creating tracks
+between the components in a PCB. PyAutoRoute attempts to address that sometimes tiresome and
+frustrating task. Because it applies simulated annealing, it attempts to find
+a near-optimal solution by trying many different configurations.
+
 Autoroute a **2-layer KiCad PCB** in pure Python. Give it a board with placed
 footprints and assigned nets but no (or partial) tracks, and it writes a *copy*
 with candidate routing — DRC-clean by construction.
 
 It parses the `.kicad_pcb` s-expression directly, so it does **not** need
 `pcbnew` and runs in any normal Python environment.
+
+Note that PCB layout and routing is a complicated subject. Boards may have very specific
+requirements for thermal management or signal integrity. PyAutoRoute does not have knowledge
+of every conceivable requirement. What it can do is provide a useful starting point, especially
+for low-frequency and low-power hobbyist boards.
+
+PyAutoRoute has its own GUI interface and can also be run directly from KiCad via a plugin.
 
 ## What it optimises
 
