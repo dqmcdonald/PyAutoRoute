@@ -110,6 +110,20 @@ print(pyautoroute.HAS_C_ASTAR)   # True once the extension is built
 If Cython is unavailable at build time the extension is simply skipped and the
 package installs as pure Python.
 
+## Tutorial
+
+A step-by-step introduction to PyAutoRoute is available in
+[`tutorial/tutorial.pdf`](tutorial/tutorial.pdf). It walks through a
+complete example — a selectable-clock circuit for a Z80 retrocomputer —
+covering schematic preparation, footprint assignment, adding a board
+outline, running the command-line router, and using the GUI (including
+setting per-footprint placement constraints). A Frequently Asked
+Questions section at the end covers the most common issues encountered
+during a first routing run.
+
+The tutorial source is in [`tutorial/tutorial.tex`](tutorial/tutorial.tex);
+run `make` in that directory to rebuild the PDF.
+
 ## Usage
 
 ```bash

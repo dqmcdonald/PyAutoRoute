@@ -41,3 +41,8 @@ snapshots/
 
 docs/api/
 demos/
+
+# LaTeX build artefacts (tutorial/)
+tutorial/*.aux
+tutorial/*.out
+tutorial/*.toc
