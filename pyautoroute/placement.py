@@ -20,7 +20,11 @@ Energy ``E = ratsnest + overlap_weight·overlap_area + compact_weight·bbox_area
   DRC). A pair where either footprint opted in via the ``Autoroute-overlap``
   property (`pcb.Footprint.overlap_ok`) contributes only its *pad-vs-pad* overlap
   (also buffer-inflated), not body overlap — the shield-over-board case. Each
-  footprint box also covers its visible silkscreen text, and standalone
+  footprint box is derived from the courtyard layer (``F.CrtYd`` / ``F.Courtyard``)
+  when one is present — the authoritative keepout boundary that correctly captures
+  round bodies like electrolytic capacitors whose pad span is much smaller than their
+  physical diameter — falling back to the pad extent for footprints without a
+  courtyard. Each footprint box also covers its visible silkscreen text, and standalone
   board-level silk text (``gr_text`` pin labels, title block) is added as fixed
   keep-out boxes, so footprints aren't placed on top of existing silkscreen.
 - **bbox_area** — area of the bounding box of all footprints; compaction emerges
@@ -110,6 +114,90 @@ from .pcb import Board, Footprint, Pad, rotate
 _ACCEPT_WINDOW = 100
 
 _SILK_LAYERS = {"F.SilkS", "B.SilkS", "F.Silkscreen", "B.Silkscreen"}
+_COURTYARD_LAYERS = {"F.CrtYd", "B.CrtYd", "F.Courtyard", "B.Courtyard"}
+
+
+def _fp_courtyard_local_bbox(fp: Footprint) -> tuple[float, float, float, float] | None:
+    """Bounding box of the footprint's courtyard in its local coordinate frame.
+
+    Scans all courtyard-layer graphic items (``fp_line``, ``fp_arc``,
+    ``fp_circle``, ``fp_rect``, ``fp_poly``) in the footprint's s-expression
+    and returns the axis-aligned bounding box of their key points in **local**
+    (pre-rotation, pre-translation) coordinates.  Circles are handled exactly
+    (centre ± radius in local space); arcs use their start/mid/end points as a
+    conservative approximation.
+
+    Returns ``None`` when the footprint has no courtyard items, so the caller
+    can fall back to pad-only bounds.
+
+    Args:
+        fp: the footprint to inspect.
+
+    Returns:
+        ``(lx0, ly0, lx1, ly1)`` in local mm, or ``None``.
+    """
+    from .pcb import children, child, strings, floats as _floats
+
+    node = fp.fp_node
+    lxs: list[float] = []
+    lys: list[float] = []
+
+    for item in children(node, "fp_line"):
+        lyr = child(item, "layer")
+        if not lyr or strings(lyr)[0] not in _COURTYARD_LAYERS:
+            continue
+        for key in ("start", "end"):
+            c = _floats(child(item, key))
+            if len(c) >= 2:
+                lxs.append(c[0]); lys.append(c[1])
+
+    for item in children(node, "fp_arc"):
+        lyr = child(item, "layer")
+        if not lyr or strings(lyr)[0] not in _COURTYARD_LAYERS:
+            continue
+        for key in ("start", "end", "mid"):
+            sub = child(item, key)
+            if sub is None:
+                continue
+            c = _floats(sub)
+            if len(c) >= 2:
+                lxs.append(c[0]); lys.append(c[1])
+
+    for item in children(node, "fp_circle"):
+        lyr = child(item, "layer")
+        if not lyr or strings(lyr)[0] not in _COURTYARD_LAYERS:
+            continue
+        ctr = _floats(child(item, "center"))
+        end = _floats(child(item, "end"))
+        if len(ctr) >= 2 and len(end) >= 2:
+            r = math.hypot(end[0] - ctr[0], end[1] - ctr[1])
+            lxs += [ctr[0] - r, ctr[0] + r]
+            lys += [ctr[1] - r, ctr[1] + r]
+
+    for item in children(node, "fp_rect"):
+        lyr = child(item, "layer")
+        if not lyr or strings(lyr)[0] not in _COURTYARD_LAYERS:
+            continue
+        for key in ("start", "end"):
+            c = _floats(child(item, key))
+            if len(c) >= 2:
+                lxs.append(c[0]); lys.append(c[1])
+
+    for item in children(node, "fp_poly"):
+        lyr = child(item, "layer")
+        if not lyr or strings(lyr)[0] not in _COURTYARD_LAYERS:
+            continue
+        pts_node = child(item, "pts")
+        if pts_node is None:
+            continue
+        for xy in children(pts_node, "xy"):
+            c = _floats(xy)
+            if len(c) >= 2:
+                lxs.append(c[0]); lys.append(c[1])
+
+    if not lxs:
+        return None
+    return (min(lxs), min(lys), max(lxs), max(lys))
 
 
 def _fp_silk_text_extents(fp: Footprint) -> list[tuple[float, float, float]]:
@@ -415,6 +503,14 @@ class _Placer:
             if _text_polys else []
         )
         self._fixed_tree = STRtree(self._fixed_text) if self._fixed_text else None
+        # Courtyard local bboxes: precomputed (lx0, ly0, lx1, ly1) per footprint
+        # in the footprint's own coordinate frame.  Keyed by id(fp); footprints
+        # with no courtyard items are absent (fall back to pad-only bounds).
+        self._courtyard_local: dict[int, tuple[float, float, float, float]] = {}
+        for fp in self.boxed:
+            bbox = _fp_courtyard_local_bbox(fp)
+            if bbox is not None:
+                self._courtyard_local[id(fp)] = bbox
 
         # Incremental-energy cache (populated by `_rebuild_cache`).
         #
@@ -809,26 +905,44 @@ class _Placer:
     def _fp_box(self, fp: Footprint):
         """Buffer-inflated axis-aligned body box of a footprint.
 
-        Covers pads and any visible silkscreen text (Reference/Value) so the
-        overlap penalty also pushes text labels apart.
+        Covers the courtyard (the authoritative physical keepout boundary),
+        pads (for footprints without a courtyard), and any visible silkscreen
+        text (Reference/Value) so the overlap penalty also pushes text labels
+        apart.  For each source the box is expanded by ``half_buffer`` on every
+        side; two adjacent boxes therefore first touch when the gap between their
+        respective features equals the full ``buffer``.
         """
         hb = self.half_buffer
         xs0 = min(p.cx - _half_extent(p) for p in fp.pads) - hb
         ys0 = min(p.cy - _half_extent(p) for p in fp.pads) - hb
         xs1 = max(p.cx + _half_extent(p) for p in fp.pads) + hb
         ys1 = max(p.cy + _half_extent(p) for p in fp.pads) + hb
-        # Extend to cover silkscreen text (local coords → board coords).
+        # Extend to cover the courtyard (or silkscreen text): both are in
+        # local (pre-rotation) coords and need the same KiCad rotation transform.
+        cy_local = self._courtyard_local.get(id(fp))
         txt_list = self._text_extents.get(id(fp))
-        if txt_list:
+        if cy_local is not None or txt_list:
             cos_a = math.cos(math.radians(fp.angle))
             sin_a = math.sin(math.radians(fp.angle))
-            for lx, ly, hr in txt_list:
-                bx = fp.x + lx * cos_a + ly * sin_a
-                by = fp.y - lx * sin_a + ly * cos_a
-                xs0 = min(xs0, bx - hr)
-                ys0 = min(ys0, by - hr)
-                xs1 = max(xs1, bx + hr)
-                ys1 = max(ys1, by + hr)
+            if cy_local is not None:
+                # Transform all four corners of the local AABB and expand.
+                lx0, ly0, lx1, ly1 = cy_local
+                cxs, cys = [], []
+                for lx, ly in ((lx0, ly0), (lx0, ly1), (lx1, ly0), (lx1, ly1)):
+                    cxs.append(fp.x + lx * cos_a + ly * sin_a)
+                    cys.append(fp.y - lx * sin_a + ly * cos_a)
+                xs0 = min(xs0, min(cxs) - hb)
+                ys0 = min(ys0, min(cys) - hb)
+                xs1 = max(xs1, max(cxs) + hb)
+                ys1 = max(ys1, max(cys) + hb)
+            if txt_list:
+                for lx, ly, hr in txt_list:
+                    bx = fp.x + lx * cos_a + ly * sin_a
+                    by = fp.y - lx * sin_a + ly * cos_a
+                    xs0 = min(xs0, bx - hr)
+                    ys0 = min(ys0, by - hr)
+                    xs1 = max(xs1, bx + hr)
+                    ys1 = max(ys1, by + hr)
         return box(xs0, ys0, xs1, ys1)
 
     def _pad_box(self, pad: Pad):

@@ -5,6 +5,13 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.55.2
+
+- **fix**: placement now uses the courtyard layer (`F.CrtYd`/`F.Courtyard`) as the
+  footprint body extent instead of pad positions alone. Fixes electrolytic capacitors
+  (and other parts whose physical body extends well beyond their pad span) overlapping
+  in the placed result.
+
 ## 0.55.1
 
 - **new**: KiCad plugin toolbar icon. `plugin.py` referenced `icon_24x24.png`
