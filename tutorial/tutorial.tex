@@ -10,20 +10,42 @@
 \usepackage{caption}
 \usepackage{parskip}
 \usepackage{float}   % provides [H] float placement (exactly here, no drift)
+\usepackage[T1]{fontenc}
+\usepackage{palatino}                  % warmer body font; less "default LaTeX"
+\usepackage[scaled=0.92]{helvet}       % Helvetica for headings
+\usepackage{titlesec}                  % custom heading styles
+
+\definecolor{accent}{RGB}{25, 95, 155}
 
 \hypersetup{
     colorlinks=true,
-    linkcolor=blue!60!black,
-    urlcolor=blue!60!black,
+    linkcolor=accent,
+    urlcolor=accent,
 }
 
+% thin accent rule used as section underline (pre-defined to avoid nested [] in optional arg)
+\newcommand{\sectionrule}{\vspace{2pt}{\color{accent!35}\titlerule[0.5pt]}\vspace{2pt}}
+
+% Section: bold sans-serif in accent colour, thin rule beneath
+\titleformat{\section}
+  {\color{accent}\sffamily\Large\bfseries}
+  {\thesection.}{0.5em}{}[\sectionrule]
+
+% Subsection: sans-serif, no colour
+\titleformat{\subsection}
+  {\sffamily\large\bfseries}{\thesubsection}{0.5em}{}
+
+% Subsection* (FAQ entries): same but unnumbered
+\titleformat{name=\subsection,numberless}
+  {\sffamily\large\bfseries}{}{0em}{}
+
 \lstdefinestyle{shell}{
-    backgroundcolor=\color{gray!10},
+    backgroundcolor=\color{gray!8},
     basicstyle=\ttfamily\small,
     breaklines=true,
     frame=single,
     framerule=0.4pt,
-    rulecolor=\color{gray!50},
+    rulecolor=\color{accent!30},
     xleftmargin=1em,
     xrightmargin=1em,
 }
@@ -47,6 +69,50 @@
 
 \tableofcontents
 \newpage
+
+% -----------------------------------------------------------------------
+\section{Quick Start}
+
+From a finished schematic to a placed and routed board in five steps:
+
+\begin{itemize}
+    \item \textbf{Draw your schematic in KiCad} and run the
+          Electrical Rules Checker (\emph{Inspect $\to$ Electrical Rules Checker}).
+          Fix any errors before continuing.
+
+    \item \textbf{Assign footprints.} Use KiCad's footprint assignment tool,
+          or let \texttt{pyautoroute-assign} fill them in automatically from a
+          personal preference database:
+\begin{lstlisting}
+pyautoroute-assign MyBoard.kicad_sch
+\end{lstlisting}
+
+    \item \textbf{Push the schematic to a PCB.} In KiCad open the PCB editor
+          and choose \emph{Tools $\to$ Update PCB from Schematic} (\texttt{F8}).
+          Add an \texttt{Edge.Cuts} board outline that generously encloses all
+          footprints (at least 2\,mm of margin), then save.
+
+    \item \textbf{Place and route with PyAutoRoute.}
+          The single command below places the footprints, then routes all nets:
+\begin{lstlisting}
+pyautoroute MyBoard.kicad_pcb --place --place-time 60 --routing-time 60
+\end{lstlisting}
+          A graphical interface is also available (\texttt{pyautoroute-gui})
+          if you prefer to watch the optimiser converge in real time or set
+          per-footprint constraints (lock a connector, pull a LED to the edge, etc.).
+
+    \item \textbf{Review the result in KiCad.} Open
+          \texttt{MyBoard\_placed\_routed.kicad\_pcb}, run
+          \emph{Inspect $\to$ Design Rules Checker}, and expect zero
+          clearance violations. PyAutoRoute also prints a self-check summary:
+\begin{lstlisting}
+  connections:  42/42 routed (100%)
+  self-check:   clean (0 clearance violations)
+\end{lstlisting}
+\end{itemize}
+
+The rest of this tutorial walks through each step in detail using a worked
+example --- a selectable-clock board for a Z80 retrocomputer.
 
 % -----------------------------------------------------------------------
 \section{Introduction}
@@ -181,11 +247,18 @@ At this stage:
 
 Before routing, KiCad needs an \texttt{Edge.Cuts} outline so the
 router knows the board boundary. Figure~\ref{fig:border} shows the
-board after a rectangular outline has been drawn around the components.
+board after a rectangular outline has been drawn around the components. If you are
+intending to use PyAutoRoute to place components, draw a board outline that is generously
+sized around the components to give them room to move. You are free to move any components
+you want into a specific place and lock them --- PyAutoRoute will honour that. The placer
+may not use all the space, but you can easily resize the board once routing and placement
+are done if needed. Of course, if you have a specific board size or shape requirement,
+draw that outline now and pass \texttt{--keep-outline} (or enable \emph{Keep board outline}
+in the GUI Advanced Settings, Section~\ref{sec:advanced}) to constrain placement inside it.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.75\textwidth]{images/Boarder.png}
+    \includegraphics[width=0.75\textwidth]{images/Border.png}
     \caption{Board with \texttt{Edge.Cuts} outline added. PyAutoRoute
              keeps all tracks inside this boundary.}
     \label{fig:border}
@@ -382,6 +455,7 @@ listed in the constraints legend (top-right of the canvas).
 \end{figure}
 
 \subsection{Advanced settings}
+\label{sec:advanced}
 
 Click \emph{Advanced\ldots} to open the full settings dialog
 (Figure~\ref{fig:gui-advanced}). This exposes the placement and routing
