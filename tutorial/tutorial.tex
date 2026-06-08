@@ -353,6 +353,44 @@ connectors).
 \end{tabular}
 \end{center}
 
+\subsection{Letting PyAutoRoute tune itself}
+\label{sec:autotune}
+
+The best grid pitch and via weight depend on the board, and guessing them
+by hand is tedious. PyAutoRoute can find good values for you in two ways.
+
+\textbf{Offline sweep.} \texttt{pyautoroute-tune} routes the board several
+times across a range of settings, scores each result with a single
+objective (completion first, then wirelength, then vias, with a small
+runtime tiebreaker), and reports the best setting it found:
+
+\begin{lstlisting}
+pyautoroute-tune TutorialProject/TutorialProject.kicad_pcb \
+    --time 5 --seeds 3
+\end{lstlisting}
+
+Here \texttt{--time} is the per-trial routing budget and \texttt{--seeds}
+the number of random seeds averaged per setting (annealing is stochastic).
+Use \texttt{--time-weight} to trade quality against speed: \texttt{0} ranks
+purely on route quality, while a larger value favours coarser, faster grids
+when the quality difference is small.
+
+\textbf{Online autotune.} The opt-in \texttt{--auto} flag folds the same
+idea into a normal routing run: PyAutoRoute first runs a quick probe on the
+board in front of it, picks the best grid and via setting, and (on a
+terminal) asks you to confirm before routing the board for real:
+
+\begin{lstlisting}
+pyautoroute TutorialProject/TutorialProject.kicad_pcb \
+    --auto --routing-time 60
+\end{lstlisting}
+
+Pair \texttt{--auto} with \texttt{--write-config} to save the chosen
+settings to the project \texttt{.ini} file, so later runs reuse them
+without re-probing. Either way, autotune is a convenience for finding a
+sensible starting point --- it does not change what the router can achieve,
+only how quickly you arrive at good settings.
+
 % -----------------------------------------------------------------------
 \section{Using the GUI}
 
