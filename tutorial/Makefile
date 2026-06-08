@@ -11,7 +11,7 @@ pdf: $(PDFFILE)
 
 # Two passes so that cross-references (TOC, figure numbers) resolve correctly.
 $(PDFFILE): $(TEXFILE).tex images/Schematic.png \
-            images/Initial\ PCB\ Layout.png images/Boarder.png
+            images/Initial\ PCB\ Layout.png images/Border.png
 	$(LATEX) $(LATEXOPT) $(TEXFILE).tex
 	$(LATEX) $(LATEXOPT) $(TEXFILE).tex
 
