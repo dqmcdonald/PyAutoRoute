@@ -133,6 +133,32 @@ def test_polish_bad_values_error():
         autoroute.main([str(_TEST_BOARD), "--place-polish"])
 
 
+def test_polish_interleave_flags_parse():
+    args = autoroute.build_parser().parse_args([
+        str(_TEST_BOARD), "--place", "--place-polish-interleave", "200",
+        "--place-polish-interleave-start", "0.7"])
+    assert args.place_polish_interleave == 200
+    assert args.place_polish_interleave_start == 0.7
+
+
+def test_polish_interleave_default_off():
+    args = autoroute.build_parser().parse_args([str(_TEST_BOARD)])
+    assert args.place_polish_interleave == 0
+    assert args.place_polish_interleave_start == 0.5
+
+
+def test_polish_interleave_bad_values_error():
+    with pytest.raises(SystemExit):
+        autoroute.main([str(_TEST_BOARD), "--place-only",
+                        "--place-polish-interleave", "-1"])
+    with pytest.raises(SystemExit):
+        autoroute.main([str(_TEST_BOARD), "--place-only",
+                        "--place-polish-interleave", "100",
+                        "--place-polish-interleave-start", "1.5"])
+    with pytest.raises(SystemExit):  # interleave needs --place / --place-only
+        autoroute.main([str(_TEST_BOARD), "--place-polish-interleave", "100"])
+
+
 # --- decoupling-cap CLI flag -------------------------------------------------
 
 def test_decouple_weight_flag_parses():

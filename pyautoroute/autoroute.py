@@ -578,6 +578,10 @@ def _place_params_from_args(args, board, rules, rep):
         polish_time=getattr(args, "place_polish_time", None),
         polish_eps=getattr(args, "place_polish_eps",
                            placement.PlaceParams.polish_eps),
+        polish_interleave=getattr(args, "place_polish_interleave", 0),
+        polish_interleave_start=getattr(
+            args, "place_polish_interleave_start",
+            placement.PlaceParams.polish_interleave_start),
         decouple_weight=getattr(args, "place_decouple_weight",
                                 placement.PlaceParams.decouple_weight))
     return pp, keep_outline
@@ -730,6 +734,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         if pout.polish_sweeps:
             summary += (f"\n  polish: {pout.polish_sweeps} sweeps, "
                         f"-{pout.polish_improvement:.1f} energy")
+        if pout.interleave_sweeps:
+            summary += (f"\n  interleaved polish: {pout.interleave_sweeps} sweeps, "
+                        f"-{pout.interleave_improvement:.1f} energy")
         breakdown = (f"placement: ratsnest {pout.final_ratsnest:.1f} mm, "
                      f"overlap {pout.final_overlap:.1f} mm2, "
                      f"bbox {pout.final_bbox:.0f} mm2")
@@ -2051,6 +2058,17 @@ def build_parser() -> argparse.ArgumentParser:
                    default=placement.PlaceParams.polish_eps, metavar="MM",
                    help="finite-difference step (mm) for the polish gradient "
                         "(with --place-polish; default %(default)s)")
+    p.add_argument("--place-polish-interleave", type=int, default=0, metavar="K",
+                   help="experimental: run one polish descent sweep every K "
+                        "placement-anneal iterations, so the anneal explores from "
+                        "locally relaxed states (basin hopping); independent of "
+                        "--place-polish; 0 disables (default)")
+    p.add_argument("--place-polish-interleave-start", type=float,
+                   default=placement.PlaceParams.polish_interleave_start,
+                   metavar="FRAC",
+                   help="fraction of the cooling schedule to complete before "
+                        "interleaved sweeps begin; hot-phase sweeps are wasted, "
+                        "so keep this >= 0.5 (default %(default)s)")
     p.add_argument("--place-runs", type=int, default=1, metavar="N",
                    help="run placement N times (different seeds) and keep the "
                         "lowest-energy placement (default 1)")
@@ -2293,6 +2311,12 @@ def main(argv=None) -> int:
         parser.error("--place-polish-time must be > 0")
     if (args.place_polish and not (args.place or args.place_only)):
         parser.error("--place-polish requires --place or --place-only")
+    if args.place_polish_interleave < 0:
+        parser.error("--place-polish-interleave must be >= 0")
+    if not 0.0 <= args.place_polish_interleave_start <= 1.0:
+        parser.error("--place-polish-interleave-start must be in [0, 1]")
+    if (args.place_polish_interleave and not (args.place or args.place_only)):
+        parser.error("--place-polish-interleave requires --place or --place-only")
     if args.place_decouple_weight < 0:
         parser.error("--place-decouple-weight must be >= 0")
     if args.runs < 1:

@@ -400,6 +400,21 @@ class PlaceParams:
     polish_step: float = 0.5          # initial line-search distance (mm)
     polish_min_step: float = 0.01     # smallest line-search distance before giving up
     polish_tol: float = 1e-3          # stop when a sweep improves E by less than this (relative)
+    # Interleaved polish (basin-hopping flavour): every `polish_interleave`
+    # anneal iterations, run one descent sweep over all movable units at the
+    # *current* state, so the Metropolis chain explores from relaxed
+    # configurations instead of raw ones. Monotone (the sweep only ever lowers
+    # the energy), so it can never worsen the chain's current state. Independent
+    # of the post-anneal `polish` switch; 0 (the default) disables it.
+    # `polish_interleave_start` delays the sweeps until that fraction of the
+    # schedule has elapsed — at high temperature the chain immediately
+    # randomises away from a relaxed state, so hot-phase sweeps buy nothing and
+    # cost Metropolis iterations. Benchmarks (scripts/bench_interleave.py) show
+    # ungated sweeps *lose* to plain SA at equal wall-clock and cold-gated
+    # sweeps roughly break even, hence the 0.5 default; treat the whole
+    # mechanism as experimental.
+    polish_interleave: int = 0
+    polish_interleave_start: float = 0.5
     # Decoupling-cap attraction: footprints marked with the ``Autoroute-decouple``
     # property (`pcb.Footprint.decouple_target`) are softly pulled toward their
     # associated IC, so a decoupling cap settles next to it instead of drifting.
@@ -420,6 +435,8 @@ class PlaceResult:
     final_edge: float = 0.0           # total edge-affinity distance (mm); 0 if none flagged
     polish_sweeps: int = 0            # descent sweeps run by the post-anneal polish (0 if off)
     polish_improvement: float = 0.0   # energy reduction from the polish (>= 0)
+    interleave_sweeps: int = 0        # descent sweeps run during annealing (0 if off)
+    interleave_improvement: float = 0.0  # energy reduction from interleaved sweeps (>= 0)
     warnings: list[str] = field(default_factory=list)  # e.g. unresolved decouple targets
 
     @property
@@ -1094,6 +1111,46 @@ class _Placer:
         self._move_delta(idxs)
         return self._cached_energy()
 
+    def _descent_units(self) -> list[tuple[list, set[int]]]:
+        """Movable units paired with their boxed-index sets, for descent sweeps."""
+        return [(u, {self._idx_of_fp[id(fp)] for fp in u})
+                for u in self._move_units]
+
+    def _descent_sweep(self, units, E: float) -> float:
+        """One steepest-descent sweep over ``units``; returns the new energy.
+
+        For each unit, estimate the 2-D translation gradient by central finite
+        differences (`polish_eps`), then step along the normalised descent
+        direction with a backtracking line search from `polish_step` down to
+        `polish_min_step`, committing only strictly-improving steps. Monotone:
+        the returned energy is always ``<= E``. Angles are held fixed.
+
+        Args:
+            units: the ``(unit, idxs)`` pairs from `_descent_units`.
+            E: the current `_cached_energy` value.
+
+        Returns:
+            The energy after the sweep.
+        """
+        eps = self.p.polish_eps
+        for unit, idxs in units:
+            gx = (self._energy_after_translate(unit, idxs, eps, 0.0)
+                  - self._energy_after_translate(unit, idxs, -eps, 0.0)) / (2.0 * eps)
+            gy = (self._energy_after_translate(unit, idxs, 0.0, eps)
+                  - self._energy_after_translate(unit, idxs, 0.0, -eps)) / (2.0 * eps)
+            g = math.hypot(gx, gy)
+            if g < 1e-12:
+                continue
+            dx, dy = -gx / g, -gy / g          # unit descent direction (mm)
+            step = self.p.polish_step
+            while step >= self.p.polish_min_step:
+                if self._energy_after_translate(
+                        unit, idxs, dx * step, dy * step) < E - 1e-12:
+                    E = self._commit_translate(unit, idxs, dx * step, dy * step)
+                    break
+                step *= 0.5
+        return E
+
     def _polish(self, on_progress=None, cancel=None) -> tuple[int, float]:
         """Steepest-descent refinement after annealing.
 
@@ -1118,10 +1175,8 @@ class _Placer:
         """
         if not self.p.polish or not self._move_units or self.p.polish_iters <= 0:
             return 0, 0.0
-        eps = self.p.polish_eps
         t0 = time.time()
-        units = [(u, {self._idx_of_fp[id(fp)] for fp in u})
-                 for u in self._move_units]
+        units = self._descent_units()
         E0 = E = self._cached_energy()
         sweeps = 0
         for _ in range(self.p.polish_iters):
@@ -1131,22 +1186,7 @@ class _Placer:
                     and time.time() - t0 >= self.p.polish_time):
                 break
             sweep_start = E
-            for unit, idxs in units:
-                gx = (self._energy_after_translate(unit, idxs, eps, 0.0)
-                      - self._energy_after_translate(unit, idxs, -eps, 0.0)) / (2.0 * eps)
-                gy = (self._energy_after_translate(unit, idxs, 0.0, eps)
-                      - self._energy_after_translate(unit, idxs, 0.0, -eps)) / (2.0 * eps)
-                g = math.hypot(gx, gy)
-                if g < 1e-12:
-                    continue
-                dx, dy = -gx / g, -gy / g          # unit descent direction (mm)
-                step = self.p.polish_step
-                while step >= self.p.polish_min_step:
-                    if self._energy_after_translate(
-                            unit, idxs, dx * step, dy * step) < E - 1e-12:
-                        E = self._commit_translate(unit, idxs, dx * step, dy * step)
-                        break
-                    step *= 0.5
+            E = self._descent_sweep(units, E)
             sweeps += 1
             if on_progress is not None:
                 on_progress(sweeps, self.p.polish_iters, E)
@@ -1366,6 +1406,14 @@ class _Placer:
         stall_count = 0
         window_seen = 0
 
+        # Interleaved polish: every `polish_interleave` iterations, relax the
+        # *current* state with one monotone descent sweep so the Metropolis
+        # chain continues from a basin floor rather than a raw configuration.
+        interleave_on = self.p.polish_interleave > 0
+        descent_units = self._descent_units() if interleave_on else []
+        interleave_sweeps = 0
+        interleave_gain = 0.0
+
         total = self.p.iters if self.p.iters else 1_000_000
         t0 = time.time()
         ratio = self.p.t_end / self.p.t_start
@@ -1405,6 +1453,15 @@ class _Placer:
 
             it += 1
             window_seen += 1
+            if (interleave_on and it % self.p.polish_interleave == 0
+                    and frac >= self.p.polish_interleave_start):
+                E_relaxed = self._descent_sweep(descent_units, E)
+                interleave_gain += E - E_relaxed
+                E = E_relaxed
+                interleave_sweeps += 1
+                if E < best_E:
+                    best_E = E
+                    best = self._snapshot(self.movable)
             if on_progress is not None:
                 on_progress(it, total, E, best_E, T, sum(recent) / len(recent))
 
@@ -1434,6 +1491,8 @@ class _Placer:
                            self._rats, self._overlap, self._bbox, self._edge,
                            polish_sweeps=polish_sweeps,
                            polish_improvement=polish_improvement,
+                           interleave_sweeps=interleave_sweeps,
+                           interleave_improvement=interleave_gain,
                            warnings=list(self._decouple_warnings))
 
 

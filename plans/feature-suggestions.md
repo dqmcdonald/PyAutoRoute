@@ -47,6 +47,14 @@ back for their own residual TODOs.
 >   footprints to unassigned `.kicad_sch` symbols from a TOML preference database
 >   with per-prefix tech defaults and value-keyed IC rules. Supports `--dry-run`,
 >   `--all`, and per-invocation `PREFIX:TECH` / `PREFIX:VALUE=FP` overrides.
+> - **Interleaved placement polish** (`--place-polish-interleave`) — shipped in
+>   0.56.0 as an **experimental negative result**: basin-hopping descent sweeps
+>   during the placement anneal do *not* beat plain SA + final polish at equal
+>   wall-clock (benchmarked in `scripts/bench_interleave.py`; the discrete
+>   swap/rotate moves dominate quality, not within-basin relaxation). Off by
+>   default; closes the "dynamics-style annealing" investigation — see
+>   `docs/architecture.md` for the verdict before revisiting gradient-based
+>   placement dynamics (Langevin/MD-style).
 
 ## Context
 

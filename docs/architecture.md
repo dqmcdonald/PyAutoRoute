@@ -349,6 +349,24 @@ containment terms usable — and because the line search tests the *true* energy
 noisy or zero gradient (e.g. from the piecewise-constant spread term) is harmless.
 Off by default (`polish=False`), reproducing the prior behaviour exactly.
 
+**Interleaved polish (`--place-polish-interleave`, experimental).** A
+basin-hopping variant: every `polish_interleave` anneal iterations, one
+`_descent_sweep` (the same monotone sweep `_polish` loops over) relaxes the
+chain's *current* state in place, so Metropolis effectively explores over basin
+floors rather than raw configurations. Sweeps are gated to the cold tail of the
+schedule (`polish_interleave_start`, default the last half) because a relaxed
+state at high temperature is immediately re-randomised — hot-phase sweeps buy
+nothing and cost iterations. **Benchmark verdict** (`scripts/bench_interleave.py`,
+Test1–Test5, 5 seeds, equal 8 s wall-clock vs. plain SA + final polish):
+ungated sweeps every 100 iterations *lose* by 3–16 % mean energy (the sweeps
+consume 30–80 % of the Metropolis budget); cold-gated sweeps roughly break even
+(within seed noise). The result matches the swap-Monte-Carlo-beats-dynamics
+picture from glass physics: final quality is dominated by which basin the
+*discrete* moves (swaps, rotations) find, and the post-anneal polish already
+harvests the within-basin slack, so paying iterations to harvest it earlier
+gains nothing. Kept as an off-by-default experiment;
+`PlaceResult.interleave_sweeps`/`interleave_improvement` report what it did.
+
 **Recentering (anti-drift).** Every energy term depends only on the footprints'
 *relative* poses, so the energy is **translation-invariant**: with nothing locked,
 the cluster random-walks during annealing and drifts off the board origin — the
@@ -378,7 +396,9 @@ CLI knobs: `--place-iters`/`--place-time`
 `--place-margin`, `--place-buffer` (inter-footprint keep-out),
 `--place-overlap-weight`, `--place-compact-weight`,
 `--place-polish` (+ `--place-polish-iters`/`--place-polish-time`/`--place-polish-eps`,
-post-anneal gradient descent), `--place-decouple-weight` (decoupling-cap
+post-anneal gradient descent), `--place-polish-interleave`
+(+ `--place-polish-interleave-start`, experimental in-anneal descent sweeps),
+`--place-decouple-weight` (decoupling-cap
 attraction), `--scatter` (randomise starting layout per run/cycle); `--seed` is shared.
 
 **Silkscreen text in body boxes.** `_fp_silk_text_extents` pre-computes a list of

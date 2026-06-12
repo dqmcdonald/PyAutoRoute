@@ -353,6 +353,56 @@ def test_polish_deterministic():
     assert run() == run()
 
 
+# --- interleaved polish (experimental basin hopping) --------------------------
+
+def test_interleave_disabled_reports_zero():
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0")])
+    b = _fp("U2", 40.0, 40.0, [(-2.0, 0.0, "N0")])
+    board = _board([a, b])
+    res = placement.place(board, placement.PlaceParams(iters=100, seed=0))
+    assert res.interleave_sweeps == 0
+    assert res.interleave_improvement == 0.0
+
+
+def test_interleave_runs_sweeps_and_is_monotone_bookkept():
+    a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    b = _fp("U2", 21.5, 20.5, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+    c = _fp("U3", 45.0, 45.0, [(-2.0, 0.0, "N1"), (2.0, 0.0, "N0")])
+    board = _board([a, b, c])
+    res = placement.place(board, placement.PlaceParams(
+        iters=300, seed=4, overlap_weight=200.0,
+        polish_interleave=50, polish_interleave_start=0.0))
+    # one sweep every 50 of 300 iterations
+    assert res.interleave_sweeps == 6
+    assert res.interleave_improvement >= 0.0
+    assert res.best_energy <= res.start_energy + 1e-6
+
+
+def test_interleave_start_frac_gates_hot_phase():
+    def run(start):
+        a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        b = _fp("U2", 21.5, 20.5, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        board = _board([a, b])
+        return placement.place(board, placement.PlaceParams(
+            iters=300, seed=4, polish_interleave=50,
+            polish_interleave_start=start))
+    gated = run(0.5)
+    ungated = run(0.0)
+    assert 0 < gated.interleave_sweeps < ungated.interleave_sweeps
+
+
+def test_interleave_deterministic():
+    # Descent sweeps consume no RNG, so an interleaved run is repeatable.
+    def run():
+        a = _fp("U1", 20.0, 20.0, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        b = _fp("U2", 21.0, 20.5, [(-2.0, 0.0, "N0"), (2.0, 0.0, "N1")])
+        board = _board([a, b])
+        res = placement.place(board, placement.PlaceParams(
+            iters=200, seed=3, polish_interleave=40))
+        return res.best_energy, round(sum(p.cx + p.cy for p in board.pads), 6)
+    assert run() == run()
+
+
 # --- decoupling-cap attraction -----------------------------------------------
 
 def _ic4(ref, x, y, nets, locked=True):

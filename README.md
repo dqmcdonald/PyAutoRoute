@@ -398,6 +398,8 @@ Placement options (all also work with `--place-only`):
 | `--place-polish` | After annealing, refine the placement by **steepest-descent gradient descent** — relaxes close contacts and slides parts into their local energy minimum (the classic *anneal to explore, descend to exploit* hybrid). Translations only (rotation is left to annealing). It is **monotone**: only strictly-improving steps are taken, so it can never worsen the annealed result, and locks/KiCad groups are respected. Off by default. |
 | `--place-polish-iters N` / `--place-polish-time S` | Polish budget: max descent sweeps over all movable units (default 20) and/or an optional wall-clock cap (seconds). |
 | `--place-polish-eps MM` | Finite-difference step (mm) used to estimate the polish gradient (default 0.05). |
+| `--place-polish-interleave K` | **Experimental** basin-hopping variant: run one polish descent sweep every K anneal iterations, so the Metropolis chain explores from locally *relaxed* states instead of raw ones (monotone — a sweep can only lower the current energy). Each sweep costs Metropolis iterations, and benchmarks on the test boards (`scripts/bench_interleave.py`) show it does **not** beat plain annealing + final `--place-polish` at equal wall-clock — at best it breaks even — so leave it off unless experimenting. 0 disables (default). |
+| `--place-polish-interleave-start FRAC` | Fraction of the cooling schedule to complete before interleaved sweeps begin (default 0.5). Sweeps in the hot phase are immediately undone by thermal acceptance and only waste budget, so keep this ≥ 0.5. |
 | `--scatter` | Randomise footprint starting positions before each cycle's placement pass (and before each `--place-runs` run); see *Best-of-cycles* above. |
 | `--place-feedback` / `--congestion-weight W` | Congestion-aware re-placement across cycles (needs `--cycles N`); see *Congestion feedback* above. |
 
@@ -407,7 +409,8 @@ end-of-placement summary reports the acceptance ratio and an energy breakdown
 (ratsnest length, overlap area, bounding-box area, density-spread term when
 active, and — when any footprint is flagged `Autoroute-edge` — the total edge
 distance). With `--place-polish` it also reports the number of descent sweeps run
-and the additional energy the polish removed.
+and the additional energy the polish removed (and likewise for
+`--place-polish-interleave` sweeps run during the anneal).
 
 It optimises placement for routability but does not model mechanical or thermal
 intent — connector positions, heat-dissipation proximity, and similar concerns

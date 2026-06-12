@@ -5,6 +5,19 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.56.0
+
+- **new (experimental)**: `--place-polish-interleave K` (+
+  `--place-polish-interleave-start FRAC`) — basin-hopping placement: run one
+  monotone polish descent sweep every K anneal iterations so the Metropolis
+  chain explores from locally relaxed states. Benchmarks
+  (`scripts/bench_interleave.py`) show it does **not** beat plain SA + final
+  `--place-polish` at equal wall-clock (cold-gated sweeps break even; ungated
+  sweeps lose), so it ships off by default as a documented negative result;
+  the discrete swap/rotate moves, not within-basin relaxation, dominate
+  placement quality. `PlaceResult` gains
+  `interleave_sweeps`/`interleave_improvement`.
+
 ## 0.55.2
 
 - **fix**: placement now uses the courtyard layer (`F.CrtYd`/`F.Courtyard`) as the
