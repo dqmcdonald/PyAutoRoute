@@ -5,6 +5,19 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.56.1
+
+- **fix**: `--ground-plane` connectivity vias no longer get stranded on
+  isolated copper islands. A candidate via position could pass the local
+  clearance check yet still land in a pocket that other-net traces had moated
+  off from the rest of the plane; since KiCad only prunes fill islands with
+  *no* connection to the zone's net, a via anchored in such a pocket kept it
+  alive through the fill without ever reaching the rest of GND — leaving that
+  pad electrically floating despite having "a via to GND". `groundplane.py`
+  now checks candidate positions against the pour's actual connected
+  components and rejects ones outside the main plane body, printing a warning
+  instead of silently wiring a pad to dead copper.
+
 ## 0.56.0
 
 - **new (experimental)**: `--place-polish-interleave K` (+

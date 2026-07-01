@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pyautoroute import pcb, sexpr
+from shapely.geometry import box
+
+from pyautoroute import groundplane, pcb, rules as rules_mod, sexpr
+from pyautoroute.pcb import Board, OutlineShape, Pad, Segment
 
 
 def test_make_zone_node_thermal_bridge_width():
@@ -98,3 +101,73 @@ def test_make_zone_node_with_numbered_net():
     zone_str = str(zone)
     assert "zone" in zone_str
     assert "net" in zone_str
+
+
+def _gnd_pad(cx, cy, ref="C1"):
+    """An SMD-only GND pad (needs a via to reach the B.Cu pour)."""
+    return Pad(net="GND", pad_type="smd", shape="roundrect", cx=cx, cy=cy,
+               w=1.2, h=1.4, angle=0, copper_layers=["F.Cu"], fp_ref=ref)
+
+
+def _ring_segments(cx, cy, half=4.0, net="SIG", layer="B.Cu", width=0.3):
+    """Four B.Cu segments forming a closed square moat around (cx, cy)."""
+    x0, x1 = cx - half, cx + half
+    y0, y1 = cy - half, cy + half
+    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    return [
+        Segment(x1=corners[i][0], y1=corners[i][1],
+                x2=corners[(i + 1) % 4][0], y2=corners[(i + 1) % 4][1],
+                width=width, layer=layer, net=net)
+        for i in range(4)
+    ]
+
+
+def test_connectivity_via_rejects_isolated_pocket():
+    """A GND pad moated off by other-net copper must not get a via stranded
+    in the pocket — it should be left unconnected (with a warning) rather
+    than anchored to copper that KiCad's fill can never join to the main
+    plane. Reproduces the isolated-ground-island failure mode: the local
+    clearance check around a candidate via can pass even though the whole
+    pocket it sits in is cut off from the rest of the pour."""
+    pad = _gnd_pad(10, 20)
+    board = Board(
+        tree=sexpr.SList(), copper_layers=["F.Cu", "B.Cu"],
+        pads=[pad], free_vias=[], segments=_ring_segments(10, 20),
+        zones=[], outline=[OutlineShape("rect", {"start": (0, 0), "end": (60, 40)})],
+    )
+    pour_poly = box(0, 0, 60, 40)
+    rules = rules_mod.default_rules()
+    clearance = rules.clearance_for("GND")
+
+    vias, warnings = groundplane._add_connectivity_vias(
+        board, rules, "GND", "B.Cu", pour_poly, clearance,
+    )
+
+    assert vias == [], "via must not be placed inside the isolated pocket"
+    assert len(warnings) == 1
+    assert "C1" in warnings[0]
+
+
+def test_connectivity_via_reaches_open_plane():
+    """Without a moat, an SMD GND pad still gets tied to the pour as before."""
+    pad = _gnd_pad(10, 20)
+    board = Board(
+        tree=sexpr.SList(), copper_layers=["F.Cu", "B.Cu"],
+        pads=[pad], free_vias=[], segments=[],
+        zones=[], outline=[OutlineShape("rect", {"start": (0, 0), "end": (60, 40)})],
+    )
+    pour_poly = box(0, 0, 60, 40)
+    rules = rules_mod.default_rules()
+    clearance = rules.clearance_for("GND")
+
+    vias, warnings = groundplane._add_connectivity_vias(
+        board, rules, "GND", "B.Cu", pour_poly, clearance,
+    )
+
+    assert warnings == []
+    assert len(vias) >= 1
+    assert any(_node_head(v) == "via" for v in vias)
+
+
+def _node_head(node) -> str:
+    return node[0].raw if node and hasattr(node[0], "raw") else ""

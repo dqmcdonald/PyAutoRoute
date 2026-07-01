@@ -717,6 +717,22 @@ vias are found by union-find over GND copper (pads + segments + vias), tracking 
 layers each component reaches. Optional `--stitch-vias [PITCH]` lays a regular grid
 of GND vias to tie planes together.
 
+**Isolated-island guard.** A candidate via position can be locally clear of
+other-net copper yet still sit in a pocket that nearby traces have moated off
+from the rest of the plane — `make_zone_node()` sets `island_removal_mode 0`
+("always remove"), but KiCad only removes fill islands that touch *nothing* of
+the zone's net, so a via dropped into such a pocket anchors it and the pocket
+survives the fill without ever reaching the rest of the ground plane, leaving
+that pad electrically floating despite having "a via to GND". Before accepting
+a candidate position, `_add_connectivity_vias` subtracts a `via_radius +
+clearance` buffer around every other-net obstacle from the pour polygon,
+takes the connected components of what's left, and requires the candidate to
+fall in the largest one (the main plane body) — `_via_clear()` folds this in
+via `_reaches_main_plane()`. Components that can't reach the main plane (via
+either the pad-anchored spiral search or the fallback candidate search) are
+left unconnected rather than anchored to a stranded pocket, and a warning is
+returned so the CLI reports it instead of silently shipping a broken GND net.
+
 **Critical invariant:** `geometry.board_obstacles` (and thus `clearance_violations`)
 skips filled zones, so PyAutoRoute's self-check cannot verify the pour's clearance —
 that is delegated to KiCad's fill / `kicad-cli`. The self-check passes for the routed

@@ -674,9 +674,14 @@ pyautoroute board.kicad_pcb --ground-plane \
 
 After routing, a zone boundary is emitted following the board outline (inset by
 margin). PyAutoRoute also adds connecting vias where GND copper is isolated to
-only one layer (e.g. SMD-only pads on F.Cu with a B.Cu pour). Optional
-`--stitch-vias [PITCH]` (default 5 mm) lays a regular grid of GND vias to tie
-the planes together — most useful with `--ground-plane-layer both`.
+only one layer (e.g. SMD-only pads on F.Cu with a B.Cu pour). Before accepting
+a via position, PyAutoRoute checks that it reaches the *main* pour body rather
+than a pocket that nearby other-net copper has cut off from the rest of the
+plane — a pad that can't be connected without landing in such a pocket is left
+unconnected instead, with a printed warning, rather than being silently wired
+to copper that never reaches the rest of GND. Optional `--stitch-vias [PITCH]`
+(default 5 mm) lays a regular grid of GND vias to tie the planes together —
+most useful with `--ground-plane-layer both`.
 
 **Important caveat**: KiCad computes the actual copper fill via `kicad-cli` (required);
 PyAutoRoute's DRC self-check cannot verify the pour's clearance to other-net copper,

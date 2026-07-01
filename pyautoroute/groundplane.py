@@ -123,12 +123,13 @@ def build(board: Board, rules: DesignRules, *,
     nodes.append(zone_node)
 
     # ── Connectivity vias (for SMD-only islands) ──────────────────────────────
-    connectivity_vias = _add_connectivity_vias(
+    connectivity_vias, connectivity_warnings = _add_connectivity_vias(
         board, rules, gnd_net, layer, inset_poly, clearance,
         routed_nodes=routed_nodes or [],
         keep_existing_segments=keep_existing_segments,
     )
     nodes.extend(connectivity_vias)
+    warnings.extend(connectivity_warnings)
 
     # ── Stitching vias (optional grid) ────────────────────────────────────────
     if stitch_pitch is not None and stitch_pitch > 0:
@@ -241,17 +242,23 @@ def _obstacles_from_nodes(nodes: list, layer: str, gnd_net: str):
 def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer: str,
                            pour_poly, clearance: float,
                            routed_nodes: list | None = None,
-                           keep_existing_segments: bool = True) -> list[SList]:
+                           keep_existing_segments: bool = True) -> tuple[list[SList], list[str]]:
     """Add vias to connect GND islands that don't reach the pour layer.
 
     For each connected GND component that doesn't have copper on the pour layer:
     place a via at a point inside the pour polygon to tie the component in.
+
+    Returns:
+        (list of via/track nodes, list of warning strings for components that
+        couldn't be tied to the plane).
     """
     from . import pcb, geometry
     from shapely.geometry import Point
+    from shapely.ops import unary_union
     from shapely.strtree import STRtree
 
     vias = []
+    warnings: list[str] = []
 
     # Build an obstacle index for the pour layer so we can reject via positions
     # that would create a short with other-net copper already routed there.
@@ -290,8 +297,35 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     else:
         _obs_tree = None
 
+    # The pour region actually connected to the main plane body, once other-net
+    # copper (with clearance) is subtracted. A candidate via position can pass
+    # the local clearance check below yet still sit in a pocket that nearby
+    # traces have moated off from the rest of the plane. KiCad's fill only
+    # deletes islands that touch nothing of the zone's net — dropping a via
+    # into such a pocket anchors it, so the pocket survives the fill as
+    # "connected" copper without ever reaching the rest of the ground plane.
+    # Using the same via_radius + clearance buffer as _via_clear below keeps
+    # the two checks consistent: a point that is locally clear and reaches
+    # this region is guaranteed to land in the main plane after fill.
+    layer_obstacles = [o for o in all_obstacles if o.layer == layer]
+    if layer_obstacles:
+        obstacle_union = unary_union([o.geom.buffer(via_radius + clearance) for o in layer_obstacles])
+        usable = pour_poly.difference(obstacle_union)
+    else:
+        usable = pour_poly
+    usable_regions = [r for r in getattr(usable, "geoms", [usable]) if not r.is_empty and r.area > 0]
+    main_region = max(usable_regions, key=lambda r: r.area) if usable_regions else pour_poly
+
+    def _reaches_main_plane(x: float, y: float) -> bool:
+        """Return True if (x, y) is in the pour region connected to the main
+        plane body, rather than a pocket isolated by other-net copper."""
+        return Point(x, y).within(main_region.buffer(1e-6))
+
     def _via_clear(x: float, y: float) -> bool:
-        """Return True if a via centred at (x, y) has no clearance conflict on either via layer."""
+        """Return True if a via centred at (x, y) has no clearance conflict on
+        either via layer and reaches the main plane (not an isolated pocket)."""
+        if not _reaches_main_plane(x, y):
+            return False
         if _obs_tree is None:
             return True
         ring = Point(x, y).buffer(via_radius + clearance)
@@ -537,10 +571,18 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
                 if nearest_pad is not None and nearest_dist_sq > 1e-8:
                     pad_layer = (nearest_pad.copper_layers[0]
                                  if nearest_pad.copper_layers else "F.Cu")
-                    track_node = pcb.make_segment(
-                        board, nearest_pad.cx, nearest_pad.cy,
-                        via_point[0], via_point[1],
-                        track_width, pad_layer, gnd_net)
+                    # Verify the stub reaches the via without crossing other-net
+                    # copper — a via that reaches the main plane can still be
+                    # separated from a *further-away* fallback pad by unrelated
+                    # traces the pad-anchored search above never considered.
+                    if _track_clear(nearest_pad.cx, nearest_pad.cy,
+                                    via_point[0], via_point[1], pad_layer):
+                        track_node = pcb.make_segment(
+                            board, nearest_pad.cx, nearest_pad.cy,
+                            via_point[0], via_point[1],
+                            track_width, pad_layer, gnd_net)
+                    else:
+                        via_point = None
 
         if via_point:
             via_node = pcb.make_via(
@@ -550,8 +592,21 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
             vias.append(via_node)
             if track_node is not None:
                 vias.append(track_node)
+        else:
+            ref = next(
+                (pad.fp_ref for pad in board.pads
+                 if pad.net == gnd_net and _find(_snap(pad.cx, pad.cy)) == root
+                 and pad.fp_ref),
+                None
+            )
+            where = f"{ref}'s GND pad" if ref else "a GND component"
+            warnings.append(
+                f"Could not connect {where} to the {layer} ground plane — "
+                "it may be isolated by nearby copper; check for a ratsnest "
+                "on GND after opening the board"
+            )
 
-    return vias
+    return vias, warnings
 
 
 def _add_stitching_vias(board: Board, rules: DesignRules, gnd_net: str, layer: str,
