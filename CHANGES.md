@@ -5,6 +5,18 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.56.3
+
+- **fix**: closed the last gap in the 0.56.1 isolated-island guard — a GND
+  pad whose copper is *already* on the pour layer was skipped entirely (it
+  "doesn't need a via"), so a same-layer other-net moat around it was never
+  checked. Such a pad anchors a fill pocket exactly like a stranded
+  connectivity via does, since KiCad's island removal keeps any fill
+  touching zone-net copper. `_add_connectivity_vias` now checks pour-layer
+  pad/segment coverage against the pour's actual connected copper region
+  too, routing isolated pad-anchored components through the same bridging
+  attempt and warning as via-anchored ones.
+
 ## 0.56.2
 
 - **fix**: the 0.56.1 isolated-island guard could false-positive on

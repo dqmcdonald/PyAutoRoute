@@ -733,6 +733,21 @@ either the pad-anchored spiral search or the fallback candidate search) are
 left unconnected rather than anchored to a stranded pocket, and a warning is
 returned so the CLI reports it instead of silently shipping a broken GND net.
 
+The same failure mode can strand a component that never needed a via in the
+first place: a GND pad whose copper is *already* on the pour layer anchors a
+fill pocket exactly like a via would if same-layer other-net traces moat it
+off. A second region, `main_copper_region` (buffered by `clearance` only, no
+via radius — it models the actual copper fill rather than valid via
+positions), is checked against every pad/segment position that already has
+pour-layer coverage; a component whose only such coverage sits outside it is
+added to `roots_needing_via` alongside components that never had the layer,
+so it goes through the same bridging attempt and warning path. Net-token
+comparisons in `_obstacles_from_nodes` (obstacles from not-yet-applied
+`routed_nodes`) must resolve numbered-net boards' `(net <code>)` references
+the same way the union-find registration does — comparing against the bare
+net name only works on name-only (KiCad 10) boards, and mismatched routed GND
+copper would otherwise itself look like an other-net obstacle here.
+
 **Critical invariant:** `geometry.board_obstacles` (and thus `clearance_violations`)
 skips filled zones, so PyAutoRoute's self-check cannot verify the pour's clearance —
 that is delegated to KiCad's fill / `kicad-cli`. The self-check passes for the routed

@@ -323,14 +323,27 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     # Using the same via_radius + clearance buffer as _via_clear below keeps
     # the two checks consistent: a point that is locally clear and reaches
     # this region is guaranteed to land in the main plane after fill.
+    # A second, tighter-buffered region models the actual poured *copper*
+    # (clearance only, no via radius) rather than valid via positions — used
+    # below to tell whether a GND pad/segment that already has copper on the
+    # pour layer actually reaches the main plane, or merely anchors a
+    # same-layer pocket that other-net copper has moated off (the pad-copper
+    # equivalent of a stranded connectivity via: KiCad's island removal keeps
+    # any fill touching zone-net copper, so the pocket survives without ever
+    # joining the rest of GND).
     layer_obstacles = [o for o in all_obstacles if o.layer == layer]
     if layer_obstacles:
         obstacle_union = unary_union([o.geom.buffer(via_radius + clearance) for o in layer_obstacles])
         usable = pour_poly.difference(obstacle_union)
+        copper_union = unary_union([o.geom.buffer(clearance) for o in layer_obstacles])
+        copper_usable = pour_poly.difference(copper_union)
     else:
         usable = pour_poly
+        copper_usable = pour_poly
     usable_regions = [r for r in getattr(usable, "geoms", [usable]) if not r.is_empty and r.area > 0]
     main_region = max(usable_regions, key=lambda r: r.area) if usable_regions else pour_poly
+    copper_regions = [r for r in getattr(copper_usable, "geoms", [copper_usable]) if not r.is_empty and r.area > 0]
+    main_copper_region = max(copper_regions, key=lambda r: r.area) if copper_regions else pour_poly
 
     def _reaches_main_plane(x: float, y: float) -> bool:
         """Return True if (x, y) is in the pour region connected to the main
@@ -436,14 +449,32 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     # any segment endpoint in it lacks the pour layer, even if a THT pad in the same
     # component already provides full-layer coverage.
     root_layers: dict = {}
+    root_positions: dict[object, list] = {}
     for snap_pos, layers in component_layers.items():
         root = _find(snap_pos)
         root_layers.setdefault(root, set()).update(layers)
+        root_positions.setdefault(root, []).append((snap_pos, layers))
 
-    roots_needing_via: set = {
-        root for root, layers in root_layers.items()
-        if layer not in layers
-    }
+    roots_needing_via: set = set()
+    for root, layers in root_layers.items():
+        if layer not in layers:
+            roots_needing_via.add(root)
+            continue
+        # This component already has copper on the pour layer — but that
+        # copper can itself be moated into a same-layer pocket by other-net
+        # traces, just like a via can (see main_copper_region above). Treat
+        # "has the layer" as "actually reaches the layer's main plane": if
+        # every position with pour-layer copper sits outside the connected
+        # main body, this component needs the same bridging attempt as one
+        # that never had the layer at all.
+        on_layer_points = [
+            (pos[0] * SNAP_MM, pos[1] * SNAP_MM)
+            for pos, pos_layers in root_positions[root]
+            if layer in pos_layers
+        ]
+        if not any(Point(x, y).within(main_copper_region.buffer(1e-6))
+                   for x, y in on_layer_points):
+            roots_needing_via.add(root)
 
     # For each component needing a via, find a conflict-free point inside the pour polygon.
     # Try candidate positions in order: GND pad centres, GND segment midpoints, any snap pos.

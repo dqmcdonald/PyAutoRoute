@@ -109,6 +109,12 @@ def _gnd_pad(cx, cy, ref="C1"):
                w=1.2, h=1.4, angle=0, copper_layers=["F.Cu"], fp_ref=ref)
 
 
+def _gnd_pad_on_pour_layer(cx, cy, ref="C1", layer="B.Cu"):
+    """An SMD GND pad already on the pour layer (no via needed — in theory)."""
+    return Pad(net="GND", pad_type="smd", shape="roundrect", cx=cx, cy=cy,
+               w=1.2, h=1.4, angle=0, copper_layers=[layer], fp_ref=ref)
+
+
 def _ring_segments(cx, cy, half=4.0, net="SIG", layer="B.Cu", width=0.3):
     """Four B.Cu segments forming a closed square moat around (cx, cy)."""
     x0, x1 = cx - half, cx + half
@@ -209,3 +215,53 @@ def test_connectivity_via_numbered_net_routed_gnd_not_treated_as_obstacle():
     assert warnings == [], "routed GND copper must not be misread as an other-net obstacle"
     assert len(vias) >= 1
     assert any(_node_head(v) == "via" for v in vias)
+
+
+def test_pad_already_on_pour_layer_in_isolated_pocket_warns():
+    """A GND pad whose copper is already on the pour layer is normally
+    skipped (it doesn't need a connectivity via) — but if same-layer
+    other-net traces moat it off from the rest of the plane, that pad
+    anchors an isolated fill island exactly like a stranded via would.
+    KiCad's island_removal_mode 0 only deletes fill with no zone-net
+    connection, so the pad's own copper keeps the pocket alive without it
+    ever reaching the rest of GND. Must warn rather than silently doing
+    nothing."""
+    pad = _gnd_pad_on_pour_layer(10, 20, layer="B.Cu")
+    board = Board(
+        tree=sexpr.SList(), copper_layers=["F.Cu", "B.Cu"],
+        pads=[pad], free_vias=[], segments=_ring_segments(10, 20, layer="B.Cu"),
+        zones=[], outline=[OutlineShape("rect", {"start": (0, 0), "end": (60, 40)})],
+    )
+    pour_poly = box(0, 0, 60, 40)
+    rules = rules_mod.default_rules()
+    clearance = rules.clearance_for("GND")
+
+    vias, warnings = groundplane._add_connectivity_vias(
+        board, rules, "GND", "B.Cu", pour_poly, clearance,
+    )
+
+    assert vias == [], "must not silently leave broken copper unreported"
+    assert len(warnings) == 1
+    assert "C1" in warnings[0]
+
+
+def test_pad_on_pour_layer_in_open_plane_needs_no_via():
+    """Regression guard: a GND pad already on the pour layer with no moat
+    around it must still be left alone (no via, no warning) — the new
+    pad-anchored-pocket check must not fire on ordinary boards."""
+    pad = _gnd_pad_on_pour_layer(10, 20, layer="B.Cu")
+    board = Board(
+        tree=sexpr.SList(), copper_layers=["F.Cu", "B.Cu"],
+        pads=[pad], free_vias=[], segments=[],
+        zones=[], outline=[OutlineShape("rect", {"start": (0, 0), "end": (60, 40)})],
+    )
+    pour_poly = box(0, 0, 60, 40)
+    rules = rules_mod.default_rules()
+    clearance = rules.clearance_for("GND")
+
+    vias, warnings = groundplane._add_connectivity_vias(
+        board, rules, "GND", "B.Cu", pour_poly, clearance,
+    )
+
+    assert vias == []
+    assert warnings == []
