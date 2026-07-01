@@ -5,6 +5,17 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.56.2
+
+- **fix**: the 0.56.1 isolated-island guard could false-positive on
+  numbered-net boards (KiCad 6-9). `_obstacles_from_nodes` compared a
+  freshly-routed segment/via's raw net token (e.g. `"11"`) against the GND
+  net *name* (`"GND"`), so routed GND copper was misclassified as an
+  other-net obstacle; fed into the new global connectivity check, the
+  router's own GND traces could fragment the pour and reject perfectly
+  reachable vias. Now resolves the net token the same way the sibling
+  union-find code already did, before comparing.
+
 ## 0.56.1
 
 - **fix**: `--ground-plane` connectivity vias no longer get stranded on

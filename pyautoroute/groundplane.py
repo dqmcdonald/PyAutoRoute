@@ -272,6 +272,22 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     # annular ring on each layer stays clear of other-net copper.
     via_layers = {"F.Cu", layer}
 
+    # Net-reference format depends on the board style:
+    #   name-only boards  → (net "GND")  → _atom_text returns "GND"
+    #   numbered-net boards → (net 11)   → _atom_text returns "11"
+    # Pre-compute the expected token so every raw-atom comparison below (here
+    # and in the union-find registration further down) matches regardless of
+    # format — passing the bare net *name* would never match on numbered-net
+    # boards, silently treating freshly-routed GND copper as an other-net
+    # obstacle.
+    if getattr(board, 'name_only_nets', True):
+        _gnd_tok = gnd_net
+    else:
+        _gnd_tok = str(
+            next((c for c, n in getattr(board, 'numbered_nets', {}).items()
+                  if n == gnd_net), gnd_net)
+        )
+
     # Build per-mode obstacle list.  In clear mode every original segment and
     # free via is stripped from the output; using them as obstacles here would
     # block via positions that are actually free in the final board.  Only pad
@@ -291,7 +307,7 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     ]
     if routed_nodes:
         for vlayer in via_layers:
-            all_obstacles.extend(_obstacles_from_nodes(routed_nodes, vlayer, gnd_net))
+            all_obstacles.extend(_obstacles_from_nodes(routed_nodes, vlayer, _gnd_tok))
     if all_obstacles:
         _obs_tree = STRtree([o.geom for o in all_obstacles])
     else:
@@ -385,20 +401,8 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     # ARE written to the output regardless of keep_existing_segments, so they
     # must always contribute to connectivity.  Without this, SMD pads that the
     # router just connected via GND traces would still look isolated here and
-    # trigger (usually failing) connectivity-via attempts.
-    #
-    # Net-reference format depends on the board style:
-    #   name-only boards  → (net "GND")  → _atom_text returns "GND"
-    #   numbered-net boards → (net 11)   → _atom_text returns "11"
-    # Pre-compute the expected token so we match regardless of format.
-    if getattr(board, 'name_only_nets', True):
-        _gnd_tok = gnd_net
-    else:
-        _gnd_tok = str(
-            next((c for c, n in getattr(board, 'numbered_nets', {}).items()
-                  if n == gnd_net), gnd_net)
-        )
-
+    # trigger (usually failing) connectivity-via attempts.  Uses the _gnd_tok
+    # computed above (net-reference format varies: name-only vs numbered).
     if routed_nodes:
         for node in routed_nodes:
             head = _node_head(node)

@@ -171,3 +171,41 @@ def test_connectivity_via_reaches_open_plane():
 
 def _node_head(node) -> str:
     return node[0].raw if node and hasattr(node[0], "raw") else ""
+
+
+def test_connectivity_via_numbered_net_routed_gnd_not_treated_as_obstacle():
+    """On numbered-net boards (KiCad 6-9), a freshly-routed GND segment is
+    written as ``(net 3)``, not ``(net "GND")``. _obstacles_from_nodes must
+    resolve that back to the GND net before comparing, or it misclassifies
+    the routed GND copper as an other-net obstacle — which, fed into the
+    main-plane connectivity check, can fragment the whole pour around the
+    router's own GND traces and falsely reject a reachable via position."""
+    pad = _gnd_pad(10, 20)
+    board = Board(
+        tree=sexpr.SList(), copper_layers=["F.Cu", "B.Cu"],
+        pads=[pad], free_vias=[], segments=[],
+        zones=[], outline=[OutlineShape("rect", {"start": (0, 0), "end": (60, 40)})],
+    )
+    board.name_only_nets = False
+    board.numbered_nets = {3: "GND", 7: "SIG"}
+
+    # A ring of GND copper (not SIG) the router just placed, expressed as
+    # routed_nodes SList — the same input build() passes from a routing run.
+    ring = _ring_segments(10, 20, net="GND")
+    routed_nodes = [
+        pcb.make_segment(board, s.x1, s.y1, s.x2, s.y2, s.width, s.layer, s.net)
+        for s in ring
+    ]
+
+    pour_poly = box(0, 0, 60, 40)
+    rules = rules_mod.default_rules()
+    clearance = rules.clearance_for("GND")
+
+    vias, warnings = groundplane._add_connectivity_vias(
+        board, rules, "GND", "B.Cu", pour_poly, clearance,
+        routed_nodes=routed_nodes,
+    )
+
+    assert warnings == [], "routed GND copper must not be misread as an other-net obstacle"
+    assert len(vias) >= 1
+    assert any(_node_head(v) == "via" for v in vias)
