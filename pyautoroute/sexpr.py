@@ -210,6 +210,8 @@ def loads(text: str) -> SList:
                 stack[-1][0].append(new)
             stack.append((new, start))
         elif tok == ")":
+            if not stack:
+                raise ValueError(f"unbalanced parentheses: stray {tok!r} at {start}")
             node, open_at = stack.pop()
             node.src = text
             node.span = (open_at, end)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pyautoroute import compare, report, sexpr
 from pyautoroute.pcb import Board, Pad, Segment, Via
 import tempfile
@@ -57,6 +59,19 @@ def test_compare_identical_boards():
         )
 
         assert result.stats[0].length == result.stats[1].length
+
+
+def test_compare_rejects_single_board():
+    """compare() promises 2-3 board paths; a single path must be rejected
+    before it reaches the (unused, one-column) report renderer."""
+    with pytest.raises(ValueError, match="2.3"):
+        compare.compare(["/nonexistent/one.kicad_pcb"])
+
+
+def test_compare_rejects_too_many_boards():
+    with pytest.raises(ValueError, match="2.3"):
+        compare.compare(["/a.kicad_pcb", "/b.kicad_pcb",
+                         "/c.kicad_pcb", "/d.kicad_pcb"])
 
 
 def test_compare_result_dataclass():

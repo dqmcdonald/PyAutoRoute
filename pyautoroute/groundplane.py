@@ -133,8 +133,16 @@ def build(board: Board, rules: DesignRules, *,
 
     # ── Stitching vias (optional grid) ────────────────────────────────────────
     if stitch_pitch is not None and stitch_pitch > 0:
+        existing_via_points = [
+            (_float(_child(node, "at"), 1), _float(_child(node, "at"), 2))
+            for node in connectivity_vias
+            if _node_head(node) == "via" and _child(node, "at") is not None
+        ]
         stitch_vias = _add_stitching_vias(
-            board, rules, gnd_net, layer, inset_poly, stitch_pitch, clearance
+            board, rules, gnd_net, layer, inset_poly, stitch_pitch, clearance,
+            routed_nodes=routed_nodes or [],
+            keep_existing_segments=keep_existing_segments,
+            existing_via_points=existing_via_points,
         )
         nodes.extend(stitch_vias)
 
@@ -239,34 +247,21 @@ def _obstacles_from_nodes(nodes: list, layer: str, gnd_net: str):
     return obs
 
 
-def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer: str,
-                           pour_poly, clearance: float,
-                           routed_nodes: list | None = None,
-                           keep_existing_segments: bool = True) -> tuple[list[SList], list[str]]:
-    """Add vias to connect GND islands that don't reach the pour layer.
+def _via_layer_obstacles(board: Board, gnd_net: str, layer: str,
+                         routed_nodes: list | None,
+                         keep_existing_segments: bool):
+    """Build the other-net obstacle list/STRtree for vias spanning F.Cu + *layer*.
 
-    For each connected GND component that doesn't have copper on the pour layer:
-    place a via at a point inside the pour polygon to tie the component in.
+    Includes both copper already on the board AND freshly-routed nodes that
+    haven't been applied to the board object yet, so via placement (connectivity
+    or stitching) respects real pad/track/via geometry rather than pad centres.
 
     Returns:
-        (list of via/track nodes, list of warning strings for components that
-        couldn't be tied to the plane).
+        ``(all_obstacles, obs_tree)`` — ``obs_tree`` is `None` if there are no
+        obstacles.
     """
-    from . import pcb, geometry
-    from shapely.geometry import Point
-    from shapely.ops import unary_union
+    from . import geometry
     from shapely.strtree import STRtree
-
-    vias = []
-    warnings: list[str] = []
-
-    # Build an obstacle index for the pour layer so we can reject via positions
-    # that would create a short with other-net copper already routed there.
-    # Include both copper already in the board AND freshly-routed nodes that
-    # haven't been applied to the board object yet.
-    via_size = rules.via_diameter_for(gnd_net) if rules else 0.6
-    via_drill = rules.via_drill_for(gnd_net) if rules else 0.3
-    via_radius = via_size / 2.0
 
     # Vias span F.Cu and the pour layer — check obstacles on both so the
     # annular ring on each layer stays clear of other-net copper.
@@ -308,10 +303,49 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
     if routed_nodes:
         for vlayer in via_layers:
             all_obstacles.extend(_obstacles_from_nodes(routed_nodes, vlayer, _gnd_tok))
-    if all_obstacles:
-        _obs_tree = STRtree([o.geom for o in all_obstacles])
+    obs_tree = STRtree([o.geom for o in all_obstacles]) if all_obstacles else None
+    return all_obstacles, obs_tree
+
+
+def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer: str,
+                           pour_poly, clearance: float,
+                           routed_nodes: list | None = None,
+                           keep_existing_segments: bool = True) -> tuple[list[SList], list[str]]:
+    """Add vias to connect GND islands that don't reach the pour layer.
+
+    For each connected GND component that doesn't have copper on the pour layer:
+    place a via at a point inside the pour polygon to tie the component in.
+
+    Returns:
+        (list of via/track nodes, list of warning strings for components that
+        couldn't be tied to the plane).
+    """
+    from . import pcb
+    from shapely.geometry import Point
+    from shapely.ops import unary_union
+
+    vias = []
+    warnings: list[str] = []
+
+    via_size = rules.via_diameter_for(gnd_net) if rules else 0.6
+    via_drill = rules.via_drill_for(gnd_net) if rules else 0.3
+    via_radius = via_size / 2.0
+
+    all_obstacles, _obs_tree = _via_layer_obstacles(
+        board, gnd_net, layer, routed_nodes, keep_existing_segments)
+
+    # Net-reference format depends on the board style:
+    #   name-only boards  → (net "GND")  → _atom_text returns "GND"
+    #   numbered-net boards → (net 11)   → _atom_text returns "11"
+    # Pre-compute the expected token so the union-find registration below
+    # (for freshly-routed GND segments/vias) matches regardless of format.
+    if getattr(board, 'name_only_nets', True):
+        _gnd_tok = gnd_net
     else:
-        _obs_tree = None
+        _gnd_tok = str(
+            next((c for c, n in getattr(board, 'numbered_nets', {}).items()
+                  if n == gnd_net), gnd_net)
+        )
 
     # The pour region actually connected to the main plane body, once other-net
     # copper (with clearance) is subtracted. A candidate via position can pass
@@ -489,10 +523,15 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         for seg in board.segments:
             if seg.net != gnd_net:
                 continue
-            mid_x = (seg.x1 + seg.x2) / 2
-            mid_y = (seg.y1 + seg.y2) / 2
-            if _find(_snap(mid_x, mid_y)) == root and Point(mid_x, mid_y).within(pour_poly):
-                yield (mid_x, mid_y)
+            # The union-find only tracks segment *endpoints* (see the
+            # registration loop above); a segment belongs to `root` if either
+            # endpoint's root is `root`, not the midpoint's (which was never
+            # registered and would otherwise always mint its own singleton).
+            if _find(_snap(seg.x1, seg.y1)) == root:
+                mid_x = (seg.x1 + seg.x2) / 2
+                mid_y = (seg.y1 + seg.y2) / 2
+                if Point(mid_x, mid_y).within(pour_poly):
+                    yield (mid_x, mid_y)
         for snap_pos in component_layers.keys():
             if _find(snap_pos) == root:
                 x = snap_pos[0] * SNAP_MM
@@ -645,12 +684,47 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
 
 
 def _add_stitching_vias(board: Board, rules: DesignRules, gnd_net: str, layer: str,
-                        pour_poly, pitch: float, clearance: float) -> list[SList]:
-    """Add a grid of stitching vias over the pour polygon."""
+                        pour_poly, pitch: float, clearance: float,
+                        routed_nodes: list | None = None,
+                        keep_existing_segments: bool = True,
+                        existing_via_points: list[tuple[float, float]] | None = None
+                        ) -> list[SList]:
+    """Add a grid of stitching vias over the pour polygon.
+
+    Candidates are rejected if their annular ring on either via layer would
+    overlap real other-net copper (pads, existing tracks, freshly-routed
+    tracks/vias — not just pad centres), or if they would violate
+    ``min_hole_to_hole`` spacing against another via already placed on this
+    board (a connectivity via or an earlier stitching via in this same grid).
+    """
     from . import pcb
     from shapely.geometry import Point
 
     vias = []
+
+    via_size = rules.via_diameter_for(gnd_net) if rules else 0.6
+    via_drill = rules.via_drill_for(gnd_net) if rules else 0.3
+    via_radius = via_size / 2.0
+    min_via_spacing = max(getattr(rules, "min_hole_to_hole", 0.0), 0.0) + via_drill
+
+    all_obstacles, obs_tree = _via_layer_obstacles(
+        board, gnd_net, layer, routed_nodes, keep_existing_segments)
+
+    def _via_clear(x: float, y: float) -> bool:
+        if obs_tree is None:
+            return True
+        ring = Point(x, y).buffer(via_radius + clearance)
+        for idx in obs_tree.query(ring):
+            obs = all_obstacles[idx]
+            if Point(x, y).buffer(via_radius).distance(obs.geom) < clearance - 1e-6:
+                return False
+        return True
+
+    placed: list[tuple[float, float]] = list(existing_via_points or [])
+
+    def _spacing_clear(x: float, y: float) -> bool:
+        return all(((vx - x) ** 2 + (vy - y) ** 2) ** 0.5 >= min_via_spacing - 1e-6
+                   for vx, vy in placed)
 
     # Bounding box of the pour polygon
     minx, miny, maxx, maxy = pour_poly.bounds
@@ -660,23 +734,14 @@ def _add_stitching_vias(board: Board, rules: DesignRules, gnd_net: str, layer: s
     while x < maxx:
         y = miny + (pitch / 2)
         while y < maxy:
-            if Point(x, y).within(pour_poly):
-                # Simple clearance check: not too close to any other-net pad
-                too_close = False
-                for pad in board.pads:
-                    if pad.net != gnd_net:
-                        dist = ((pad.cx - x) ** 2 + (pad.cy - y) ** 2) ** 0.5
-                        if dist < clearance + 0.5:  # 0.5 mm via radius
-                            too_close = True
-                            break
-                if not too_close:
-                    via_size = rules.via_diameter_for(gnd_net) if rules else 0.5
-                    via_drill = rules.via_drill_for(gnd_net) if rules else 0.25
-                    via_node = pcb.make_via(
-                        board, x, y, via_size, via_drill,
-                        "F.Cu", "B.Cu", gnd_net
-                    )
-                    vias.append(via_node)
+            if (Point(x, y).within(pour_poly) and _via_clear(x, y)
+                    and _spacing_clear(x, y)):
+                via_node = pcb.make_via(
+                    board, x, y, via_size, via_drill,
+                    "F.Cu", "B.Cu", gnd_net
+                )
+                vias.append(via_node)
+                placed.append((x, y))
             y += pitch
         x += pitch
 

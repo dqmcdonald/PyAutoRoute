@@ -18,6 +18,7 @@ the write.
 
 from __future__ import annotations
 
+import copy
 import math
 import uuid as _uuid
 from dataclasses import dataclass, field
@@ -1567,35 +1568,6 @@ def _sync_group_text(board: Board) -> None:
     if not grouped:
         return
 
-    # Collect groups by group_id; only process groups where something moved.
-    groups_by_gid: dict[str, list] = {}
-    for fp in board.footprints:
-        if fp.group_id:
-            groups_by_gid.setdefault(fp.group_id, []).append(fp)
-
-    # Build text_uuid -> group_id reverse mapping.
-    text_to_gid: dict[str, str] = {}
-    for fp in board.footprints:
-        if fp.group_id and fp.uuid:
-            pass  # footprints aren't text items
-    # Walk grouped items to find their group_id.
-    for node in board.tree:
-        if not (isinstance(node, SList) and sexpr.head_symbol(node) == "group"):
-            continue
-        gid = ""
-        members: list[str] = []
-        for ch in node:
-            if isinstance(ch, SList) and sexpr.head_symbol(ch) == "uuid":
-                vals = atoms_after_head(ch)
-                if vals:
-                    gid = vals[0].text
-            elif isinstance(ch, SList) and sexpr.head_symbol(ch) == "members":
-                members = [a.text for a in atoms_after_head(ch)]
-        if gid:
-            for uid in members:
-                if uid in grouped:
-                    text_to_gid[uid] = gid
-
     for text_uuid, (text_node, fps) in grouped.items():
         if not any(fp.moved for fp in fps):
             continue
@@ -1650,6 +1622,7 @@ def stamp_comment(board: Board, text: str) -> None:
         atoms = atoms_after_head(node)
         if len(atoms) >= 2 and atoms[1].text == "":
             node[node.index(atoms[1])] = sexpr.string(text)
+            node.span = None  # this SList's span is now stale; force re-render
             return
     # All 9 slots occupied — leave unchanged
 
@@ -1886,20 +1859,25 @@ def _make_property_node(
     """
     uid = sexpr.string(str(_uuid.uuid4()))
 
-    # Try to borrow font effects from an existing property.
+    # Try to borrow font effects from an existing property. Deep-copy it: the
+    # borrowed node would otherwise be aliased into two parents (the donor
+    # property and this new one), so mutating/re-spanning one (e.g. via
+    # `set_footprint_property`) would corrupt the other.
     font_effects = None
     for prop in children(fp.fp_node, "property"):
         fx = child(prop, "effects")
         if fx is not None:
-            font_effects = fx
+            font_effects = copy.deepcopy(fx)
             break
     if font_effects is None:
         font_effects = SList(
             [
                 sexpr.sym("effects"),
-                SList([sexpr.sym("font"), sexpr.sym("size"),
-                       sexpr.Atom("1"), sexpr.Atom("1"),
-                       sexpr.sym("thickness"), sexpr.Atom("0.15")]),
+                SList([
+                    sexpr.sym("font"),
+                    SList([sexpr.sym("size"), sexpr.Atom("1"), sexpr.Atom("1")]),
+                    SList([sexpr.sym("thickness"), sexpr.Atom("0.15")]),
+                ]),
             ]
         )
 

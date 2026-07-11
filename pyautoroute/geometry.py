@@ -175,14 +175,17 @@ def outline_to_polygon(shapes: list[OutlineShape]) -> Polygon:
 
     Closed shapes (poly/rect/circle) are taken directly; loose edges
     (line/arc) are noded and polygonized so outlines with overlapping or
-    collinear-redundant segments still close. The largest resulting region is
-    returned.
+    collinear-redundant segments still close. A closed shape that lies wholly
+    inside another is treated as an interior cutout (a milled slot, a large
+    drilled hole drawn as its own Edge.Cuts loop) and subtracted as a hole
+    rather than merged in as extra board area; the remaining shapes are
+    unioned and the largest resulting region is returned.
 
     Args:
         shapes: the Edge.Cuts shapes from `pyautoroute.pcb.Board.outline`.
 
     Returns:
-        The board-area polygon.
+        The board-area polygon (with interior rings for any cutouts).
 
     Raises:
         ValueError: if no closed outline can be formed.
@@ -214,9 +217,24 @@ def outline_to_polygon(shapes: list[OutlineShape]) -> Polygon:
         closed.extend(polygonize(unary_union(edges)))
     if not closed:
         raise ValueError("no closed board outline found on Edge.Cuts")
-    merged = unary_union(closed)
+
+    # A shape wholly inside another (not just overlapping) is an interior
+    # cutout, not additional board area — carve it out instead of letting the
+    # union below silently swallow it into the outer region.
+    hole_idxs = {i for i, p in enumerate(closed)
+                if any(j != i and closed[j].contains(p) for j in range(len(closed)))}
+    solids = [p for i, p in enumerate(closed) if i not in hole_idxs]
+    holes = [closed[i] for i in hole_idxs]
+    if not solids:            # degenerate: every shape contains another
+        solids, holes = closed, []
+
+    merged = unary_union(solids)
     if merged.geom_type == "MultiPolygon":
-        return max(merged.geoms, key=lambda g: g.area)
+        merged = max(merged.geoms, key=lambda g: g.area)
+    if holes:
+        merged = merged.difference(unary_union(holes))
+        if merged.geom_type == "MultiPolygon":
+            merged = max(merged.geoms, key=lambda g: g.area)
     return merged
 
 
@@ -248,15 +266,20 @@ def board_drills(board: Board) -> list[Drill]:
     """Collect every drilled hole on the board.
 
     Through-hole pads (`thru_hole` / `np_thru_hole`) with a non-`None`
-    `pyautoroute.pcb.Pad.drill` become a `Drill`. Routed vias are *not* included:
-    their spacing is governed by the grid's via-clearance model, not
-    ``min_hole_to_hole``.
+    `pyautoroute.pcb.Pad.drill` become a `Drill`, as does every via in
+    `pyautoroute.pcb.Board.free_vias` (routing vias, and ground-plane
+    connectivity/stitching vias, are all plain vias by the time the routed
+    board is reloaded). The router's own placement avoids gross via-via
+    overlap, but not the same ``min_hole_to_hole`` margin this self-check
+    enforces for pads, and vias placed outside the routing search (e.g. by the
+    ground-plane pass) aren't checked by the router at all — so both need to
+    go through this shared self-check.
 
     Args:
-        board: the board whose pads are scanned.
+        board: the board whose pads and free vias are scanned.
 
     Returns:
-        One `Drill` per drilled through-hole pad.
+        One `Drill` per drilled through-hole pad or via.
     """
     drills: list[Drill] = []
     for pad in board.pads:
@@ -267,6 +290,13 @@ def board_drills(board: Board) -> list[Drill]:
             radius=pad.drill / 2.0,
             plated=(pad.pad_type == "thru_hole"),
             ref=pad.fp_ref,
+        ))
+    for via in board.free_vias:
+        drills.append(Drill(
+            geom=Point(via.cx, via.cy),
+            radius=via.drill / 2.0,
+            plated=True,
+            ref=f"via({via.net})" if via.net else "via",
         ))
     return drills
 
@@ -337,13 +367,24 @@ def clearance_violations(board: Board, rules) -> list[tuple[str, str, str, float
     for o in obs:
         by_layer.setdefault(o.layer, []).append(o)
 
+    # The pair's required clearance is pair_clearance() — the larger of the two
+    # nets' class clearances — but each unordered pair is only visited once (via
+    # the j <= i dedup below), from whichever object's index comes first. If the
+    # probe were buffered by that object's *own* clearance, a pair whose gap
+    # falls between the tight net's clearance and the (larger) pair requirement
+    # would never surface: the tight side's probe is too small to reach the
+    # neighbour, and the wide side never gets a second look at the same pair.
+    # Buffering by the board-wide max clearance guarantees the probe always
+    # reaches any neighbour that could form a violation, regardless of which
+    # side's index is smaller.
+    max_clearance = max([c.clearance for c in rules.classes.values()]
+                        + [rules.min_clearance, 0.0])
+
     violations = []
     for layer, items in by_layer.items():
         tree = STRtree([o.geom for o in items])
         for i, o in enumerate(items):
-            need = max(rules.clearance_for(o.net), 0.0)
-            # query neighbours within the largest plausible clearance
-            probe = o.geom.buffer(need + 0.01)
+            probe = o.geom.buffer(max_clearance + 0.01)
             for j in tree.query(probe):
                 if j <= i:
                     continue

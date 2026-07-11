@@ -600,8 +600,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         _print_version: if False, suppress the opening ``PyAutoRoute vX.Y``
             line (used by `main` when the settings header already printed it).
         _startup_log_params: optional tuple of (args_cli, parser, pure_defaults,
-            proj_ini_path, cfg_path, proj_ini_values, cfg_values) to log the
-            startup header. When provided, logs the header to the log file.
+            proj_ini_path, cfg_path, proj_ini_values, cfg_values, auto_resolved)
+            to log the startup header. When provided, logs the header to the
+            log file.
 
     Returns:
         Process exit code: 0 if the self-check is clean, 2 if it finds a
@@ -618,10 +619,10 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
     if _startup_log_params:
         (args_cli, parser, pure_defaults, proj_ini_path, cfg_path,
-         proj_ini_values, cfg_values) = _startup_log_params
+         proj_ini_values, cfg_values, auto_resolved) = _startup_log_params
         _log_startup_header(rep, args, args_cli, parser, pure_defaults,
                             proj_ini_path, cfg_path,
-                            proj_ini_values, cfg_values)
+                            proj_ini_values, cfg_values, auto_resolved)
 
     rep.phase("parsing board + rules")
     board = pcb.load_board(input_path)
@@ -677,6 +678,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
               "(it diversifies starting layouts across runs); running a single "
               "scattered placement")
     if cycles > 1:
+        if getattr(args, "diff_pairs", False):
+            print("  note: --diff-pairs is not yet supported with --cycles; "
+                  "differential pairs will be routed as single-ended nets")
         return _run_cycles(args, rep, input_path, out_path, rules, pitch,
                            board, fill_nets, cycles, init_stats=init_stats)
 
@@ -1042,6 +1046,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
     # Build node list: routing results + ground plane (if requested)
     new_nodes = _results_to_nodes(board, grid, final_results)
+    for _dp_conn, _rp, _rn in dp_route_results:
+        new_nodes += router.path_to_nodes(board, grid, _rp)
+        new_nodes += router.path_to_nodes(board, grid, _rn)
     if args.ground_plane:
         from . import groundplane
         margin = args.ground_plane_margin or rules.default_class.clearance
@@ -1765,6 +1772,7 @@ def _print_settings_header(
     cfg_path: "Path | None",
     proj_ini_values: dict,
     cfg_values: dict,
+    auto_resolved: "set[str] | None" = None,
 ) -> None:
     """Print the startup header: version, config files, non-default settings table.
 
@@ -1777,7 +1785,11 @@ def _print_settings_header(
         cfg_path: path to the ``--config`` ini, or ``None``.
         proj_ini_values: settings loaded from the project ini.
         cfg_values: settings loaded from ``--config``.
+        auto_resolved: dests resolved outside cli/ini/config (e.g. ``{"seed"}``
+            when ``--seed`` was picked from the clock) — reported as source
+            ``"auto"`` instead of falling through to ``"ini"``.
     """
+    auto_resolved = auto_resolved or set()
     print(f"PyAutoRoute {__version__}")
     if proj_ini_path is not None:
         print(f"  Project ini:  {proj_ini_path}")
@@ -1803,6 +1815,8 @@ def _print_settings_header(
             source = cfg_path.name if cfg_path else "ini"
         elif dest in proj_ini_values:
             source = proj_ini_path.name if proj_ini_path else "ini"
+        elif dest in auto_resolved:
+            source = "auto"
         else:
             source = "ini"
 
@@ -1834,6 +1848,7 @@ def _log_startup_header(
     cfg_path: "Path | None" = None,
     proj_ini_values: dict | None = None,
     cfg_values: dict | None = None,
+    auto_resolved: "set[str] | None" = None,
 ) -> None:
     """Log the startup header: version, config files, non-default settings table.
 
@@ -1847,7 +1862,11 @@ def _log_startup_header(
         cfg_path: path to the ``--config`` ini, or ``None``.
         proj_ini_values: settings loaded from the project ini.
         cfg_values: settings loaded from ``--config``.
+        auto_resolved: dests resolved outside cli/ini/config (e.g. ``{"seed"}``
+            when ``--seed`` was picked from the clock) — reported as source
+            ``"auto"`` instead of falling through to ``"ini"``.
     """
+    auto_resolved = auto_resolved or set()
     rep.log(f"PyAutoRoute {__version__}")
     if proj_ini_path is not None:
         rep.log(f"  Project ini:  {proj_ini_path}")
@@ -1874,6 +1893,8 @@ def _log_startup_header(
             source = cfg_path.name if cfg_path else "ini"
         elif proj_ini_values and dest in proj_ini_values:
             source = proj_ini_path.name if proj_ini_path else "ini"
+        elif dest in auto_resolved:
+            source = "auto"
         else:
             source = "ini"
 
@@ -2274,8 +2295,10 @@ def main(argv=None) -> int:
     # Resolve seed: None means "not set by user or config" — pick from the clock
     # so repeated bare invocations explore different solutions. The resolved value
     # is logged so any run can be reproduced with --seed N.
+    auto_resolved: set[str] = set()
     if args.seed is None:
         args.seed = int(time.time()) & 0x7FFF_FFFF  # keep it a positive 31-bit int
+        auto_resolved.add("seed")
 
     # CLI-only namespace (no ini defaults) used for source detection in header.
     args_cli = build_parser().parse_args(argv)
@@ -2331,10 +2354,10 @@ def main(argv=None) -> int:
         parser.error("--place-only does not route; drop --routing-iters/--routing-time")
     _print_settings_header(args, args_cli, parser, pure_defaults,
                            proj_ini_path, cfg_path,
-                           proj_ini_values, cfg_values)
+                           proj_ini_values, cfg_values, auto_resolved)
     startup_log_params = (args_cli, parser, pure_defaults,
                           proj_ini_path, cfg_path,
-                          proj_ini_values, cfg_values)
+                          proj_ini_values, cfg_values, auto_resolved)
     return run(args, _print_version=False,
                _startup_log_params=startup_log_params)
 

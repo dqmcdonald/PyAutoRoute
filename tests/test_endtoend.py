@@ -114,6 +114,20 @@ def test_cli_writes_snapshots_and_log(tmp_path):
 
 
 @pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_unset_seed_labelled_auto_not_ini(tmp_path, capsys):
+    """A --seed resolved from the clock (not passed on the CLI, and no
+    ini/config supplies one either) must be reported with source "auto", not
+    misattributed to "ini" — the classifier's catch-all fallback bucket."""
+    out = tmp_path / "out.kicad_pcb"
+    rc = autoroute.main([str(_TEST_BOARD), "-o", str(out), "--quiet"])
+    assert rc == 0
+    seed_lines = [ln for ln in capsys.readouterr().out.splitlines()
+                 if ln.strip().startswith("--seed")]
+    assert len(seed_lines) == 1
+    assert seed_lines[0].split()[-1] == "auto"
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
 def test_cli_snapshots_ignored_without_annealing(tmp_path):
     out = tmp_path / "out.kicad_pcb"
     args = autoroute.build_parser().parse_args(

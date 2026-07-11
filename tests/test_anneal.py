@@ -30,6 +30,53 @@ def _setup():
     return state, conns, result
 
 
+# --- _IndexPool ---------------------------------------------------------------
+
+def test_index_pool_matches_set_semantics_under_random_ops():
+    """`_IndexPool` (O2: O(1) add/discard/choice instead of
+    `random.choice(tuple(some_set))`) must track a plain `set`'s membership
+    exactly under a long randomized sequence of add/discard, including the
+    swap-with-last-then-pop edge cases (removing the last element, removing
+    an already-absent element, discard-then-add of the same index)."""
+    import random as random_mod
+
+    rng = random_mod.Random(2024)
+    reference: set[int] = set()
+    pool = anneal._IndexPool()
+    universe = list(range(30))
+
+    for _ in range(2000):
+        idx = rng.choice(universe)
+        if rng.random() < 0.5:
+            reference.add(idx)
+            pool.add(idx)
+        else:
+            reference.discard(idx)
+            pool.discard(idx)
+
+        assert len(pool) == len(reference)
+        assert bool(pool) == bool(reference)
+        assert set(pool._list) == reference          # no duplicates, no stragglers
+        assert len(pool._list) == len(set(pool._list))
+        for v in universe:
+            assert (v in pool) == (v in reference)
+        if reference:
+            assert pool.choice(rng) in reference
+
+
+def test_index_pool_choice_uniform_over_many_draws():
+    """Sanity check that `choice` isn't systematically excluding an element
+    (e.g. an off-by-one in the swap-remove position bookkeeping)."""
+    import random as random_mod
+
+    pool = anneal._IndexPool(range(5))
+    rng = random_mod.Random(1)
+    counts = {i: 0 for i in range(5)}
+    for _ in range(5000):
+        counts[pool.choice(rng)] += 1
+    assert all(c > 0 for c in counts.values())
+
+
 def test_anneal_never_worsens_best_energy():
     state, conns, result = _setup()
     ap = anneal.AnnealParams(iters=25, seed=1,

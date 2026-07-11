@@ -181,12 +181,33 @@ def test_bounded_still_unroutable_when_fully_walled():
 
 # --- C extension parity ------------------------------------------------------
 
-# Scenarios exercising the tricky paths: straight run, diagonal, via dive.
+def _serpentine_maze_pads():
+    """A start/end pair forced to snake through 4 alternating-gap walls.
+
+    Spans both copper layers so a via can't shortcut a wall, driving many more
+    A* expansions than the other parity cases (O4: exercises the Cython
+    heap's `realloc`-based growth path past its initial capacity many times,
+    not just the couple of pushes a short direct/diagonal route needs).
+    """
+    start = _pad("A", 2, 2)
+    end = _pad("A", 18, 18)
+    walls = [
+        _pad("W", 8, 4, w=16, h=0.3, layers=("F.Cu", "B.Cu")),    # gap on right
+        _pad("W", 12, 8, w=16, h=0.3, layers=("F.Cu", "B.Cu")),   # gap on left
+        _pad("W", 8, 12, w=16, h=0.3, layers=("F.Cu", "B.Cu")),   # gap on right
+        _pad("W", 12, 16, w=16, h=0.3, layers=("F.Cu", "B.Cu")),  # gap on left
+    ]
+    return [start, end, *walls]
+
+
+# Scenarios exercising the tricky paths: straight run, diagonal, via dive,
+# and a long serpentine maze (heavy heap growth in the Cython fast path).
 _PARITY_CASES = [
     ("straight", [_pad("A", 4, 10), _pad("A", 16, 10)]),
     ("diagonal", [_pad("A", 3, 3), _pad("A", 15, 15)]),
     ("via_dive", [_pad("A", 4, 10), _pad("A", 16, 10),
                   _pad("X", 10, 10, w=0.8, h=20, layers=("F.Cu",))]),
+    ("serpentine_maze", _serpentine_maze_pads()),
 ]
 
 

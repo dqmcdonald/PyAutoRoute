@@ -45,7 +45,7 @@ def compare(paths: list[str], *, pro: str | None = None, labels: list[str] | Non
     """
     from . import pcb, rules as rules_mod, report
 
-    if not paths or len(paths) > 3:
+    if len(paths) < 2 or len(paths) > 3:
         raise ValueError("Must provide 2–3 board paths")
 
     # Load boards

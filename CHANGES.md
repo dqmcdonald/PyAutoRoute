@@ -5,9 +5,9 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
-## 0.56.3
+## 0.56.6
 
-- **fix**: closed the last gap in the 0.56.1 isolated-island guard — a GND
+- **fix**: closed the last gap in the 0.56.4 isolated-island guard — a GND
   pad whose copper is *already* on the pour layer was skipped entirely (it
   "doesn't need a via"), so a same-layer other-net moat around it was never
   checked. Such a pad anchors a fill pocket exactly like a stranded
@@ -17,9 +17,9 @@ a **patch** bump for fixes and small corrections. Newest first.
   too, routing isolated pad-anchored components through the same bridging
   attempt and warning as via-anchored ones.
 
-## 0.56.2
+## 0.56.5
 
-- **fix**: the 0.56.1 isolated-island guard could false-positive on
+- **fix**: the 0.56.4 isolated-island guard could false-positive on
   numbered-net boards (KiCad 6-9). `_obstacles_from_nodes` compared a
   freshly-routed segment/via's raw net token (e.g. `"11"`) against the GND
   net *name* (`"GND"`), so routed GND copper was misclassified as an
@@ -28,7 +28,7 @@ a **patch** bump for fixes and small corrections. Newest first.
   reachable vias. Now resolves the net token the same way the sibling
   union-find code already did, before comparing.
 
-## 0.56.1
+## 0.56.4
 
 - **fix**: `--ground-plane` connectivity vias no longer get stranded on
   isolated copper islands. A candidate via position could pass the local
@@ -40,6 +40,96 @@ a **patch** bump for fixes and small corrections. Newest first.
   now checks candidate positions against the pour's actual connected
   components and rejects ones outside the main plane body, printing a warning
   instead of silently wiring a pad to dead copper.
+
+## 0.56.3
+
+- **perf**: placement's incremental overlap-energy update (`_move_delta`)
+  rebuilt a full `STRtree` over every footprint body box on every move (twice,
+  in fact) — the dominant placement cost on boards above a few hundred
+  footprints. It now keeps a persistent tree, rebuilt only every so often, plus
+  a small direct check against footprints that moved since the last rebuild.
+  Verified identical output (a stress test compares the incremental overlap
+  energy against a from-scratch recomputation across thousands of randomized
+  moves/rejects). Gated to boards ≥ 500 footprints, below which shapely's
+  vectorised tree build is already faster than the bookkeeping —
+  `scripts/bench_o1_overlap_tree.py` measured up to 46% faster at 1600
+  footprints with no regression below the threshold.
+- **perf**: the routing annealer's `_propose` drew a random routed/unrouted
+  connection every SA iteration via `random.choice(tuple(some_set))`, which
+  materialises the *whole* set just to draw one element. A new `_IndexPool`
+  (list + position map, swap-remove on delete) gets this down to O(1)
+  regardless of how many connections are routed/unrouted —
+  `scripts/bench_o2_index_pool.py` measured over 1000x faster at 50,000
+  connections.
+- **perf**: the differential-pair coupled A* checked each trace's freeness via
+  `RoutingState.is_free` (a dict lookup + set scan) on every expansion instead
+  of the precomputed boolean free mask the single-net search uses. It now
+  builds the same per-net mask once per search
+  (`router.build_free_mask`, factored out of `astar`'s internal precompute) and
+  indexes it directly; verified bit-for-bit identical routes across 20
+  randomized obstacle layouts.
+- **fix**: the optional Cython A* core's binary heap grew its backing array
+  with `realloc` but never checked for allocation failure, so an out-of-memory
+  heap growth would write through a NULL pointer (segfault) instead of raising
+  `MemoryError`. Also guards the heap's initial allocation.
+
+## 0.56.2
+
+- **fix**: `stamp_comment` wrote the provenance stamp into the in-memory tree
+  but never cleared the target `(comment N ...)` node's own source span, so
+  the serializer re-emitted the original (empty) bytes verbatim and the stamp
+  never reached the output file.
+- **fix**: `__version__` was read from the editable install's captured
+  package metadata, which silently drifted from `pyproject.toml` across
+  version bumps unless `pip install -e .` was re-run every time. It now reads
+  `pyproject.toml` directly when developing from a checkout.
+- **fix**: a closed Edge.Cuts shape wholly inside the board outline (a milled
+  slot, or a large hole drawn as its own loop) was merged into the board area
+  instead of treated as a cutout, so the router would route across it and the
+  ground pour would fill it. `outline_to_polygon` now subtracts fully-enclosed
+  shapes as interior holes.
+- **fix**: the ground-plane connectivity-via fallback that targets a GND
+  segment's midpoint was dead code — midpoints were never registered in the
+  union-find, so they could never match a component's root. Components that
+  needed this fallback tier silently got no via.
+- **fix**: `sexpr.loads` raised `IndexError` (not the documented `ValueError`)
+  on a stray closing paren, so callers catching `ValueError` for malformed
+  input didn't catch this case.
+- **fix**: the fallback font-effects node `_make_property_node` builds when no
+  existing property has one to borrow used an invalid flat KiCad structure;
+  it's now the correct nested `(effects (font (size ..) (thickness ..)))`
+  form. Borrowed effects are also now deep-copied instead of aliased into two
+  parent nodes.
+- **fix**: a `--seed` resolved from the clock (because none was given on the
+  CLI or in a config) was mislabelled with source `"ini"` in the startup
+  settings table; it's now reported as `"auto"`.
+- **fix**: `compare()`'s single-board guard (`not paths or len(paths) > 3`)
+  let exactly one board path through despite the documented 2–3 contract.
+- **fix**: the drill self-check (`board_drills` / `drill_violations`) only
+  considered pad drills, so via-to-via and via-to-pad hole spacing — including
+  the ground-plane pass's own stitching/connectivity vias — was never
+  self-checked. Free vias now join the drill set.
+- **cleanup**: removed a dead loop and an unused `text_to_gid` map in
+  `_sync_group_text`.
+
+## 0.56.1
+
+- **fix**: `--diff-pairs` routed pairs but never wrote their copper to the
+  output board — the pair traces were reported as routed and their board area
+  was blocked against other nets, but zero segments/vias for the pair nets
+  reached the file. `--diff-pairs` also now warns (instead of silently doing
+  nothing) when combined with `--cycles`, which it doesn't yet support.
+- **fix**: ground-plane stitching vias (`--stitch-vias`) only checked
+  candidate positions against other-net *pad centres*, so a stitch via could
+  land on a routed track, another via, or a wide pad whose copper was near but
+  centre was far. They now reuse the same obstacle index (routed tracks, real
+  pad polygons, freshly-placed vias) as connectivity vias, and also respect
+  `min_hole_to_hole` spacing against other vias.
+- **fix**: the clearance self-check (`clearance_violations`) could miss
+  violations on boards with multiple net classes — it probed neighbours using
+  the inspecting net's own clearance instead of the larger pair requirement,
+  so a gap between the two could go undetected depending on iteration order.
+  It now probes by the board-wide maximum class clearance.
 
 ## 0.56.0
 
