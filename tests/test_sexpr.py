@@ -38,6 +38,18 @@ def test_parse_basic_structure():
     assert tree[2][1].raw == "49.5"
 
 
+def test_loads_stray_closing_paren_raises_value_error():
+    """A stray ')' with no open list to close must raise the documented
+    ValueError, not an IndexError from popping an empty parse stack."""
+    with pytest.raises(ValueError):
+        sexpr.loads('(kicad_pcb (version 1)))')
+
+
+def test_loads_unclosed_list_raises_value_error():
+    with pytest.raises(ValueError):
+        sexpr.loads('(kicad_pcb (version 1)')
+
+
 def test_roundtrip_small_inline():
     text = "(size 1.2 1.4)"
     assert sexpr.dumps(sexpr.loads(text)) == text

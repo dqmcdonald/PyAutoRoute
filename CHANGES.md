@@ -5,6 +5,45 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.56.2
+
+- **fix**: `stamp_comment` wrote the provenance stamp into the in-memory tree
+  but never cleared the target `(comment N ...)` node's own source span, so
+  the serializer re-emitted the original (empty) bytes verbatim and the stamp
+  never reached the output file.
+- **fix**: `__version__` was read from the editable install's captured
+  package metadata, which silently drifted from `pyproject.toml` across
+  version bumps unless `pip install -e .` was re-run every time. It now reads
+  `pyproject.toml` directly when developing from a checkout.
+- **fix**: a closed Edge.Cuts shape wholly inside the board outline (a milled
+  slot, or a large hole drawn as its own loop) was merged into the board area
+  instead of treated as a cutout, so the router would route across it and the
+  ground pour would fill it. `outline_to_polygon` now subtracts fully-enclosed
+  shapes as interior holes.
+- **fix**: the ground-plane connectivity-via fallback that targets a GND
+  segment's midpoint was dead code — midpoints were never registered in the
+  union-find, so they could never match a component's root. Components that
+  needed this fallback tier silently got no via.
+- **fix**: `sexpr.loads` raised `IndexError` (not the documented `ValueError`)
+  on a stray closing paren, so callers catching `ValueError` for malformed
+  input didn't catch this case.
+- **fix**: the fallback font-effects node `_make_property_node` builds when no
+  existing property has one to borrow used an invalid flat KiCad structure;
+  it's now the correct nested `(effects (font (size ..) (thickness ..)))`
+  form. Borrowed effects are also now deep-copied instead of aliased into two
+  parent nodes.
+- **fix**: a `--seed` resolved from the clock (because none was given on the
+  CLI or in a config) was mislabelled with source `"ini"` in the startup
+  settings table; it's now reported as `"auto"`.
+- **fix**: `compare()`'s single-board guard (`not paths or len(paths) > 3`)
+  let exactly one board path through despite the documented 2–3 contract.
+- **fix**: the drill self-check (`board_drills` / `drill_violations`) only
+  considered pad drills, so via-to-via and via-to-pad hole spacing — including
+  the ground-plane pass's own stitching/connectivity vias — was never
+  self-checked. Free vias now join the drill set.
+- **cleanup**: removed a dead loop and an unused `text_to_gid` map in
+  `_sync_group_text`.
+
 ## 0.56.1
 
 - **fix**: `--diff-pairs` routed pairs but never wrote their copper to the

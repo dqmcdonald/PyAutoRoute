@@ -441,10 +441,15 @@ def _add_connectivity_vias(board: Board, rules: DesignRules, gnd_net: str, layer
         for seg in board.segments:
             if seg.net != gnd_net:
                 continue
-            mid_x = (seg.x1 + seg.x2) / 2
-            mid_y = (seg.y1 + seg.y2) / 2
-            if _find(_snap(mid_x, mid_y)) == root and Point(mid_x, mid_y).within(pour_poly):
-                yield (mid_x, mid_y)
+            # The union-find only tracks segment *endpoints* (see the
+            # registration loop above); a segment belongs to `root` if either
+            # endpoint's root is `root`, not the midpoint's (which was never
+            # registered and would otherwise always mint its own singleton).
+            if _find(_snap(seg.x1, seg.y1)) == root:
+                mid_x = (seg.x1 + seg.x2) / 2
+                mid_y = (seg.y1 + seg.y2) / 2
+                if Point(mid_x, mid_y).within(pour_poly):
+                    yield (mid_x, mid_y)
         for snap_pos in component_layers.keys():
             if _find(snap_pos) == root:
                 x = snap_pos[0] * SNAP_MM

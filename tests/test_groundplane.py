@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from shapely.geometry import box
 
 from pyautoroute import groundplane, pcb, sexpr
@@ -153,3 +155,29 @@ def test_stitching_vias_respect_hole_to_hole_spacing():
         x, y = _via_xy(v)
         dist = ((x - 5.0) ** 2 + (y - 5.0) ** 2) ** 0.5
         assert dist >= min_gap - 1e-6
+
+
+# --- connectivity-via segment-midpoint fallback --------------------------------
+
+def test_connectivity_via_segment_midpoint_fallback_engages():
+    """A GND component that only reaches the pour polygon through a segment's
+    *midpoint* (both endpoints lie outside the pour inset) must still get a
+    via there — the midpoint tier used to be dead code because midpoints were
+    never registered in the union-find, so `_find` on a midpoint always minted
+    a fresh singleton that could never equal the component root."""
+    r = default_rules()
+    board = pcb.Board(tree=sexpr.SList(), copper_layers=["F.Cu", "B.Cu"],
+                      pads=[], free_vias=[], segments=[], zones=[], outline=[])
+    # No GND pads at all: a long F.Cu-only GND trace whose endpoints sit
+    # outside the (inset) pour polygon but whose midpoint sits inside it.
+    board.segments = [pcb.Segment(-5.0, 10.0, 25.0, 10.0, 0.25, "F.Cu", "GND")]
+    pour_poly = box(0, 0, 20, 20)
+    clearance = r.clearance_for("GND")
+
+    vias = groundplane._add_connectivity_vias(
+        board, r, "GND", "B.Cu", pour_poly, clearance)
+
+    assert len(vias) == 1
+    x, y = _via_xy(vias[0])
+    assert math.isclose(x, 10.0, abs_tol=1e-6)
+    assert math.isclose(y, 10.0, abs_tol=1e-6)
