@@ -101,6 +101,52 @@ def test_place_recenters_unlocked_group_onto_starting_centroid():
     assert math.isclose(cy, orig[1], abs_tol=1e-6)
 
 
+def test_move_delta_overlap_matches_from_scratch_recompute(monkeypatch):
+    """The persistent overlap-query tree + dirty-set fallback (`O1`) must keep
+    `_Placer._overlap` exactly consistent with a from-scratch recomputation,
+    across a long randomized sequence of moves, rejects, and forced tree
+    rebuilds (dirty limit patched down so several rebuilds happen)."""
+    import random
+
+    monkeypatch.setattr(placement, "_OVERLAP_TREE_DIRTY_LIMIT", 4)
+    # Force the persistent-tree path on regardless of board size (it's
+    # normally gated off below `_OVERLAP_TREE_MIN_N` footprints — see that
+    # constant's docstring) so this small board still exercises it.
+    monkeypatch.setattr(placement, "_OVERLAP_TREE_MIN_N", 0)
+
+    n = 20
+    fps = [_fp(f"U{i}", x=3.0 * (i % 5), y=3.0 * (i // 5),
+              pads_local=[(0.0, 0.0, f"N{i}")])
+          for i in range(n)]
+    board = _board(fps, size=60)
+    placer = placement._Placer(board, placement.PlaceParams())
+    placer._rebuild_cache()
+
+    rng = random.Random(12345)
+    for _ in range(400):
+        i = rng.randrange(n)
+        fp = placer.boxed[i]
+        old_x, old_y = fp.x, fp.y
+        saved = placer._save_cache({i})
+        fp.x += rng.uniform(-4.0, 4.0)
+        fp.y += rng.uniform(-4.0, 4.0)
+        fp.sync_pads()
+        placer._move_delta({i})
+
+        expected = (placer._overlap_area(placer._boxes)
+                   + placer._fixed_text_overlap(placer._boxes))
+        assert math.isclose(placer._overlap, expected, abs_tol=1e-6), (
+            f"incremental overlap {placer._overlap} != from-scratch {expected}")
+
+        if rng.random() < 0.5:      # reject: revert pose + cache
+            fp.x, fp.y = old_x, old_y
+            fp.sync_pads()
+            placer._load_cache(saved)
+            expected = (placer._overlap_area(placer._boxes)
+                       + placer._fixed_text_overlap(placer._boxes))
+            assert math.isclose(placer._overlap, expected, abs_tol=1e-6)
+
+
 def test_recenter_preserves_energy_and_is_noop_when_locked():
     a = _fp("U1", 10.0, 10.0, [(0.0, 0.0, "N0"), (2.0, 0.0, "N1")])
     b = _fp("U2", 70.0, 70.0, [(0.0, 0.0, "N1"), (2.0, 0.0, "N2")])

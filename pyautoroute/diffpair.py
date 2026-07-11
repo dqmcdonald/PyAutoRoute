@@ -22,7 +22,7 @@ from .grid import BLOCKED, FREE, Grid
 from .netlist import DiffPairConnection
 from .router import (
     SQRT2, RouteParams, RouteResult, RoutingState,
-    _DIRS, _path_metrics, _stub_length, _turn_units,
+    _DIRS, _path_metrics, _stub_length, _turn_units, build_free_mask,
 )
 
 
@@ -137,16 +137,31 @@ def _coupled_astar(
     target_set = frozenset((li, c, r) for li, c, r in targets)
     tgt_cr = [(c, r) for _, c, r in targets]
 
+    # Per-net free masks, built once from the current occupancy (same overlay
+    # `router.astar` precomputes for the single-net search) so each expansion's
+    # freeness check is a direct array index instead of a `RoutingState.is_free`
+    # call (a dict lookup + set scan) — done twice per node here (once per
+    # trace), and up to three times per diagonal candidate (the corner-cutting
+    # check), so this was the hottest part of the coupled search.
+    free_p = build_free_mask(state, net_id_p)
+    free_n = build_free_mask(state, net_id_n)
+
     def is_free_pair(li: int, c: int, r: int) -> bool:
         cn, rn = c + dc_off, r + dr_off
-        if not grid.in_bounds(c, r) or not grid.in_bounds(cn, rn):
+        if not (0 <= c < nx and 0 <= r < ny and 0 <= cn < nx and 0 <= rn < ny):
             return False
-        return (state.is_free(li, c, r, net_id_p)
-                and state.is_free(li, cn, rn, net_id_n))
+        return bool(free_p[li, r, c]) and bool(free_n[li, rn, cn])
 
     def can_via_pair(c: int, r: int) -> bool:
-        return (state.can_via(c, r, net_id_p)
-                and state.can_via(c + dc_off, r + dr_off, net_id_n))
+        cn, rn = c + dc_off, r + dr_off
+        for dc, dr in grid._via_stencil:
+            cc, rr = c + dc, r + dr
+            ccn, rrn = cn + dc, rn + dr
+            if not (0 <= cc < nx and 0 <= rr < ny and 0 <= ccn < nx and 0 <= rrn < ny):
+                return False
+            if not free_p[:, rr, cc].all() or not free_n[:, rrn, ccn].all():
+                return False
+        return True
 
     def h(c: int, r: int) -> float:
         best = math.inf

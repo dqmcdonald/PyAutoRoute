@@ -138,6 +138,53 @@ def _centroid(conn):
     return ((conn.a.cx + conn.b.cx) / 2.0, (conn.a.cy + conn.b.cy) / 2.0)
 
 
+class _IndexPool:
+    """A mutable set of ints supporting O(1) membership, add, discard, and
+    uniform random choice.
+
+    Backs `_Annealer._routed`/`_unrouted`. Plain `set` gives O(1) membership
+    and add/discard, but `random.choice` needs a sequence — materialising one
+    via `tuple(some_set)` is O(len(set)), and `_propose` draws a random
+    routed/unrouted connection on every SA iteration, so that cost was paid
+    every iteration for the *whole* pool, not just the one index drawn. A
+    parallel list + position map gets random choice down to O(1) too, with
+    O(1) add/discard via swap-with-last-then-pop.
+    """
+    __slots__ = ("_list", "_pos")
+
+    def __init__(self, items=()) -> None:
+        self._list: list[int] = list(items)
+        self._pos: dict[int, int] = {v: i for i, v in enumerate(self._list)}
+
+    def __contains__(self, idx: int) -> bool:
+        return idx in self._pos
+
+    def __len__(self) -> int:
+        return len(self._list)
+
+    def __bool__(self) -> bool:
+        return bool(self._list)
+
+    def add(self, idx: int) -> None:
+        if idx in self._pos:
+            return
+        self._pos[idx] = len(self._list)
+        self._list.append(idx)
+
+    def discard(self, idx: int) -> None:
+        pos = self._pos.pop(idx, None)
+        if pos is None:
+            return
+        last = self._list.pop()
+        if pos < len(self._list):        # idx wasn't already the last entry
+            self._list[pos] = last
+            self._pos[last] = pos
+
+    def choice(self, rng: random.Random) -> int:
+        """A uniformly-random member in O(1). The pool must be non-empty."""
+        return self._list[rng.randrange(len(self._list))]
+
+
 class _Annealer:
     def __init__(self, state: RoutingState, connections, results, params: AnnealParams):
         """Set up the annealer over an already-committed routing.
@@ -162,10 +209,12 @@ class _Annealer:
                                    dtype=float).reshape(-1, 2)
         self._tree = cKDTree(self._centroids) if len(self.conns) else None
 
-        # Live routed/unrouted index sets, kept in sync by `_apply`/`_revert`
-        # so `_propose` and `_rip_cluster` never rescan all M results.
-        self._routed = {i for i, r in enumerate(self.results) if r is not None}
-        self._unrouted = {i for i, r in enumerate(self.results) if r is None}
+        # Live routed/unrouted index pools, kept in sync by `_apply`/`_revert`
+        # so `_propose` and `_rip_cluster` never rescan all M results (and never
+        # materialise the whole pool just to draw one random index — see
+        # `_IndexPool`).
+        self._routed = _IndexPool(i for i, r in enumerate(self.results) if r is not None)
+        self._unrouted = _IndexPool(i for i, r in enumerate(self.results) if r is None)
 
         # Running energy total, maintained incrementally (see `_apply`).
         self.E = _energy(self.results, self.via_weight, self.p.unrouted_weight)
@@ -300,13 +349,13 @@ class _Annealer:
         """
         n = len(self.conns)
         if self._unrouted and self.rng.random() < 0.5:
-            return self._rip_cluster(self.rng.choice(tuple(self._unrouted)),
+            return self._rip_cluster(self._unrouted.choice(self.rng),
                                      shuffle=False)
 
         r = self.rng.random()
         if self._routed and r < 0.7:
             # rip a routed cluster + reroute in a fresh order to shorten the wiring
-            return self._rip_cluster(self.rng.choice(tuple(self._routed)),
+            return self._rip_cluster(self._routed.choice(self.rng),
                                      shuffle=True)
         if n >= 2 and r < 0.9:
             i, j = self.rng.sample(range(n), 2)

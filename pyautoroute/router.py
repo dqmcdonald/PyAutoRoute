@@ -468,6 +468,29 @@ class RoutingState:
 
 # --- A* single-connection router ----------------------------------------------
 
+def build_free_mask(state: RoutingState, net_id: int) -> np.ndarray:
+    """Boolean free mask for `net_id` over the whole grid, all layers.
+
+    A node is free iff the static grid permits it (FREE or already owned by
+    this net) and no *other* net's committed copper covers it — the same
+    full-grid overlay `astar`'s `_precompute` builds internally, factored out
+    so other searches (the diff-pair coupled A*) can also trade a per-
+    expansion `RoutingState.is_free` call (dict lookup + set scan) for a
+    direct array index.
+
+    Args:
+        state: the routing state (occupancy).
+        net_id: the routing net's id.
+
+    Returns:
+        A ``(n_layers, ny, nx)`` boolean array.
+    """
+    owner = state.grid.owner
+    free = (owner == FREE) | (owner == net_id)
+    free &= (state.cover_owner == _COVER_EMPTY) | (state.cover_owner == net_id)
+    return free
+
+
 def astar(state: RoutingState, net_id: int,
           sources: list[tuple[int, int, int]],
           targets: list[tuple[int, int, int]],

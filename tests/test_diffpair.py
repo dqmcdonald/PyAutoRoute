@@ -213,6 +213,33 @@ def test_route_diff_pair_blocked_when_impossible():
     assert result is None
 
 
+def test_route_diff_pair_detours_around_obstacle_net():
+    """The coupled search must correctly treat another net's copper as blocked
+    (O3: `_coupled_astar` builds a per-net free mask once, from the same
+    static+cover overlay `router.build_free_mask` uses for the single-net
+    search, instead of calling `RoutingState.is_free` per expansion — this
+    exercises that mask under a real obstacle rather than an open board)."""
+    sp = _pad("DP+", 4, 10, fp_ref="U1")
+    sn = _pad("DP-", 4, 11, fp_ref="U1")
+    dp = _pad("DP+", 20, 10, fp_ref="U2")
+    dn = _pad("DP-", 20, 11, fp_ref="U2")
+    # A same-layer obstacle pad squarely on the direct path between the pairs,
+    # spanning both the + and - rows so the pair must detour around it.
+    obstacle = _pad("OBS", 12, 10, fp_ref="R1", w=2.0, h=3.0)
+    board = _board([sp, sn, dp, dn, obstacle])
+    spec = DiffPairSpec("DP+", "DP-")
+    conn = build_diff_pair_connections(board, [spec])[0]
+    state = _state(board, pitch=0.25)
+    gap = rules.default_rules().dp_gap_for("DP+", "DP-")
+    result = route_diff_pair(state, conn, gap)
+    assert result is not None
+    rp, rn = result
+    grid = state.grid
+    obs_c, obs_r = grid.nearest_node(obstacle.cx, obstacle.cy)
+    for path in (rp.path, rn.path):
+        assert not any(c == obs_c and r == obs_r for _, c, r in path)
+
+
 # --- bake_routing_state ------------------------------------------------------
 
 def test_bake_routing_state_blocks_other_nets():
