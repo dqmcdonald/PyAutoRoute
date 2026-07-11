@@ -677,6 +677,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
               "(it diversifies starting layouts across runs); running a single "
               "scattered placement")
     if cycles > 1:
+        if getattr(args, "diff_pairs", False):
+            print("  note: --diff-pairs is not yet supported with --cycles; "
+                  "differential pairs will be routed as single-ended nets")
         return _run_cycles(args, rep, input_path, out_path, rules, pitch,
                            board, fill_nets, cycles, init_stats=init_stats)
 
@@ -1042,6 +1045,9 @@ def run(args: argparse.Namespace, _print_version: bool = True,
 
     # Build node list: routing results + ground plane (if requested)
     new_nodes = _results_to_nodes(board, grid, final_results)
+    for _dp_conn, _rp, _rn in dp_route_results:
+        new_nodes += router.path_to_nodes(board, grid, _rp)
+        new_nodes += router.path_to_nodes(board, grid, _rn)
     if args.ground_plane:
         from . import groundplane
         margin = args.ground_plane_margin or rules.default_class.clearance

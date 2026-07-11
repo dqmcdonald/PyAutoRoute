@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from pyautoroute import netlist, rules, sexpr
+from pyautoroute import autoroute, geometry, netlist, pcb, rules, sexpr
 from pyautoroute.diffpair import bake_routing_state, route_diff_pair
 from pyautoroute.grid import Grid
 from pyautoroute.netlist import (
@@ -232,6 +232,43 @@ def test_bake_routing_state_blocks_other_nets():
     li, c, r = rp.path[len(rp.path) // 2]
     net_id_p = grid.net_id("DP+")
     assert grid.owner[li, r, c] == net_id_p
+
+
+# --- CLI end-to-end -----------------------------------------------------------
+
+_DP_BOARD_TEXT = (
+    '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
+    ' (footprint "x" (at 4 10) (property "Reference" "U1")'
+    '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Mask") (net "DP+"))'
+    '  (pad "2" smd rect (at 0 1.5) (size 1 1) (layers "F.Cu" "F.Mask") (net "DP-"))'
+    '  (pad "3" smd rect (at 0 8) (size 1 1) (layers "F.Cu" "F.Mask") (net "SIG1")))'
+    ' (footprint "x" (at 20 10) (property "Reference" "U2")'
+    '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Mask") (net "DP+"))'
+    '  (pad "2" smd rect (at 0 1.5) (size 1 1) (layers "F.Cu" "F.Mask") (net "DP-"))'
+    '  (pad "3" smd rect (at 0 8) (size 1 1) (layers "F.Cu" "F.Mask") (net "SIG1"))))'
+)
+
+
+def test_cli_diff_pairs_writes_pair_copper(tmp_path):
+    """Regression for the bug where --diff-pairs routed pairs but wrote no
+    copper for them: the pair nets ended up unrouted in the output file while
+    their board area was still blocked against other nets."""
+    src = tmp_path / "dp.kicad_pcb"
+    src.write_text(_DP_BOARD_TEXT, encoding="utf-8")
+    out = tmp_path / "dp_routed.kicad_pcb"
+    args = autoroute.build_parser().parse_args(
+        [str(src), "-o", str(out), "--diff-pairs", "--quiet"])
+    rc = autoroute.run(args)
+    assert rc == 0                                    # clean self-check
+
+    routed = pcb.load_board(out)
+    by_net: dict[str, int] = {}
+    for s in routed.segments:
+        by_net[s.net] = by_net.get(s.net, 0) + 1
+    assert by_net.get("DP+", 0) > 0
+    assert by_net.get("DP-", 0) > 0
+    assert by_net.get("SIG1", 0) > 0
+    assert geometry.clearance_violations(routed, rules.default_rules()) == []
 
 
 # --- impedance formula -------------------------------------------------------

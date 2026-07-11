@@ -132,6 +132,47 @@ def test_drill_violations_no_same_net_exemption():
     assert len(geometry.drill_violations(board, rules)) == 1
 
 
+def _two_class_rules(tight=0.1, wide=0.5):
+    """DesignRules with net "A" on a tight-clearance Default class and net "B"
+    on a wide-clearance "Wide" class (assignment mirrors a KiCad net-class
+    override), so `pair_clearance("A", "B") == wide` while `clearance_for("A")
+    == tight`."""
+    default_cls = rules_mod.NetClass(name="Default", clearance=tight,
+                                     track_width=0.2, via_diameter=0.6, via_drill=0.3)
+    wide_cls = rules_mod.NetClass(name="Wide", clearance=wide,
+                                  track_width=0.2, via_diameter=0.6, via_drill=0.3)
+    return rules_mod.DesignRules(
+        classes={"Default": default_cls, "Wide": wide_cls},
+        default_class=default_cls,
+        assignments={"B": "Wide"},
+        patterns=[],
+        min_clearance=0.0, min_track_width=0.2,
+        min_via_diameter=0.6, min_via_drill=0.3,
+        min_copper_edge_clearance=0.5, min_hole_to_hole=0.25,
+    )
+
+
+def test_clearance_violations_catches_cross_netclass_gap():
+    """A gap that clears the tight net's own clearance but not the pair's
+    (larger, cross-class) required clearance must still be flagged.
+
+    Net "A" (Default, clearance 0.1) and net "B" (Wide, clearance 0.5) are
+    0.3 mm apart: outside A's own clearance but inside the 0.5 mm pair
+    requirement (the larger of the two), so this is a real DRC violation.
+    """
+    rules = _two_class_rules(tight=0.1, wide=0.5)
+    pad_a = _pad("rect", 1.0, 1.0, cx=0, cy=0)
+    pad_a.net = "A"
+    pad_b = _pad("rect", 1.0, 1.0, cx=1.3, cy=0)   # edge-to-edge gap = 0.3 mm
+    pad_b.net = "B"
+    board = _board([pad_a, pad_b])
+    violations = geometry.clearance_violations(board, rules)
+    assert len(violations) == 1
+    layer, net_a, net_b, gap = violations[0]
+    assert {net_a, net_b} == {"A", "B"}
+    assert math.isclose(gap, 0.3, abs_tol=1e-6)
+
+
 def test_board_obstacles_reserve_npth_barrel_all_layers():
     """A layerless NPTH hole becomes an all-layer barrel keep-out."""
     board = _board([_hole(5, 5, drill=3.2)])
