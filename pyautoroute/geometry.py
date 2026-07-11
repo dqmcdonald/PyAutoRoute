@@ -337,13 +337,24 @@ def clearance_violations(board: Board, rules) -> list[tuple[str, str, str, float
     for o in obs:
         by_layer.setdefault(o.layer, []).append(o)
 
+    # The pair's required clearance is pair_clearance() — the larger of the two
+    # nets' class clearances — but each unordered pair is only visited once (via
+    # the j <= i dedup below), from whichever object's index comes first. If the
+    # probe were buffered by that object's *own* clearance, a pair whose gap
+    # falls between the tight net's clearance and the (larger) pair requirement
+    # would never surface: the tight side's probe is too small to reach the
+    # neighbour, and the wide side never gets a second look at the same pair.
+    # Buffering by the board-wide max clearance guarantees the probe always
+    # reaches any neighbour that could form a violation, regardless of which
+    # side's index is smaller.
+    max_clearance = max([c.clearance for c in rules.classes.values()]
+                        + [rules.min_clearance, 0.0])
+
     violations = []
     for layer, items in by_layer.items():
         tree = STRtree([o.geom for o in items])
         for i, o in enumerate(items):
-            need = max(rules.clearance_for(o.net), 0.0)
-            # query neighbours within the largest plausible clearance
-            probe = o.geom.buffer(need + 0.01)
+            probe = o.geom.buffer(max_clearance + 0.01)
             for j in tree.query(probe):
                 if j <= i:
                     continue

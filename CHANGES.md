@@ -5,6 +5,25 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.56.1
+
+- **fix**: `--diff-pairs` routed pairs but never wrote their copper to the
+  output board — the pair traces were reported as routed and their board area
+  was blocked against other nets, but zero segments/vias for the pair nets
+  reached the file. `--diff-pairs` also now warns (instead of silently doing
+  nothing) when combined with `--cycles`, which it doesn't yet support.
+- **fix**: ground-plane stitching vias (`--stitch-vias`) only checked
+  candidate positions against other-net *pad centres*, so a stitch via could
+  land on a routed track, another via, or a wide pad whose copper was near but
+  centre was far. They now reuse the same obstacle index (routed tracks, real
+  pad polygons, freshly-placed vias) as connectivity vias, and also respect
+  `min_hole_to_hole` spacing against other vias.
+- **fix**: the clearance self-check (`clearance_violations`) could miss
+  violations on boards with multiple net classes — it probed neighbours using
+  the inspecting net's own clearance instead of the larger pair requirement,
+  so a gap between the two could go undetected depending on iteration order.
+  It now probes by the board-wide maximum class clearance.
+
 ## 0.56.0
 
 - **new (experimental)**: `--place-polish-interleave K` (+
