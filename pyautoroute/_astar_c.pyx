@@ -69,12 +69,21 @@ cdef inline int heap_less(HeapItem* a, HeapItem* b) nogil:
     return a.counter < b.counter
 
 
-cdef inline void heap_push(Heap* h, HeapItem it) noexcept nogil:
-    cdef Py_ssize_t i, parent
+cdef inline bint heap_push(Heap* h, HeapItem it) noexcept nogil:
+    """Push onto the heap. Returns False (leaving `h` untouched) if growing the
+    backing array fails; the caller (which holds the GIL) must then raise —
+    `realloc` returning NULL on allocation failure previously fell through to
+    a NULL-pointer write below instead."""
+    cdef Py_ssize_t i, parent, new_cap
     cdef HeapItem tmp
+    cdef HeapItem* new_data
     if h.size >= h.cap:
-        h.cap = h.cap * 2
-        h.data = <HeapItem*>realloc(h.data, h.cap * sizeof(HeapItem))
+        new_cap = h.cap * 2
+        new_data = <HeapItem*>realloc(h.data, new_cap * sizeof(HeapItem))
+        if new_data == NULL:
+            return False
+        h.data = new_data
+        h.cap = new_cap
     h.data[h.size] = it
     i = h.size
     h.size += 1
@@ -87,6 +96,7 @@ cdef inline void heap_push(Heap* h, HeapItem it) noexcept nogil:
             i = parent
         else:
             break
+    return True
 
 
 cdef inline HeapItem heap_pop(Heap* h) noexcept nogil:
@@ -205,6 +215,12 @@ def astar(cnp.uint8_t[:, :, ::1] free_mask,
     heap.cap = 1024
     heap.size = 0
     heap.data = <HeapItem*>malloc(heap.cap * sizeof(HeapItem))
+    if heap.data == NULL:
+        cfree(sten_dc)
+        cfree(sten_dr)
+        cfree(via_off)
+        cfree(via_val)
+        raise MemoryError("out of memory allocating the A* search heap")
 
     cdef long long counter = 0
     cdef HeapItem it
@@ -228,7 +244,8 @@ def astar(cnp.uint8_t[:, :, ::1] free_mask,
             it.counter = counter; counter += 1
             it.state = s
             it.li = li; it.c = c; it.r = r; it.pdir = -1
-            heap_push(&heap, it)
+            if not heap_push(&heap, it):
+                raise MemoryError("out of memory growing the A* search heap")
 
         while heap.size > 0:
             it = heap_pop(&heap)
@@ -276,7 +293,8 @@ def astar(cnp.uint8_t[:, :, ::1] free_mask,
                     it.counter = counter; counter += 1
                     it.state = ns
                     it.li = li; it.c = nc; it.r = nr; it.pdir = di
-                    heap_push(&heap, it)
+                    if not heap_push(&heap, it):
+                        raise MemoryError("out of memory growing the A* search heap")
 
             if n_layers > 1 and _can_via(free_mask, sten_dc, sten_dr, n_sten,
                                          n_layers, nx, ny, c, r):
@@ -292,7 +310,8 @@ def astar(cnp.uint8_t[:, :, ::1] free_mask,
                         it.counter = counter; counter += 1
                         it.state = ns
                         it.li = nli; it.c = c; it.r = r; it.pdir = -1
-                        heap_push(&heap, it)
+                        if not heap_push(&heap, it):
+                            raise MemoryError("out of memory growing the A* search heap")
     finally:
         cfree(heap.data)
         cfree(sten_dc)

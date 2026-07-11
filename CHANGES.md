@@ -5,6 +5,38 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.56.3
+
+- **perf**: placement's incremental overlap-energy update (`_move_delta`)
+  rebuilt a full `STRtree` over every footprint body box on every move (twice,
+  in fact) — the dominant placement cost on boards above a few hundred
+  footprints. It now keeps a persistent tree, rebuilt only every so often, plus
+  a small direct check against footprints that moved since the last rebuild.
+  Verified identical output (a stress test compares the incremental overlap
+  energy against a from-scratch recomputation across thousands of randomized
+  moves/rejects). Gated to boards ≥ 500 footprints, below which shapely's
+  vectorised tree build is already faster than the bookkeeping —
+  `scripts/bench_o1_overlap_tree.py` measured up to 46% faster at 1600
+  footprints with no regression below the threshold.
+- **perf**: the routing annealer's `_propose` drew a random routed/unrouted
+  connection every SA iteration via `random.choice(tuple(some_set))`, which
+  materialises the *whole* set just to draw one element. A new `_IndexPool`
+  (list + position map, swap-remove on delete) gets this down to O(1)
+  regardless of how many connections are routed/unrouted —
+  `scripts/bench_o2_index_pool.py` measured over 1000x faster at 50,000
+  connections.
+- **perf**: the differential-pair coupled A* checked each trace's freeness via
+  `RoutingState.is_free` (a dict lookup + set scan) on every expansion instead
+  of the precomputed boolean free mask the single-net search uses. It now
+  builds the same per-net mask once per search
+  (`router.build_free_mask`, factored out of `astar`'s internal precompute) and
+  indexes it directly; verified bit-for-bit identical routes across 20
+  randomized obstacle layouts.
+- **fix**: the optional Cython A* core's binary heap grew its backing array
+  with `realloc` but never checked for allocation failure, so an out-of-memory
+  heap growth would write through a NULL pointer (segfault) instead of raising
+  `MemoryError`. Also guards the heap's initial allocation.
+
 ## 0.56.2
 
 - **fix**: `stamp_comment` wrote the provenance stamp into the in-memory tree

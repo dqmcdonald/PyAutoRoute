@@ -113,6 +113,19 @@ from .pcb import Board, Footprint, Pad, rotate
 # cools) rather than being dominated by the hot start. Mirrors `anneal`.
 _ACCEPT_WINDOW = 100
 
+# How many footprints may drift out of sync with `_Placer._overlap_tree` before
+# it is rebuilt from scratch. Bounds the O(dirty) direct-comparison fallback in
+# `_overlap_touching` so it stays cheap between the O(N log N) tree rebuilds.
+_OVERLAP_TREE_DIRTY_LIMIT = 32
+
+# Below this many footprints, shapely's (vectorised, C-level) STRtree build is
+# fast enough that rebuilding it fresh on every `_move_delta` call beats the
+# persistent-tree + dirty-set bookkeeping (measured with
+# scripts/bench_o1_overlap_tree.py: the bookkeeping's per-call overhead only
+# pays for itself above ~500 footprints). Boards this small keep the simple
+# always-rebuild path.
+_OVERLAP_TREE_MIN_N = 500
+
 _SILK_LAYERS = {"F.SilkS", "B.SilkS", "F.Silkscreen", "B.Silkscreen"}
 _COURTYARD_LAYERS = {"F.CrtYd", "B.CrtYd", "F.Courtyard", "B.Courtyard"}
 
@@ -528,6 +541,13 @@ class _Placer:
             bbox = _fp_courtyard_local_bbox(fp)
             if bbox is not None:
                 self._courtyard_local[id(fp)] = bbox
+        # Persistent overlap-query index (see `_rebuild_overlap_tree`): rebuilt
+        # from scratch only occasionally, not on every `_move_delta` call. Only
+        # worth the bookkeeping above `_OVERLAP_TREE_MIN_N` footprints (below
+        # that, always-rebuild-fresh is cheaper — see the constant's comment).
+        self._use_overlap_tree = len(self.boxed) >= _OVERLAP_TREE_MIN_N
+        self._overlap_tree: STRtree | None = None
+        self._dirty: set[int] = set()
 
         # Incremental-energy cache (populated by `_rebuild_cache`).
         #
@@ -711,6 +731,7 @@ class _Placer:
             self._build_index()
         self._boxes = [self._fp_box(fp) for fp in self.boxed]
         self._bounds = [b.bounds for b in self._boxes]
+        self._rebuild_overlap_tree()
         self._conn_len = [c.est_length for c in self._conns]
         self._rats = sum(self._conn_len)
         self._overlap = self._overlap_area(self._boxes) + \
@@ -879,12 +900,40 @@ class _Placer:
                 + self.p.spread_weight * self._spread
                 + self.p.decouple_weight * self._decouple)
 
+    def _rebuild_overlap_tree(self) -> None:
+        """(Re)build the persistent overlap-query index; clear the dirty set.
+
+        Called once from `_rebuild_cache` and periodically thereafter (see
+        `_move_delta`), rather than on every call to `_overlap_touching`.
+        Shapely's STRtree is immutable once built, so keeping it exactly
+        current would mean rebuilding it from scratch (O(N log N)) on every
+        move — twice, in fact, since `_move_delta` calls `_overlap_touching`
+        once to subtract the pre-move contribution and once to add the
+        post-move one — even though a typical move only touches one or two
+        footprints out of potentially hundreds. A no-op below
+        `_OVERLAP_TREE_MIN_N` (see `self._use_overlap_tree`).
+        """
+        if not self._use_overlap_tree:
+            return
+        self._overlap_tree = STRtree(self._boxes) if len(self._boxes) >= 2 else None
+        self._dirty = set()
+
     def _overlap_touching(self, idxs: set[int], boxes) -> float:
         """Overlap area of every pair/fixed-text touching a footprint in `idxs`.
 
         Each footprint-footprint pair with at least one endpoint in `idxs` is
         counted exactly once (pairs wholly inside `idxs` included once), plus the
         fixed board-silk-text overlap of the boxes in `idxs`.
+
+        When `boxes` is the live `self._boxes` cache and there are enough
+        footprints for it to pay off (`self._use_overlap_tree`), candidates are
+        drawn from the persistent `self._overlap_tree` (accurate for any
+        footprint that hasn't moved since it was last rebuilt) plus a direct
+        check against every currently "dirty" footprint (moved since the last
+        rebuild, so the tree's copy of its box is stale) — cheap since the
+        dirty set stays bounded by `_OVERLAP_TREE_DIRTY_LIMIT`. Otherwise (a
+        small board, or a caller passing its own unrelated box list) falls
+        back to a throwaway tree built fresh from `boxes`, as before.
 
         Args:
             idxs: boxed-indices of the moved footprints.
@@ -893,14 +942,20 @@ class _Placer:
         Returns:
             The total overlap (mm^2) attributable to the moved footprints.
         """
-        tree = STRtree(boxes) if len(boxes) >= 2 else None
+        using_persistent_tree = boxes is self._boxes and self._use_overlap_tree
+        tree = (self._overlap_tree if using_persistent_tree
+                else (STRtree(boxes) if len(boxes) >= 2 else None))
+        dirty = self._dirty if using_persistent_tree else frozenset()
         total = 0.0
         seen: set[tuple[int, int]] = set()
         for i in idxs:
             bi = boxes[i]
+            candidates: set[int] = set(dirty)
+            candidates.discard(i)
             if tree is not None:
-                for j in tree.query(bi):
-                    j = int(j)
+                candidates.update(int(j) for j in tree.query(bi) if int(j) not in dirty)
+            if candidates:
+                for j in candidates:
                     if j == i or not bi.intersects(boxes[j]):
                         continue
                     key = (i, j) if i < j else (j, i)
@@ -1052,14 +1107,23 @@ class _Placer:
                 {i: self._fp_cell[i] for i in idxs} if sp else None,
                 self._cell_counts.copy() if sp else None,
                 self._decouple,
-                {pi: self._decouple_len[pi] for pi in touched_dec})
+                {pi: self._decouple_len[pi] for pi in touched_dec},
+                # Overlap-tree bookkeeping (see `_overlap_touching`): the tree
+                # reference is cheap to save/restore whole, and a `_move_delta`
+                # in between may have both dirtied indices in `idxs` AND
+                # triggered a rebuild, so reverting the dirty *set* alone
+                # (rather than just the touched indices) is what makes this
+                # safe to nest inside `_energy_after_translate`'s probe/revert.
+                self._overlap_tree, frozenset(self._dirty))
 
     def _load_cache(self, saved) -> None:
         """Revert the energy cache to a `_save_cache` snapshot."""
         (self._rats, self._overlap, self._bbox, self._edge,
          self._containment, self._congestion,
          boxes, lens, self._spread, fp_cells, cc,
-         self._decouple, dec_lens) = saved
+         self._decouple, dec_lens,
+         self._overlap_tree, dirty) = saved
+        self._dirty = set(dirty)
         for i, (b, bnd) in boxes.items():
             self._boxes[i] = b
             self._bounds[i] = bnd
@@ -1212,6 +1276,13 @@ class _Placer:
         Args:
             idxs: boxed-indices of the footprints whose pose changed.
         """
+        # Mark the moved footprints dirty for the persistent overlap-query index
+        # (see `_overlap_touching`/`_rebuild_overlap_tree`) before anything else,
+        # so the upcoming subtract/add calls never trust a stale tree entry for
+        # them. Skipped below `_OVERLAP_TREE_MIN_N`, where that index isn't used.
+        if self._use_overlap_tree:
+            self._dirty.update(idxs)
+
         # Ratsnest: only connections incident on a moved footprint change length.
         seen_conns: set[int] = set()
         for fi in idxs:
@@ -1264,6 +1335,14 @@ class _Placer:
             nl = self._pair_distance(a, b)
             self._decouple_len[pi] = nl
             self._decouple += nl
+
+        # Rebuild the persistent overlap tree once enough footprints have
+        # drifted out of sync with it. Must happen last: the boxes for `idxs`
+        # are already refreshed to their post-move position by this point, so
+        # a rebuild here captures them correctly instead of freezing in their
+        # pre-move position.
+        if len(self._dirty) >= _OVERLAP_TREE_DIRTY_LIMIT:
+            self._rebuild_overlap_tree()
 
     def _energy_components(self) -> tuple[float, float, float]:
         """Return the ``(ratsnest, overlap_area, bbox_area)`` energy terms."""
