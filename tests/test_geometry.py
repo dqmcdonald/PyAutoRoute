@@ -8,7 +8,7 @@ import pathlib
 import pytest
 
 from pyautoroute import geometry, pcb, rules as rules_mod
-from pyautoroute.pcb import Board, OutlineShape, Pad
+from pyautoroute.pcb import Board, OutlineShape, Pad, Via
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PCB = REPO / "TestProjects" / "Test1" / "Test1.kicad_pcb"
@@ -27,10 +27,15 @@ def _hole(cx, cy, drill=3.2, pad_type="np_thru_hole", net="", layers=None, ref="
                drill=drill, fp_ref=ref)
 
 
-def _board(pads, copper=("F.Cu", "B.Cu")):
-    """Minimal Board carrying just the pads the geometry helpers read."""
+def _board(pads, copper=("F.Cu", "B.Cu"), free_vias=None):
+    """Minimal Board carrying just the pads/vias the geometry helpers read."""
     return Board(tree=None, copper_layers=list(copper), pads=pads,
-                 free_vias=[], segments=[], zones=[], outline=[])
+                 free_vias=free_vias or [], segments=[], zones=[], outline=[])
+
+
+def _via(cx, cy, drill=0.3, size=0.6, net="GND"):
+    return Via(cx=cx, cy=cy, size=size, drill=drill,
+              layers=("F.Cu", "B.Cu"), net=net)
 
 
 def test_rect_pad_area_and_center():
@@ -73,6 +78,35 @@ def test_outline_from_lines_stitched():
         lines.append(OutlineShape("line", {"start": a, "end": b}))
     poly = geometry.outline_to_polygon(lines)
     assert math.isclose(poly.area, 12.0, rel_tol=1e-9)
+
+
+def test_outline_interior_cutout_becomes_a_hole():
+    """A closed shape wholly inside the outer outline (a milled slot or a
+    large drilled hole drawn as its own Edge.Cuts loop) must be subtracted as
+    an interior hole, not merged in as extra board area."""
+    shapes = [
+        OutlineShape("rect", {"start": (0, 0), "end": (20, 20)}),   # outer, area 400
+        OutlineShape("rect", {"start": (8, 8), "end": (12, 12)}),   # cutout, area 16
+    ]
+    poly = geometry.outline_to_polygon(shapes)
+    assert math.isclose(poly.area, 400.0 - 16.0, rel_tol=1e-9)
+    assert len(poly.interiors) == 1
+    # the cutout's centre is now outside the board area
+    assert not poly.contains(geometry.Point(10, 10))
+    # a point elsewhere in the board is still inside
+    assert poly.contains(geometry.Point(2, 2))
+
+
+def test_outline_non_contained_shapes_still_union():
+    """Two overlapping-but-not-contained shapes (an L-shaped board built from
+    two rects) still add together — only wholly-contained shapes are holes."""
+    shapes = [
+        OutlineShape("rect", {"start": (0, 0), "end": (10, 10)}),
+        OutlineShape("rect", {"start": (5, 5), "end": (15, 15)}),
+    ]
+    poly = geometry.outline_to_polygon(shapes)
+    assert math.isclose(poly.area, 175.0, rel_tol=1e-9)   # 100 + 100 - 25 overlap
+    assert len(poly.interiors) == 0
 
 
 def test_inflate_grows_area():
@@ -129,6 +163,34 @@ def test_drill_violations_no_same_net_exemption():
     """Two holes on the same net still must respect hole-to-hole spacing."""
     rules = rules_mod.default_rules()
     board = _board([_hole(0, 0, net="GND"), _hole(3.3, 0, net="GND")])
+    assert len(geometry.drill_violations(board, rules)) == 1
+
+
+def test_board_drills_includes_free_vias():
+    """Vias (routing vias, and ground-plane connectivity/stitching vias — all
+    plain `(via ...)` nodes by the time the board is reloaded) must join the
+    drill set, or via-to-via and via-to-pad hole spacing is never
+    self-checked."""
+    board = _board([], free_vias=[_via(0, 0), _via(10, 10)])
+    drills = geometry.board_drills(board)
+    assert len(drills) == 2
+    assert all(d.plated for d in drills)
+
+
+def test_drill_violations_flags_close_vias():
+    rules = rules_mod.default_rules()       # min_hole_to_hole == 0.25
+    # edge-to-edge gap = 0.4 - 0.15 - 0.15 = 0.1 mm < 0.25 -> violation
+    close = _board([], free_vias=[_via(0, 0), _via(0.4, 0)])
+    assert len(geometry.drill_violations(close, rules)) == 1
+    far = _board([], free_vias=[_via(0, 0), _via(20, 0)])
+    assert geometry.drill_violations(far, rules) == []
+
+
+def test_drill_violations_flags_via_too_close_to_pad_hole():
+    rules = rules_mod.default_rules()
+    # THT pad drill 3.2 (r=1.6) and a via 0.3 away from its edge -> violation
+    board = _board([_hole(0, 0, drill=3.2, pad_type="thru_hole", net="GND")],
+                   free_vias=[_via(1.7, 0)])
     assert len(geometry.drill_violations(board, rules)) == 1
 
 

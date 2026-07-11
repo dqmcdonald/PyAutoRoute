@@ -114,6 +114,22 @@ def test_writer_strips_free_vias(tmp_path):
     assert len(reloaded.free_vias) == 0
 
 
+def test_stamp_comment_reuses_empty_slot(tmp_path):
+    """Regression: writing into an existing empty comment slot must actually
+    reach the output file, not just the in-memory tree (the parent
+    title_block's span is cleared, but the child comment node's stale span was
+    left in place, so the serializer re-emitted the original empty string)."""
+    text = (
+        '(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal))'
+        ' (title_block (comment 1 "")))'
+    )
+    board = _board_from_text(text)
+    pcb.stamp_comment(board, "PyAutoRoute v1.2.3 — routed 2026-07-11")
+    out = tmp_path / "stamped.kicad_pcb"
+    pcb.write_board(board, out, new_nodes=None, strip_free_vias=False)
+    assert 'comment 1 "PyAutoRoute v1.2.3' in out.read_text()
+
+
 @pytest.mark.skipif(not PCB.exists(), reason="Test1 board not present")
 def test_writer_appends_segment(tmp_path):
     board = pcb.load_board(PCB)
@@ -499,6 +515,51 @@ class TestFootprintConstraints:
         pcb.set_footprint_edge(fp, None)
         assert fp.edge_affinity is None
         assert pcb._footprint_edge_affinity(fp.fp_node) is None
+
+    def test_make_property_fallback_effects_is_valid_kicad(self):
+        """No property on the footprint has effects to borrow, so
+        _make_property_node's fallback must build the nested KiCad-valid
+        (effects (font (size ..) (thickness ..))) form, not flat atoms."""
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "U1" (at 10 20)'
+            '  (property "Reference" "U1")))'   # no effects anywhere -> fallback
+        )
+        board = _board_from_text(text)
+        fp = board.footprints[0]
+        pcb.set_footprint_edge(fp, "left")
+        prop = next(p for p in pcb.children(fp.fp_node, "property")
+                   if pcb.atoms_after_head(p)[0].text == "Autoroute-edge")
+        effects = pcb.child(prop, "effects")
+        font = pcb.child(effects, "font")
+        assert font is not None
+        assert pcb.floats(pcb.child(font, "size")) == [1.0, 1.0]
+        assert pcb.floats(pcb.child(font, "thickness")) == [0.15]
+
+    def test_make_property_borrowed_effects_is_deep_copied(self):
+        """Borrowed font effects must not be aliased into two parents — later
+        mutating one property's effects node (e.g. a subsequent
+        set_footprint_property re-spanning its node) must not corrupt the
+        donor property's effects."""
+        text = (
+            '(kicad_pcb (layers (0 "F.Cu") (2 "B.Cu"))'
+            ' (footprint "U1" (at 10 20)'
+            '  (property "Reference" "U1"'
+            '   (at 0 0 0) (layer "F.SilkS")'
+            '   (effects (font (size 1.5 1.5))))))'
+        )
+        board = _board_from_text(text)
+        fp = board.footprints[0]
+        pcb.set_footprint_edge(fp, "left")
+        ref_prop = next(p for p in pcb.children(fp.fp_node, "property")
+                        if pcb.atoms_after_head(p)[0].text == "Reference")
+        edge_prop = next(p for p in pcb.children(fp.fp_node, "property")
+                         if pcb.atoms_after_head(p)[0].text == "Autoroute-edge")
+        ref_effects = pcb.child(ref_prop, "effects")
+        edge_effects = pcb.child(edge_prop, "effects")
+        assert edge_effects is not ref_effects
+        edge_effects.span = (999, 999)
+        assert ref_effects.span != (999, 999)
 
     def test_set_footprint_overlap(self):
         text = (
