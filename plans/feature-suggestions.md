@@ -10,11 +10,10 @@ This is the project's **central roadmap**: the completed-feature plan docs
 performance/tuning docs point here for cross-cutting outstanding work, and link
 back for their own residual TODOs.
 
-> **Shipped items** have been moved to the [Done / shipped](#done--shipped)
-> section at the end of this document. The numbered items below keep their
-> original numbers even where a shipped item (currently #3, #4, #14) has been
-> lifted out, so the many cross-references (here and in the sibling plan docs)
-> stay valid — hence the gaps in the sequence.
+> **Shipped and removed items** live in the [Done / shipped](#done--shipped)
+> section at the end of this document. The active items below are numbered
+> sequentially (1–14) in the order they appear; shipped work is kept for the
+> record but out of that numbering.
 
 ## Context
 
@@ -29,8 +28,8 @@ The suggestions below extend that machinery rather than replacing it.
 
 ## Outstanding work — priority summary
 
-A quick index of the not-yet-done items below, ordered roughly highest to
-lowest priority. The ordering follows the [Top recommendations](#top-recommendations)
+A quick index of the active items below, ordered roughly highest to lowest
+priority. The ordering follows the [Top recommendations](#top-recommendations)
 section and the value tiers; the linked numbers jump to the full write-ups.
 
 1. **#1 End-to-end output-verification tests** — cheapest insurance on the list;
@@ -38,31 +37,31 @@ section and the value tiers; the linked numbers jump to the full write-ups.
    flag that writes optional copper.
 2. **#2 Bounded / windowed A\* search** — biggest performance win; architecture
    doc calls it "the highest-value next optimisation".
-3. **#5 Per-net-class clearance masks** — routes denser mixed-rule boards; the
+3. **#3 Per-net-class clearance masks** — routes denser mixed-rule boards; the
    grid currently uses one worst-case margin across all net classes.
-4. **#6 Drill geometry + hole-to-hole DRC** — closes a real self-check gap; most
+4. **#4 Drill geometry + hole-to-hole DRC** — closes a real self-check gap; most
    scaffolding already exists (largely done for vias; NPTH/THT routing-obstacle
    registration is what's left).
-5. **#7 kicad-cli DRC integration** — near-zero algorithmic cost given the
+5. **#5 kicad-cli DRC integration** — near-zero algorithmic cost given the
    zone-refill subprocess plumbing; covers whatever gap remains vs. KiCad's DRC.
-6. **#8 Auto-add mounting holes (`--mounting-holes`)** — common post-routing
-   task; shares the routing-obstacle registration work with #6.
-7. **#13 Diff pairs in `--cycles` and the GUI** — make the existing pre-route
+6. **#6 Auto-add mounting holes (`--mounting-holes`)** — common post-routing
+   task; shares the routing-obstacle registration work with #4.
+7. **#11 Diff pairs in `--cycles` and the GUI** — make the existing pre-route
    reachable from every entry point; the full annealing integration
    ([Top recommendations](#top-recommendations) item 6) is the larger follow-up.
-8. **#10 Machine-readable report (`--report-json`)** — CI gates and tooling; low
+8. **#8 Machine-readable report (`--report-json`)** — CI gates and tooling; low
    effort since the dataclasses already exist.
-9. **#9 Exact custom-pad polygons** — stops over-reserving space for rect/custom
+9. **#7 Exact custom-pad polygons** — stops over-reserving space for rect/custom
    pads that fall back to their bounding box.
-10. **#17 Keep the best-N results (`--keep-best`)** — write ranked sibling files
+10. **#14 Keep the best-N results (`--keep-best`)** — write ranked sibling files
     from `--runs` / `--place-runs` instead of discarding all but the winner.
-11. **#11 Length tuning / matching** — per-group `target_length` penalty in the
+11. **#9 Length tuning / matching** — per-group `target_length` penalty in the
     annealer.
-12. **#12 Smarter tuning** — the unbuilt `tune.py` roadmap (presets, better
+12. **#10 Smarter tuning** — the unbuilt `tune.py` roadmap (presets, better
     search, placement params, parallel eval, CSV/plots).
-13. **#15 Share one pipeline between CLI and GUI** — removes the `worker.py`
+13. **#12 Share one pipeline between CLI and GUI** — removes the `worker.py`
     duplication and the drift/feature-gap it causes.
-14. **#16 GUI test coverage** — the entire `gui/` package is untested.
+14. **#13 GUI test coverage** — the entire `gui/` package is untested.
 15. **Lower-value / polish** — stall-detection flag, parallel placement runs,
     pour-aware routing, per-layer H/V bias, teardrops, remaining test gaps.
 
@@ -109,7 +108,7 @@ and target, expanding the box and retrying on failure. The heuristic field is
 already precomputed (`router.py:310-327`), so clamping the frontier is a
 localized change. Biggest performance win; explicitly intended future work.
 
-### 5. Per-net-class clearance masks
+### 3. Per-net-class clearance masks
 
 The grid inflates **every** obstacle by a single global worst-case margin:
 `max_track`, `max_via`, and `_max_clear` are each taken as the maximum across
@@ -129,10 +128,10 @@ limitation.
 
 ## Medium-value features
 
-### 6. Drill geometry + hole-to-hole DRC
+### 4. Drill geometry + hole-to-hole DRC
 
 > Design record: [`drill-hole-plan.md`](drill-hole-plan.md) (covers this item
-> and item #8 together, plus a location-code extension for #8).
+> and item #6 together, plus a location-code extension for #6).
 
 The richest low-hanging item, because the scaffolding is already half-built:
 
@@ -156,9 +155,9 @@ exists.
 > (and routing vias generally) need the same hole-to-hole check and previously
 > got none. The remaining gap this item targets is narrower now: NPTH/THT
 > keep-outs as *routing obstacles* (not just a post-hoc self-check), which
-> item 8 (mounting holes) also needs.
+> item 6 (mounting holes) also needs.
 
-### 7. kicad-cli DRC integration
+### 5. kicad-cli DRC integration
 
 The CLI already locates `kicad-cli` for zone refill (`pcb.try_refill_zones`,
 called from `autoroute.run` whenever `--ground-plane` or zone pours are
@@ -187,7 +186,7 @@ ground-truth coverage for the cost of a subprocess call and a report parser.
   already expect, so it folds into the existing violation list rather than
   becoming a second, differently-formatted report.
 - Surfaced the same way the in-repo self-check is today: printed in the CLI
-  summary, included in `--log`, and (once item 10's `--report-json` exists)
+  summary, included in `--log`, and (once item 8's `--report-json` exists)
   in the machine-readable report as a separate `kicad_cli_drc` section so
   callers can tell the two sources apart.
 
@@ -195,7 +194,7 @@ ground-truth coverage for the cost of a subprocess call and a report parser.
 zone refill; the main work is the JSON report parser and deciding how deeply
 to fold KiCad's violation categories into the existing report shape.
 
-### 8. Auto-add mounting holes (`--mounting-holes`)
+### 6. Auto-add mounting holes (`--mounting-holes`)
 
 > Design record: [`drill-hole-plan.md`](drill-hole-plan.md), including the
 > `--hole-at` location-code grammar (`TL`/`TR`/`BL`/`BR`, edge midpoints, `C`,
@@ -222,7 +221,7 @@ can be mechanically fastened.
   circular keepout with `drill + clearance` radius) so the router doesn't
   route copper through them. `geometry.board_obstacles` currently ignores
   `np_thru_hole` pads (`pcb.py:124`); this would fix that gap and link
-  naturally with item 6 (drill geometry DRC).
+  naturally with item 4 (drill geometry DRC).
 - **Placement interaction**: when `--place` is used the holes should be
   **fixed** obstacles — placed before the annealer runs so footprints are
   pushed away from them. Simplest: inject the NPTH pads into the board before
@@ -236,10 +235,10 @@ can be mechanically fastened.
   merged into routable board area.
 
 **Effort:** low-to-medium. `make_npth` is a small node builder; the routing
-obstacle registration is the same fix needed for item 6; the corner-placement
+obstacle registration is the same fix needed for item 4; the corner-placement
 geometry is trivial. The main complexity is the placement interaction.
 
-### 9. Exact custom-pad polygons
+### 7. Exact custom-pad polygons
 
 `_base_pad_shape` renders circle/oval/roundrect/trapezoid exactly, but **rect,
 custom, and unknown shapes all fall back to their bounding box**
@@ -247,7 +246,7 @@ custom, and unknown shapes all fall back to their bounding box**
 reserving space and blocking valid routes. Shapely ≥ 2.0 (already a dependency)
 can build the true polygon from the pad's primitives.
 
-### 10. Machine-readable report (`--report-json`)
+### 8. Machine-readable report (`--report-json`)
 
 `report.py` already computes a full `RoutingStats` (total/routed/unrouted MST
 connections, length, vias, violations via `clearance_violations`) and, for
@@ -268,14 +267,14 @@ printed text. Low effort (the data already exists as dataclasses); useful
 immediately for exactly the kind of "did this PR make routing worse" check a
 project doing frequent routing-algorithm changes benefits from.
 
-### 11. Length tuning / matching
+### 9. Length tuning / matching
 
 The annealer minimizes `E = wirelength + via_weight·#vias + unrouted_weight·#unrouted`
 (`anneal.py:70-89`) with no length-matching term and fixed pad endpoints. Adding
 a per-group `target_length` penalty (clocks, buses, diff pairs) is a natural
 extension of the existing incremental energy bookkeeping.
 
-### 12. Smarter tuning
+### 10. Smarter tuning
 
 [`tuning.md:82-92`](tuning.md) lists an explicit, unbuilt roadmap for `tune.py`:
 baked-in default presets keyed by pad count/density (so `--auto` need not probe
@@ -284,7 +283,7 @@ large boards), smarter search than the coarse 3×3 grid (`tune.default_grid`,
 the sweep, parallel evaluation across configs/seeds, and CSV + plots output
 behind the `[viz]` extra.
 
-### 13. Diff pairs in `--cycles` and the GUI
+### 11. Diff pairs in `--cycles` and the GUI
 
 Today `--diff-pairs` is silently a no-op on two paths that don't go through
 `autoroute.run`'s main single-cycle flow:
@@ -326,7 +325,7 @@ pipeline in a daemon thread (`worker.py:_pipeline`) with live render, energy plo
 (`plots.py`), metrics, cooperative cancel, and a working Apply-to-Project with
 timestamped backup (`app.py:348`). The remaining gaps are targeted:
 
-### 15. Share one pipeline between CLI and GUI
+### 12. Share one pipeline between CLI and GUI
 
 `worker.py` **duplicates** the `autoroute.run` orchestration rather than sharing
 it (the `pipeline.place_board`/`route_board` refactor proposed in
@@ -335,13 +334,13 @@ parallelism, snapshot-file output, log output, and the coarse-grid warning, and
 the two paths can silently drift. Extracting a shared `pipeline` module removes
 the duplication.
 
-### 16. GUI test coverage
+### 13. GUI test coverage
 
 The entire `gui/` package is **untested** — no tests touch `Worker`, `RunConfig`,
 the event protocol, the queue-drain/collapse logic, or the Apply-to-Project
 backup/replace, despite [`gui-plan.md`](gui-plan.md) proposing exactly those.
 
-### 17. Keep the best-N routing and placement results (`--keep-best`)
+### 14. Keep the best-N routing and placement results (`--keep-best`)
 
 Today `--runs N` and `--place-runs N` each run N times but discard all but the
 single winner. A `--keep-best [N]` flag (default 3 when bare) would write the
@@ -425,15 +424,15 @@ If implementation effort is to be prioritized:
 6. **Diff pair annealing integration** — current implementation pre-routes pairs
    once and bakes them as fixed obstacles; integrating them into the rip-up/reroute
    annealing loop (treating each pair as an atomic unit) would allow global
-   optimisation across single-ended and diff pair nets together. Item 13 above
+   optimisation across single-ended and diff pair nets together. Item 11 above
    (`--cycles`/GUI wiring) is a smaller, more tractable first step in that
    direction.
 
 ## Done / shipped
 
-Completed and shipped work, moved here out of the active roadmap above. The
-shipped numbered items (#3, #4) keep their original numbers so cross-references
-elsewhere stay valid; #14 was removed rather than shipped.
+Completed and shipped work, moved here out of the active roadmap above. These
+items are done, so they no longer carry roadmap numbers; the "Recently landed"
+summary is the running changelog of what has closed.
 
 > **Recently landed** (see `CHANGES.md`):
 > - **Bounded A\* search** (`--search-margin`) — shipped in 0.25.0.
@@ -445,13 +444,13 @@ elsewhere stay valid; #14 was removed rather than shipped.
 > - **Partial / incremental re-routing** (`--existing-routes preserve`) — shipped;
 >   keeps existing copper, detects pre-routed connections via union-find, routes
 >   only the remainder. Fixes the doubled-tracks bug on re-route (`clear` mode
->   now also strips segments, not just vias). Closes item #4 below.
+>   now also strips segments, not just vias). Full write-up below.
 > - **Edge-aware placement + place↔route coupling** — shipped; see
 >   [`placement-improvements-plan.md`](placement-improvements-plan.md).
 > - **Interactive footprint constraints** (GUI click-to-set edge/lock/overlap) —
 >   shipped; see [`footprint-interaction-plan.md`](footprint-interaction-plan.md).
 > - **Differential pair routing** (`--diff-pairs`, `--diff-pair-gap`) — shipped in
->   0.38.0; see [`diffpair-plan.md`](diffpair-plan.md). Closes item #3 below.
+>   0.38.0; see [`diffpair-plan.md`](diffpair-plan.md). Full write-up below.
 > - **`--scatter` + ranked cycle summary** — shipped in 0.45.0. `--scatter`
 >   randomises all unlocked footprint positions/rotations before each `--cycles`
 >   pass, diversifying annealer starting layouts; `--cycles` now prints a ranked
@@ -489,7 +488,7 @@ elsewhere stay valid; #14 was removed rather than shipped.
 >   during a whole-repo review (see `CHANGES.md`) rather than built from this
 >   list — closes the item that would otherwise be proposed here.
 
-### 3. ✅ Differential pair routing (`--diff-pairs`) — **shipped in 0.38.0**
+### ✅ Differential pair routing (`--diff-pairs`) — shipped in 0.38.0
 
 Detects paired nets by naming convention (`+`/`-`, `P`/`N`, `_P`/`_N`) via
 `netlist.find_diff_pairs()`; routes them with a coupled A* in `diffpair.py` that
@@ -510,7 +509,7 @@ block). See [`diffpair-plan.md`](diffpair-plan.md) for the full design record.
 > (0.56.1), the routed pair copper was never written to the output file at
 > all — see item 1 above for why that went unnoticed.
 
-### 4. ✅ Incremental / partial re-routing (`--existing-routes preserve`) — **shipped**
+### ✅ Incremental / partial re-routing (`--existing-routes preserve`) — shipped
 
 `--existing-routes {clear,preserve}` (default `clear`). In `preserve` mode: keep
 existing copper, run a layer-aware union-find over segments/vias/THT pads to
@@ -519,7 +518,7 @@ connections to the router, and treat all existing copper as obstacles. `clear` m
 (the new default) also strips segments before writing — fixing the doubled-tracks
 bug that occurred when re-routing an already-routed board.
 
-### 14. ~~Wire up the "Suggest" button~~ — **removed**
+### ~~Wire up the "Suggest" button~~ — removed
 
 The Suggest… button and its associated `_suggest` placeholder, `on_suggest`
 callback parameter, `auto_probe_time` field in `RunConfig`, and the

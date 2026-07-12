@@ -1,7 +1,8 @@
 # Differential Pair Routing Plan — v0.38.0
 
 > **Status: shipped** (PR #39, 2026-06-02). See `CHANGES.md` for the summary
-> and `plans/feature-suggestions.md` item #2 for the original proposal.
+> and the differential pair routing entry in `plans/feature-suggestions.md`'s
+> Done / shipped section for the original proposal.
 
 ## Problem
 
@@ -85,7 +86,8 @@ layer / multi-layer routes show `—`.
 - **Annealing integration**: diff pairs are pre-routed once and baked as fixed
   obstacles. Integrating them as atomic units into the rip-up/reroute annealing
   loop would allow global optimisation across single-ended and diff pair nets.
-  (Tracked in `plans/feature-suggestions.md` top-recommendations item #4.)
+  (Tracked in `plans/feature-suggestions.md` as the "Diff pair annealing
+  integration" top recommendation.)
 - **Inner-layer / stripline impedance**: `_zdiff` uses the microstrip formula only;
   routes that cross layers show `—` for impedance.
 - **Length-matching meanders**: if a pair's source and destination pad layouts

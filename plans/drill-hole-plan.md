@@ -2,7 +2,7 @@
 
 Status: **Shipped** (0.49.0 drill DRC; 0.50.0 mounting holes; 0.51.0 GUI).
 All four phases landed. This is a design record. It expands
-roadmap items **#5 (drill geometry + hole-to-hole DRC)** and **#6 (auto-add
+roadmap items **#4 (drill geometry + hole-to-hole DRC)** and **#6 (auto-add
 mounting holes, `--mounting-holes`)** from
 [`feature-suggestions.md`](feature-suggestions.md), and adds the requested
 extension: **choosing how many holes and where** via corner codes (`TL`, `TR`,
@@ -112,7 +112,7 @@ Key points the builder must honour:
 
 ## Components
 
-### A. Drill geometry + hole-to-hole DRC (item #5)
+### A. Drill geometry + hole-to-hole DRC (item #4)
 
 #### A1. A drill-geometry helper
 
