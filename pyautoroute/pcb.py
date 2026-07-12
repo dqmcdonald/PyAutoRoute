@@ -946,6 +946,26 @@ def zone_fill_nets(board: Board) -> set[str]:
             if z.get("fill_enabled") and z.get("net")}
 
 
+def _locate_kicad_cli() -> str | None:
+    """Find the ``kicad-cli`` binary on ``PATH`` or at common macOS install paths.
+
+    Returns:
+        The executable path, or `None` if it can't be found.
+    """
+    import shutil
+
+    kicad_cli = shutil.which("kicad-cli")
+    if kicad_cli is None:
+        for candidate in [
+            "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
+            "/Applications/Kicad9/KiCad.app/Contents/MacOS/kicad-cli",
+        ]:
+            if Path(candidate).exists():
+                kicad_cli = candidate
+                break
+    return kicad_cli
+
+
 def try_refill_zones(board_path: Path) -> bool:
     """Attempt to refill copper zones in *board_path* using ``kicad-cli``.
 
@@ -959,18 +979,9 @@ def try_refill_zones(board_path: Path) -> bool:
         ``True`` if ``kicad-cli`` ran and exited 0; ``False`` otherwise
         (tool not found, non-zero exit, or any exception).
     """
-    import shutil
     import subprocess
 
-    kicad_cli = shutil.which("kicad-cli")
-    if kicad_cli is None:
-        for candidate in [
-            "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
-            "/Applications/Kicad9/KiCad.app/Contents/MacOS/kicad-cli",
-        ]:
-            if Path(candidate).exists():
-                kicad_cli = candidate
-                break
+    kicad_cli = _locate_kicad_cli()
     if kicad_cli is None:
         return False
     try:
@@ -984,6 +995,93 @@ def try_refill_zones(board_path: Path) -> bool:
         return result.returncode == 0
     except Exception:
         return False
+
+
+@dataclass
+class DrcViolation:
+    """One violation from ``kicad-cli``'s real DRC report (see `run_kicad_cli_drc`)."""
+    severity: str    # "error", "warning", "exclusion", ... (kicad-cli's own label)
+    kind: str        # kicad-cli's rule id, e.g. "clearance", "silk_over_copper"
+    description: str
+
+
+def run_kicad_cli_drc(board_path: str | Path) -> list[DrcViolation] | None:
+    """Run ``kicad-cli``'s real DRC on *board_path* and parse its JSON report.
+
+    This is a best-effort ground-truth check layered on top of — not
+    replacing — the fast in-repo self-check (`geometry.clearance_violations` /
+    `geometry.drill_violations`): it papers over gaps the local checker
+    doesn't model (courtyard overlap, silkscreen-over-pad, zone-fill rule
+    violations, and anything else KiCad's own DRC covers) using the same
+    ``kicad-cli`` discovery this module already relies on for zone refill.
+
+    Only the ``violations`` section of the report is read — schematic-parity
+    and unconnected-item checks require a linked schematic/netlist this tool
+    doesn't manage, and aren't requested (``--schematic-parity`` is never
+    passed), so those sections should be absent regardless.
+
+    Args:
+        board_path: path to the ``.kicad_pcb`` file to check.
+
+    Returns:
+        A list of `DrcViolation` (empty means clean), or `None` if
+        ``kicad-cli`` isn't available, the run failed, or its report
+        couldn't be parsed. Callers must treat `None` as "unavailable", not
+        "clean" — it is never returned alongside partial results.
+    """
+    import json
+    import subprocess
+    import tempfile
+
+    kicad_cli = _locate_kicad_cli()
+    if kicad_cli is None:
+        return None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        report_path = Path(tmp) / "drc.json"
+        try:
+            subprocess.run(
+                [kicad_cli, "pcb", "drc",
+                 "--format", "json",
+                 "--output", str(report_path),
+                 str(board_path)],
+                capture_output=True, text=True, timeout=120, check=False,
+            )
+            if not report_path.exists():
+                return None
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    return _parse_kicad_drc_report(report)
+
+
+def _parse_kicad_drc_report(report: dict) -> list[DrcViolation]:
+    """Flatten a ``kicad-cli`` JSON DRC report into `DrcViolation`s.
+
+    Defensive by design: the exact report schema has drifted across KiCad
+    versions, so every field is read with a fallback and a malformed entry is
+    skipped rather than raising — a parsing hiccup should never take down an
+    otherwise-successful routing run.
+
+    Args:
+        report: the parsed JSON DRC report (``kicad-cli pcb drc --format json``).
+
+    Returns:
+        One `DrcViolation` per entry in the report's ``violations`` list.
+    """
+    out: list[DrcViolation] = []
+    if not isinstance(report, dict):
+        return out
+    for v in report.get("violations", None) or []:
+        if not isinstance(v, dict):
+            continue
+        out.append(DrcViolation(
+            severity=str(v.get("severity", "error")),
+            kind=str(v.get("type", "unknown")),
+            description=str(v.get("description", "")),
+        ))
+    return out
 
 
 # --- node builders for the writer --------------------------------------------

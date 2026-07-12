@@ -36,7 +36,7 @@ Anything it cannot route is **left unrouted and reported** — never drawn as a 
 
 - Python ≥ 3.10 with **numpy**, **scipy**, **shapely ≥ 2.0**.
 - **matplotlib** — optional, only for the GUI (`pip install pyautoroute[gui]`).
-- **KiCad** — optional, only if you want to run `kicad-cli pcb drc` to independently verify the output. Not needed to route.
+- **KiCad** — optional. If `kicad-cli` is found on `PATH`, PyAutoRoute uses it automatically to refill copper zones and to run a real DRC pass as ground-truth verification (`--no-kicad-drc` to skip the latter). Not needed to route.
 
 ## Install
 
@@ -167,6 +167,7 @@ The original file is never modified unless you pass `--in-place` — a routed co
 | `--log [FILE]` | Write a verbose log of the input parameters and routing/annealing progress. Bare `--log` writes `<output>.log`; `--log FILE` uses the given path. |
 | `--silk-labels` | Before routing, move footprint **Value** text to the silkscreen layer (`F.SilkS`/`B.SilkS`) and **Reference** text to the fabrication layer (`F.Fab`/`B.Fab`). KiCad libraries often place both on Fab by default; this puts values where they appear on the physical board while keeping references on fab where they are useful for assembly drawings but out of the way. Off by default. Values and references can also be moved independently with the standalone `pyautoroute-fix --values` / `--refs` commands. |
 | `--existing-routes {clear,preserve}` | How to handle tracks already in the input board. `clear` (default): strip all existing tracks and vias before routing, so re-routing never doubles tracks. `preserve`: keep existing copper, detect which connections it already satisfies, and route only the remainder — treating existing copper as obstacles. Enables partial routing of a hand-started board. |
+| `--no-kicad-drc` | Skip the extra real-DRC pass via `kicad-cli` (see [Verifying with KiCad](#verifying-with-kicad-automatic)). Runs automatically whenever `kicad-cli` is found on `PATH`; this opts out if the extra subprocess time isn't wanted. |
 | `--quiet` | Suppress the live progress display (final summary only). |
 | `--version` | Print the version and exit. (The version is also printed on startup and written to the `--log` header.) |
 
@@ -427,6 +428,7 @@ positions and the outline, inspect the result in KiCad before committing.
   vias:          51
   self-check:    clean (0 clearance violations)
   drill-check:   clean (0 hole-to-hole violations)
+  kicad-cli DRC: clean
   runtime:       12.34s real, 12.10s cpu
 ```
 
@@ -437,9 +439,19 @@ reports any pair of through-hole/NPTH holes closer than the board's
 copper is never routed across a barrel. Either check finding a violation makes
 the exit code non-zero. Open the `*_routed.kicad_pcb` in KiCad to inspect it.
 
-## Verifying with KiCad (optional)
+## Verifying with KiCad (automatic)
 
-If KiCad is installed, you can independently confirm the result:
+When `kicad-cli` is on `PATH`, PyAutoRoute runs it automatically after writing
+the output — a **real DRC** pass layered on top of (not instead of) the two
+in-repo checks above, catching anything they don't model (courtyard overlap,
+silkscreen-over-pad, zone-fill rule violations, and anything else KiCad's own
+DRC covers). `error`-severity findings make the exit code non-zero, same as a
+self-check violation; `warning`-severity findings are reported but don't fail
+the run. Skip it with `--no-kicad-drc` if the extra subprocess time isn't
+wanted, or if `kicad-cli` isn't installed it's silently skipped with a note —
+either way, nothing else about the run changes.
+
+You can also run it yourself at any time, independently of PyAutoRoute:
 
 ```bash
 kicad-cli pcb drc --severity-error MyBoard_routed.kicad_pcb

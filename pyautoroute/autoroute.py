@@ -780,9 +780,10 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         placed_board = pcb.load_board(out_path)
         violations = geometry.clearance_violations(placed_board, rules)
         drill_viol = geometry.drill_violations(placed_board, rules)
+        kicad_viol = _run_kicad_drc_check(args, rep, out_path)
         rep.done()
         _report_placed(rep, out_path, board, violations, drill_viol)
-        return _finish(rep, args, out_path, placed_board, violations, drill_viol)
+        return _finish(rep, args, out_path, placed_board, violations, drill_viol, kicad_viol)
 
     if args.auto:
         from . import tune
@@ -1090,6 +1091,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
     routed_board = pcb.load_board(out_path)
     violations = geometry.clearance_violations(routed_board, rules)
     drill_viol = geometry.drill_violations(routed_board, rules)
+    kicad_viol = _run_kicad_drc_check(args, rep, out_path)
     final_stats = routing_stats(routed_board, rules, exclude=args.exclude_net)
     rep.done()
 
@@ -1112,7 +1114,7 @@ def run(args: argparse.Namespace, _print_version: bool = True,
         rep.log(table)
 
     _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
-    return _finish(rep, args, out_path, routed_board, violations, drill_viol)
+    return _finish(rep, args, out_path, routed_board, violations, drill_viol, kicad_viol)
 
 
 def _save_cycle(args, rules, rep, out_path: Path, cr, cycle_num: int,
@@ -1384,6 +1386,7 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
     routed_board = pcb.load_board(out_path)
     violations = geometry.clearance_violations(routed_board, rules)
     drill_viol = geometry.drill_violations(routed_board, rules)
+    kicad_viol = _run_kicad_drc_check(args, rep, out_path)
     final_stats = routing_stats(routed_board, rules, exclude=args.exclude_net)
     rep.done()
 
@@ -1392,7 +1395,7 @@ def _run_cycles(args, rep, input_path, out_path, rules, pitch, board, fill_nets,
             via_weight=args.via_weight, unrouted_weight=args.unrouted_weight,
             drill_viol=drill_viol)
     _maybe_replace_in_place(args, input_path, out_path, init_stats, final_stats, rep)
-    return _finish(rep, args, out_path, routed_board, violations, drill_viol)
+    return _finish(rep, args, out_path, routed_board, violations, drill_viol, kicad_viol)
 
 
 def _maybe_replace_in_place(
@@ -1438,8 +1441,48 @@ def _maybe_replace_in_place(
         rep.log(msg)
 
 
+def _run_kicad_drc_check(args, rep: Reporter, out_path: Path) -> list:
+    """Run kicad-cli's real DRC on the written output, if available and wanted.
+
+    A best-effort ground-truth layer on top of the always-on in-repo
+    self-check (see `pcb.run_kicad_cli_drc`): reuses the same discovery
+    `pcb.try_refill_zones` already relies on, so this stays a zero-cost
+    enhancement when kicad-cli isn't installed, and `--no-kicad-drc` opts out
+    even when it is.
+
+    Args:
+        args: the parsed CLI namespace (uses ``args.no_kicad_drc``).
+        rep: the reporter (for logging the same lines).
+        out_path: the written board to check.
+
+    Returns:
+        The `pcb.DrcViolation` list (empty means clean or skipped/unavailable —
+        callers that need to distinguish "clean" from "not run" should check
+        `args.no_kicad_drc` themselves).
+    """
+    if args.no_kicad_drc:
+        return []
+    result = pcb.run_kicad_cli_drc(out_path)
+    if result is None:
+        rep.log("kicad-cli DRC skipped — kicad-cli not found or failed")
+        print("  note: kicad-cli not available; skipping the extra real-DRC pass")
+        return []
+    if result:
+        errors = [v for v in result if v.severity.lower() == "error"]
+        warnings = [v for v in result if v.severity.lower() != "error"]
+        msg = f"kicad-cli DRC: {len(errors)} error(s), {len(warnings)} warning(s)"
+        rep.log(msg)
+        print(f"  {msg}")
+        for v in (errors or warnings)[:3]:
+            print(f"    {v.severity}: {v.kind}: {v.description}")
+    else:
+        rep.log("kicad-cli DRC: clean")
+        print("  kicad-cli DRC: clean")
+    return result
+
+
 def _finish(rep: Reporter, args, out_path: Path, board, violations,
-            drill_viol=()) -> int:
+            drill_viol=(), kicad_viol=()) -> int:
     """Report timing and close the log; the shared tail of the routing and
     place-only paths.
 
@@ -1450,9 +1493,13 @@ def _finish(rep: Reporter, args, out_path: Path, board, violations,
         board: the reloaded output board (unused; kept for signature symmetry).
         violations: the clearance self-check violations (empty == clean).
         drill_viol: the hole-to-hole self-check violations (empty == clean).
+        kicad_viol: `pcb.DrcViolation`s from the optional kicad-cli real-DRC
+            pass (empty means clean, skipped, or unavailable). Only
+            ``severity == "error"`` entries affect the exit code — warnings
+            are informational, matching the self-checks' own error-only gate.
 
     Returns:
-        Process exit code: 0 if both self-checks are clean, else 2.
+        Process exit code: 0 if every check is clean, else 2.
     """
     real, cpu = rep.runtime()
     timing = f"runtime:       {real:.2f}s real, {cpu:.2f}s cpu"
@@ -1462,7 +1509,8 @@ def _finish(rep: Reporter, args, out_path: Path, board, violations,
     if rep.log_file is not None and not args.quiet:
         print(f"  log:           {_resolve_log_path(args, out_path)}")
     rep.close()
-    return 0 if not (violations or drill_viol) else 2
+    kicad_errors = any(v.severity.lower() == "error" for v in kicad_viol)
+    return 0 if not (violations or drill_viol or kicad_errors) else 2
 
 
 def _report(rep: Reporter, out_path, n_conns, routed, unrouted, length, vias,
@@ -2246,6 +2294,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "preserve: keep existing copper, detect which connections are already "
                         "satisfied, route only the remainder, treating existing copper as "
                         "obstacles — enabling partial routing of a partially hand-routed board.")
+    p.add_argument("--no-kicad-drc", action="store_true",
+                   help="skip the extra real-DRC pass via kicad-cli after writing the output "
+                        "(runs automatically whenever kicad-cli is found on PATH — a ground-"
+                        "truth check layered on top of the always-on in-repo self-check; this "
+                        "opts out if the extra subprocess time isn't wanted)")
     p.add_argument("--quiet", action="store_true", help="suppress live progress display")
     return p
 
