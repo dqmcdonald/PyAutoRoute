@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 import pathlib
+import subprocess
 
 import pytest
 
@@ -860,3 +862,104 @@ def test_gr_text_group_fps_excludes_ungrouped_text():
     )
     board = _board_from_text(txt)
     assert gr_text_group_fps(board) == {}
+
+
+# --- kicad-cli real DRC (F3) ---------------------------------------------------
+
+def _fake_run_writes_report(text: str):
+    """A `subprocess.run` stand-in that writes *text* to the ``--output`` path
+    the real ``kicad-cli pcb drc`` call would target, mimicking its side effect."""
+    def _run(cmd, **kwargs):
+        out_path = pathlib.Path(cmd[cmd.index("--output") + 1])
+        out_path.write_text(text, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+    return _run
+
+
+def test_locate_kicad_cli_uses_path(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/kicad-cli")
+    assert pcb._locate_kicad_cli() == "/usr/bin/kicad-cli"
+
+
+def test_locate_kicad_cli_not_found_returns_none(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(pathlib.Path, "exists", lambda self: False)
+    assert pcb._locate_kicad_cli() is None
+
+
+def test_run_kicad_cli_drc_returns_none_when_unavailable(monkeypatch):
+    monkeypatch.setattr(pcb, "_locate_kicad_cli", lambda: None)
+    assert pcb.run_kicad_cli_drc("board.kicad_pcb") is None
+
+
+def test_run_kicad_cli_drc_parses_violations(monkeypatch, tmp_path):
+    monkeypatch.setattr(pcb, "_locate_kicad_cli", lambda: "/usr/bin/kicad-cli")
+    report = {
+        "violations": [
+            {"severity": "error", "type": "clearance",
+             "description": "Clearance violation between X and Y"},
+            {"severity": "warning", "type": "silk_over_copper",
+             "description": "Silkscreen clipped by solder mask"},
+        ]
+    }
+    monkeypatch.setattr("subprocess.run", _fake_run_writes_report(json.dumps(report)))
+    result = pcb.run_kicad_cli_drc(tmp_path / "board.kicad_pcb")
+    assert result is not None
+    assert len(result) == 2
+    assert result[0].severity == "error" and result[0].kind == "clearance"
+    assert result[1].severity == "warning" and result[1].kind == "silk_over_copper"
+
+
+def test_run_kicad_cli_drc_clean_report_is_empty_list(monkeypatch, tmp_path):
+    monkeypatch.setattr(pcb, "_locate_kicad_cli", lambda: "/usr/bin/kicad-cli")
+    monkeypatch.setattr("subprocess.run",
+                        _fake_run_writes_report(json.dumps({"violations": []})))
+    result = pcb.run_kicad_cli_drc(tmp_path / "board.kicad_pcb")
+    assert result == []
+    assert result is not None      # clean (empty list) must stay distinct from unavailable (None)
+
+
+def test_run_kicad_cli_drc_malformed_report_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setattr(pcb, "_locate_kicad_cli", lambda: "/usr/bin/kicad-cli")
+    monkeypatch.setattr("subprocess.run", _fake_run_writes_report("not valid json"))
+    assert pcb.run_kicad_cli_drc(tmp_path / "board.kicad_pcb") is None
+
+
+def test_run_kicad_cli_drc_subprocess_failure_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setattr(pcb, "_locate_kicad_cli", lambda: "/usr/bin/kicad-cli")
+
+    def _boom(cmd, **kwargs):
+        raise OSError("kicad-cli crashed")
+    monkeypatch.setattr("subprocess.run", _boom)
+    assert pcb.run_kicad_cli_drc(tmp_path / "board.kicad_pcb") is None
+
+
+def test_parse_kicad_drc_report_skips_malformed_entries():
+    report = {"violations": [
+        {"severity": "error", "type": "clearance", "description": "ok"},
+        "not a dict",
+        {},
+    ]}
+    result = pcb._parse_kicad_drc_report(report)
+    assert len(result) == 2
+    assert result[0].kind == "clearance"
+    assert result[1].severity == "error" and result[1].kind == "unknown"   # defaults
+
+
+def test_parse_kicad_drc_report_handles_missing_or_null_violations():
+    assert pcb._parse_kicad_drc_report({}) == []
+    assert pcb._parse_kicad_drc_report({"violations": None}) == []
+    assert pcb._parse_kicad_drc_report({}) == []
+
+
+@pytest.mark.skipif(pcb._locate_kicad_cli() is None or not PCB.exists(),
+                    reason="kicad-cli or Test1 board not available in this environment")
+def test_run_kicad_cli_drc_against_real_kicad_cli():
+    """Only runs when kicad-cli is actually installed (CI/dev machines with
+    KiCad) — exercises the real subprocess invocation and JSON schema, which
+    can't be verified where kicad-cli isn't available."""
+    result = pcb.run_kicad_cli_drc(PCB)
+    assert result is not None
+    for v in result:
+        assert isinstance(v, pcb.DrcViolation)
+        assert v.severity and v.kind is not None

@@ -114,6 +114,75 @@ def test_cli_writes_snapshots_and_log(tmp_path):
 
 
 @pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_kicad_drc_clean_report_is_reported_and_exits_zero(tmp_path, capsys, monkeypatch):
+    """A clean kicad-cli DRC report (mocked — the real CLI isn't installed
+    everywhere) must be printed and must not affect the exit code."""
+    monkeypatch.setattr(autoroute.pcb, "run_kicad_cli_drc", lambda out_path: [])
+    out = tmp_path / "out.kicad_pcb"
+    rc = autoroute.run(autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out)]))
+    assert rc == 0
+    assert "kicad-cli DRC: clean" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_kicad_drc_error_fails_the_run(tmp_path, capsys, monkeypatch):
+    """An 'error'-severity kicad-cli DRC violation must flip the exit code to
+    2, same as the in-repo self-checks — it's a real DRC failure, not just an
+    informational note."""
+    from pyautoroute.pcb import DrcViolation
+    monkeypatch.setattr(
+        autoroute.pcb, "run_kicad_cli_drc",
+        lambda out_path: [DrcViolation("error", "clearance", "mocked violation")])
+    out = tmp_path / "out.kicad_pcb"
+    rc = autoroute.run(autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out)]))
+    assert rc == 2
+    assert "kicad-cli DRC: 1 error(s)" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_kicad_drc_warning_only_does_not_fail_the_run(tmp_path, capsys, monkeypatch):
+    """A 'warning'-severity-only kicad-cli DRC report is informational and
+    must not flip the exit code, matching the self-checks' error-only gate."""
+    from pyautoroute.pcb import DrcViolation
+    monkeypatch.setattr(
+        autoroute.pcb, "run_kicad_cli_drc",
+        lambda out_path: [DrcViolation("warning", "silk_over_copper", "mocked warning")])
+    out = tmp_path / "out.kicad_pcb"
+    rc = autoroute.run(autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out)]))
+    assert rc == 0
+    assert "kicad-cli DRC: 0 error(s), 1 warning(s)" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_no_kicad_drc_skips_the_check(tmp_path, monkeypatch):
+    """--no-kicad-drc must opt out of the check entirely — run_kicad_cli_drc
+    should never even be called."""
+    calls = []
+    monkeypatch.setattr(autoroute.pcb, "run_kicad_cli_drc",
+                        lambda out_path: calls.append(out_path) or [])
+    out = tmp_path / "out.kicad_pcb"
+    rc = autoroute.run(autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out), "--no-kicad-drc"]))
+    assert rc == 0
+    assert calls == []
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
+def test_cli_kicad_drc_unavailable_is_a_clean_noop(tmp_path, capsys, monkeypatch):
+    """When kicad-cli itself is unavailable (None, not an empty list), the run
+    must still succeed with a note, never crash or fail the build over it."""
+    monkeypatch.setattr(autoroute.pcb, "run_kicad_cli_drc", lambda out_path: None)
+    out = tmp_path / "out.kicad_pcb"
+    rc = autoroute.run(autoroute.build_parser().parse_args(
+        [str(_TEST_BOARD), "-o", str(out)]))
+    assert rc == 0
+    assert "kicad-cli not available" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(not _TEST_BOARD.exists(), reason="Test5 board not present")
 def test_cli_unset_seed_labelled_auto_not_ini(tmp_path, capsys):
     """A --seed resolved from the clock (not passed on the CLI, and no
     ini/config supplies one either) must be reported with source "auto", not

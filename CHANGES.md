@@ -5,6 +5,15 @@ PyAutoRoute follows SemVer adapted for pre-1.0 (see `CLAUDE.md`): a **minor**
 bump for each major addition (feature, CLI flag, output, or algorithm change),
 a **patch** bump for fixes and small corrections. Newest first.
 
+## 0.57.0
+
+- **feature**: real DRC via `kicad-cli pcb drc --format json`, run automatically
+  on the written output whenever `kicad-cli` is found on PATH (`--no-kicad-drc`
+  to skip). This is a ground-truth check layered on top of the always-on
+  in-repo self-check — it also catches copper-pour clearance violations, which
+  the in-repo check skips for filled zones. Errors from the kicad-cli pass now
+  fold into the CLI's exit code the same way self-check/drill violations do.
+
 ## 0.56.6
 
 - **fix**: closed the last gap in the 0.56.4 isolated-island guard — a GND

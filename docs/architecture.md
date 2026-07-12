@@ -41,9 +41,12 @@ flowchart TD
 ```
 
 Everything is plain Python plus numpy/scipy/shapely — there is **no `pcbnew`
-dependency**. The only step that needs a full KiCad install is the *optional*
-`kicad-cli pcb drc` cross-check; PyAutoRoute's own `geometry.clearance_violations`
-provides an equivalent in-repo gate.
+dependency**. The only step that needs a full KiCad install is `kicad-cli`,
+used for two *optional*, best-effort things when found on `PATH`: refilling
+copper zones after writing the output (`pcb.try_refill_zones`), and a real
+`pcb drc` ground-truth cross-check (`pcb.run_kicad_cli_drc`, `--no-kicad-drc`
+to skip) layered on top of — not replacing — PyAutoRoute's own in-repo gate
+(`geometry.clearance_violations` / `geometry.drill_violations`).
 
 ## Modules
 
@@ -520,10 +523,16 @@ self-check. `default_output` names the file for the run — `_routed`,
 `_placed_routed` (`--place`), or `_placed` (`--place-only`). `--place-only` runs
 the placement pass then writes the placed board and returns *before* the
 netlist/grid/route phases; `_finish` (timing + log close) and the
-self-check are shared with the routing path. Exit code 2 if the self-check finds a
-violation. The version
-(`pyautoroute.__version__`, read from the installed package metadata) is printed
-on startup and written to the `--log` header; `--version` prints it and exits.
+self-check are shared with the routing path. `_run_kicad_drc_check` runs
+alongside the in-repo self-check (unless `--no-kicad-drc`), calling
+`pcb.run_kicad_cli_drc` for a real DRC pass when `kicad-cli` is found. Exit
+code 2 if the in-repo self-check finds a violation, or the kicad-cli pass
+finds an `error`-severity one (`warning`-severity findings are reported but
+don't affect the exit code). The version (`pyautoroute.__version__`, read
+directly from `pyproject.toml` when running from a checkout so it can't drift
+from an editable install's stale captured metadata — see `pyautoroute/__init__.py`)
+is printed on startup and written to the `--log` header; `--version` prints
+it and exits.
 
 `coarse_grid_note` prints (and logs) a heads-up when the effective `--grid`
 pitch exceeds ~2× the rules-derived pitch (`default_pitch` = `track/2 +
@@ -749,9 +758,13 @@ net name only works on name-only (KiCad 10) boards, and mismatched routed GND
 copper would otherwise itself look like an other-net obstacle here.
 
 **Critical invariant:** `geometry.board_obstacles` (and thus `clearance_violations`)
-skips filled zones, so PyAutoRoute's self-check cannot verify the pour's clearance —
-that is delegated to KiCad's fill / `kicad-cli`. The self-check passes for the routed
-traces; the zone boundary is emitted but unfilled if `kicad-cli` is absent (warned).
+skips filled zones, so PyAutoRoute's in-repo self-check cannot verify the pour's
+clearance — that is delegated to KiCad's fill / `kicad-cli`. The self-check passes
+for the routed traces; the zone boundary is emitted but unfilled if `kicad-cli` is
+absent (warned). This is exactly the gap `pcb.run_kicad_cli_drc` (see the CLI
+section above) is meant to close when `kicad-cli` *is* available: it runs KiCad's
+own DRC — which does model pour-fill rules — as a ground-truth pass alongside the
+in-repo checks.
 
 ### `mountingholes.py` — auto-add NPTH mounting holes
 
@@ -917,7 +930,7 @@ integration tests and validated end-to-end with `kicad-cli pcb drc`.
 ## Known limitations / future work
 
 - **Two layers only.** The stack is read generically but routing assumes F.Cu/B.Cu.
-- **Copper fills.** Zones with `(fill yes …)` are auto-detected: their net is excluded from routing and placement, and the zone polygon is skipped in `board_obstacles` (it is not a routing obstacle). After writing the output board, `pcb.try_refill_zones` invokes `kicad-cli pcb drc --refill-zones --save-board` to regenerate the pour; if `kicad-cli` is not available the user is prompted to refill manually in KiCad. Zones without `fill yes` (e.g. keepouts, teardrops) are still treated as obstacles.
+- **Copper fills.** Zones with `(fill yes …)` are auto-detected: their net is excluded from routing and placement, and the zone polygon is skipped in `board_obstacles` (it is not a routing obstacle). After writing the output board, `pcb.try_refill_zones` invokes `kicad-cli pcb drc --refill-zones --save-board` to regenerate the pour; if `kicad-cli` is not available the user is prompted to refill manually in KiCad. Zones without `fill yes` (e.g. keepouts, teardrops) are still treated as obstacles. Separately, `pcb.run_kicad_cli_drc` (`--no-kicad-drc` to skip) runs a real `kicad-cli pcb drc --format json` pass and folds its violations into the exit code — this is what actually verifies the pour's clearance, since the in-repo self-check skips filled zones (see `groundplane.py`'s critical invariant above).
 - **Custom pads** are approximated by their bounding box.
 - **Conservative clearance for mixed net-class boards.** The single global inflation margin uses the maximum track/clearance across classes; exact per-net masks would route denser mixed-rule boards.
 - **Hole-to-hole** is approximated by copper clearance rather than checked explicitly.
