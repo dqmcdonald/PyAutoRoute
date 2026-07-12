@@ -10,59 +10,11 @@ This is the project's **central roadmap**: the completed-feature plan docs
 performance/tuning docs point here for cross-cutting outstanding work, and link
 back for their own residual TODOs.
 
-> **Recently landed** (see `CHANGES.md`):
-> - **Bounded A\* search** (`--search-margin`) — shipped in 0.25.0.
-> - **Vectorised A\* overlay** — shipped in 0.25.3.
-> - **Ground plane** (`--ground-plane`, `--stitch-vias`, `--ground-plane-layer`) —
->   shipped; see [`ground-plane-plan.md`](ground-plane-plan.md).
-> - **Board comparison** (`pyautoroute-compare`) — shipped; see
->   [`board-comparison-plan.md`](board-comparison-plan.md).
-> - **Partial / incremental re-routing** (`--existing-routes preserve`) — shipped;
->   keeps existing copper, detects pre-routed connections via union-find, routes
->   only the remainder. Fixes the doubled-tracks bug on re-route (`clear` mode
->   now also strips segments, not just vias). Closes item #4 below.
-> - **Edge-aware placement + place↔route coupling** — shipped; see
->   [`placement-improvements-plan.md`](placement-improvements-plan.md).
-> - **Interactive footprint constraints** (GUI click-to-set edge/lock/overlap) —
->   shipped; see [`footprint-interaction-plan.md`](footprint-interaction-plan.md).
-> - **Differential pair routing** (`--diff-pairs`, `--diff-pair-gap`) — shipped in
->   0.38.0; see [`diffpair-plan.md`](diffpair-plan.md). Closes item #3 below.
-> - **`--scatter` + ranked cycle summary** — shipped in 0.45.0. `--scatter`
->   randomises all unlocked footprint positions/rotations before each `--cycles`
->   pass, diversifying annealer starting layouts; `--cycles` now prints a ranked
->   energy table at the end (winner marked ★). Also exposed in the GUI as a
->   *Scatter start* checkbox.
-> - **Placement polish** (`--place-polish`) — shipped in 0.46.0. After annealing
->   settles, a steepest-descent pass (central-difference gradient, backtracking
->   line search) relaxes close contacts and slides parts to their local energy
->   minimum — monotone, so it can never worsen the annealed result. Knobs:
->   `--place-polish-iters`, `--place-polish-eps`, `--place-polish-time`. GUI
->   controls added shortly after. See [`placement-polish-plan.md`](placement-polish-plan.md).
-> - **Decoupling-cap marking** (`Autoroute-decouple`, `--place-decouple-weight`)
->   — shipped in 0.47.0. A footprint property (`auto` or explicit IC ref) pulls a
->   cap toward its IC during `--place`; IC resolved by searching the cap's power
->   net for the nearest IC-like part. Settable via GUI right-click menu.
->   See [`decoupling-cap-plan.md`](decoupling-cap-plan.md).
-> - **Footprint assigner** (`pyautoroute-assign`) — shipped in 0.54.0. Assigns
->   footprints to unassigned `.kicad_sch` symbols from a TOML preference database
->   with per-prefix tech defaults and value-keyed IC rules. Supports `--dry-run`,
->   `--all`, and per-invocation `PREFIX:TECH` / `PREFIX:VALUE=FP` overrides.
-> - **Interleaved placement polish** (`--place-polish-interleave`) — shipped in
->   0.56.0 as an **experimental negative result**: basin-hopping descent sweeps
->   during the placement anneal do *not* beat plain SA + final polish at equal
->   wall-clock (benchmarked in `scripts/bench_interleave.py`; the discrete
->   swap/rotate moves dominate quality, not within-basin relaxation). Off by
->   default; closes the "dynamics-style annealing" investigation — see
->   `docs/architecture.md` for the verdict before revisiting gradient-based
->   placement dynamics (Langevin/MD-style).
-> - **Interior Edge.Cuts cutout support** — shipped in 0.56.2. A closed shape
->   wholly inside the board outline (a milled slot, a large hole drawn as its
->   own loop) is now subtracted as an interior hole in `outline_to_polygon`
->   instead of being merged into the board area; the grid's edge mask, the
->   ground pour, and mounting-hole validation all consume that one function, so
->   the fix covers all three at once. This was found and fixed as bug **B6**
->   during a whole-repo review (see `CHANGES.md`) rather than built from this
->   list — closes the item that would otherwise be proposed here.
+> **Shipped items** have been moved to the [Done / shipped](#done--shipped)
+> section at the end of this document. The numbered items below keep their
+> original numbers even where a shipped item (currently #3, #4, #14) has been
+> lifted out, so the many cross-references (here and in the sibling plan docs)
+> stay valid — hence the gaps in the sequence.
 
 ## Context
 
@@ -74,6 +26,45 @@ GUI (`gui/`). Routing is **DRC-clean by construction** — the grid inflates eve
 obstacle by `margin = hypot(max_track/2 + max_clearance, safety)` so A\* can only
 return clearance-legal paths (`grid.py:69-88`, [`architecture.md`](architecture.md)).
 The suggestions below extend that machinery rather than replacing it.
+
+## Outstanding work — priority summary
+
+A quick index of the not-yet-done items below, ordered roughly highest to
+lowest priority. The ordering follows the [Top recommendations](#top-recommendations)
+section and the value tiers; the linked numbers jump to the full write-ups.
+
+1. **#1 End-to-end output-verification tests** — cheapest insurance on the list;
+   would have caught bugs B1/B2/B4 before release and keeps guarding every future
+   flag that writes optional copper.
+2. **#2 Bounded / windowed A\* search** — biggest performance win; architecture
+   doc calls it "the highest-value next optimisation".
+3. **#5 Per-net-class clearance masks** — routes denser mixed-rule boards; the
+   grid currently uses one worst-case margin across all net classes.
+4. **#6 Drill geometry + hole-to-hole DRC** — closes a real self-check gap; most
+   scaffolding already exists (largely done for vias; NPTH/THT routing-obstacle
+   registration is what's left).
+5. **#7 kicad-cli DRC integration** — near-zero algorithmic cost given the
+   zone-refill subprocess plumbing; covers whatever gap remains vs. KiCad's DRC.
+6. **#8 Auto-add mounting holes (`--mounting-holes`)** — common post-routing
+   task; shares the routing-obstacle registration work with #6.
+7. **#13 Diff pairs in `--cycles` and the GUI** — make the existing pre-route
+   reachable from every entry point; the full annealing integration
+   ([Top recommendations](#top-recommendations) item 6) is the larger follow-up.
+8. **#10 Machine-readable report (`--report-json`)** — CI gates and tooling; low
+   effort since the dataclasses already exist.
+9. **#9 Exact custom-pad polygons** — stops over-reserving space for rect/custom
+   pads that fall back to their bounding box.
+10. **#17 Keep the best-N results (`--keep-best`)** — write ranked sibling files
+    from `--runs` / `--place-runs` instead of discarding all but the winner.
+11. **#11 Length tuning / matching** — per-group `target_length` penalty in the
+    annealer.
+12. **#12 Smarter tuning** — the unbuilt `tune.py` roadmap (presets, better
+    search, placement params, parallel eval, CSV/plots).
+13. **#15 Share one pipeline between CLI and GUI** — removes the `worker.py`
+    duplication and the drift/feature-gap it causes.
+14. **#16 GUI test coverage** — the entire `gui/` package is untested.
+15. **Lower-value / polish** — stall-detection flag, parallel placement runs,
+    pour-aware routing, per-layer H/V bias, teardrops, remaining test gaps.
 
 ## Testing infrastructure
 
@@ -117,36 +108,6 @@ Proposal: constrain each connection's search to a slack box around its source
 and target, expanding the box and retrying on failure. The heuristic field is
 already precomputed (`router.py:310-327`), so clamping the frontier is a
 localized change. Biggest performance win; explicitly intended future work.
-
-### 3. ✅ Differential pair routing (`--diff-pairs`) — **shipped in 0.38.0**
-
-Detects paired nets by naming convention (`+`/`-`, `P`/`N`, `_P`/`_N`) via
-`netlist.find_diff_pairs()`; routes them with a coupled A* in `diffpair.py` that
-advances both traces simultaneously using a fixed grid-node offset — guaranteeing
-zero length skew by construction. Diff pair copper is baked into the grid's static
-`owner` array after the pre-routing pass so the annealing loop needs no changes.
-`rules.dp_gap_for()` reads `differential_pair_gap` from the net class (falling back
-to clearance). After routing, a per-pair table reports length, skew, vias, and
-estimated differential impedance (IPC-2141A microstrip) using substrate parameters
-from the new `Board.stackup` (parsed from the PCB file's `(setup (stackup …))`
-block). See [`diffpair-plan.md`](diffpair-plan.md) for the full design record.
-
-> Note: the coupled A* (`diffpair._coupled_astar`) originally checked each
-> trace's freeness via `RoutingState.is_free` per expansion instead of a
-> precomputed free mask like the single-net search — fixed as perf item **O3**
-> (0.56.2), which factored the mask-building logic out into
-> `router.build_free_mask` for reuse. Also, until bug **B1** was fixed
-> (0.56.1), the routed pair copper was never written to the output file at
-> all — see item 1 above for why that went unnoticed.
-
-### 4. ✅ Incremental / partial re-routing (`--existing-routes preserve`) — **shipped**
-
-`--existing-routes {clear,preserve}` (default `clear`). In `preserve` mode: keep
-existing copper, run a layer-aware union-find over segments/vias/THT pads to
-classify each MST connection as pre-routed or unrouted, pass only unrouted
-connections to the router, and treat all existing copper as obstacles. `clear` mode
-(the new default) also strips segments before writing — fixing the doubled-tracks
-bug that occurred when re-routing an already-routed board.
 
 ### 5. Per-net-class clearance masks
 
@@ -269,7 +230,7 @@ can be mechanically fastened.
 - **`--keep-outline` compatibility**: when the board outline is fixed, corners
   are well-defined; when PyAutoRoute generates the outline (`--place` without
   `--keep-outline`), holes are placed after the outline is finalised.
-- Also benefits from item "Interior Edge.Cuts cutout support" above (shipped
+- Also benefits from item "Interior Edge.Cuts cutout support" (shipped
   0.56.2): a mounting hole placed inside what turns out to be an interior
   cutout is now handled correctly by `outline_to_polygon` instead of silently
   merged into routable board area.
@@ -365,14 +326,6 @@ pipeline in a daemon thread (`worker.py:_pipeline`) with live render, energy plo
 (`plots.py`), metrics, cooperative cancel, and a working Apply-to-Project with
 timestamped backup (`app.py:348`). The remaining gaps are targeted:
 
-### 14. ~~Wire up the "Suggest" button~~ — **removed**
-
-The Suggest… button and its associated `_suggest` placeholder, `on_suggest`
-callback parameter, `auto_probe_time` field in `RunConfig`, and the
-"Auto probe time" entry in the Advanced dialog were all removed (2026-06-05).
-The feature was never wired to `tune.sweep` and was deemed not practical enough
-to implement.
-
 ### 15. Share one pipeline between CLI and GUI
 
 `worker.py` **duplicates** the `autoroute.run` orchestration rather than sharing
@@ -458,7 +411,8 @@ If implementation effort is to be prioritized:
 1. **End-to-end output-verification tests** — cheapest insurance on this list:
    would have caught bugs B1, B2, and B4 before release, and keeps paying off
    for every future flag that writes optional copper.
-2. ~~**Differential pairs**~~ — **shipped in 0.38.0** (see item #3 above).
+2. ~~**Differential pairs**~~ — **shipped in 0.38.0** (see the
+   [Done / shipped](#done--shipped) section).
 3. **Per-net-class clearance masks** — routes denser mixed-rule boards; the grid
    currently uses a single worst-case margin across all net classes.
 4. **Drill geometry + hole-to-hole DRC** — closes a real self-check gap;
@@ -474,3 +428,101 @@ If implementation effort is to be prioritized:
    optimisation across single-ended and diff pair nets together. Item 13 above
    (`--cycles`/GUI wiring) is a smaller, more tractable first step in that
    direction.
+
+## Done / shipped
+
+Completed and shipped work, moved here out of the active roadmap above. The
+shipped numbered items (#3, #4) keep their original numbers so cross-references
+elsewhere stay valid; #14 was removed rather than shipped.
+
+> **Recently landed** (see `CHANGES.md`):
+> - **Bounded A\* search** (`--search-margin`) — shipped in 0.25.0.
+> - **Vectorised A\* overlay** — shipped in 0.25.3.
+> - **Ground plane** (`--ground-plane`, `--stitch-vias`, `--ground-plane-layer`) —
+>   shipped; see [`ground-plane-plan.md`](ground-plane-plan.md).
+> - **Board comparison** (`pyautoroute-compare`) — shipped; see
+>   [`board-comparison-plan.md`](board-comparison-plan.md).
+> - **Partial / incremental re-routing** (`--existing-routes preserve`) — shipped;
+>   keeps existing copper, detects pre-routed connections via union-find, routes
+>   only the remainder. Fixes the doubled-tracks bug on re-route (`clear` mode
+>   now also strips segments, not just vias). Closes item #4 below.
+> - **Edge-aware placement + place↔route coupling** — shipped; see
+>   [`placement-improvements-plan.md`](placement-improvements-plan.md).
+> - **Interactive footprint constraints** (GUI click-to-set edge/lock/overlap) —
+>   shipped; see [`footprint-interaction-plan.md`](footprint-interaction-plan.md).
+> - **Differential pair routing** (`--diff-pairs`, `--diff-pair-gap`) — shipped in
+>   0.38.0; see [`diffpair-plan.md`](diffpair-plan.md). Closes item #3 below.
+> - **`--scatter` + ranked cycle summary** — shipped in 0.45.0. `--scatter`
+>   randomises all unlocked footprint positions/rotations before each `--cycles`
+>   pass, diversifying annealer starting layouts; `--cycles` now prints a ranked
+>   energy table at the end (winner marked ★). Also exposed in the GUI as a
+>   *Scatter start* checkbox.
+> - **Placement polish** (`--place-polish`) — shipped in 0.46.0. After annealing
+>   settles, a steepest-descent pass (central-difference gradient, backtracking
+>   line search) relaxes close contacts and slides parts to their local energy
+>   minimum — monotone, so it can never worsen the annealed result. Knobs:
+>   `--place-polish-iters`, `--place-polish-eps`, `--place-polish-time`. GUI
+>   controls added shortly after. See [`placement-polish-plan.md`](placement-polish-plan.md).
+> - **Decoupling-cap marking** (`Autoroute-decouple`, `--place-decouple-weight`)
+>   — shipped in 0.47.0. A footprint property (`auto` or explicit IC ref) pulls a
+>   cap toward its IC during `--place`; IC resolved by searching the cap's power
+>   net for the nearest IC-like part. Settable via GUI right-click menu.
+>   See [`decoupling-cap-plan.md`](decoupling-cap-plan.md).
+> - **Footprint assigner** (`pyautoroute-assign`) — shipped in 0.54.0. Assigns
+>   footprints to unassigned `.kicad_sch` symbols from a TOML preference database
+>   with per-prefix tech defaults and value-keyed IC rules. Supports `--dry-run`,
+>   `--all`, and per-invocation `PREFIX:TECH` / `PREFIX:VALUE=FP` overrides.
+> - **Interleaved placement polish** (`--place-polish-interleave`) — shipped in
+>   0.56.0 as an **experimental negative result**: basin-hopping descent sweeps
+>   during the placement anneal do *not* beat plain SA + final polish at equal
+>   wall-clock (benchmarked in `scripts/bench_interleave.py`; the discrete
+>   swap/rotate moves dominate quality, not within-basin relaxation). Off by
+>   default; closes the "dynamics-style annealing" investigation — see
+>   `docs/architecture.md` for the verdict before revisiting gradient-based
+>   placement dynamics (Langevin/MD-style).
+> - **Interior Edge.Cuts cutout support** — shipped in 0.56.2. A closed shape
+>   wholly inside the board outline (a milled slot, a large hole drawn as its
+>   own loop) is now subtracted as an interior hole in `outline_to_polygon`
+>   instead of being merged into the board area; the grid's edge mask, the
+>   ground pour, and mounting-hole validation all consume that one function, so
+>   the fix covers all three at once. This was found and fixed as bug **B6**
+>   during a whole-repo review (see `CHANGES.md`) rather than built from this
+>   list — closes the item that would otherwise be proposed here.
+
+### 3. ✅ Differential pair routing (`--diff-pairs`) — **shipped in 0.38.0**
+
+Detects paired nets by naming convention (`+`/`-`, `P`/`N`, `_P`/`_N`) via
+`netlist.find_diff_pairs()`; routes them with a coupled A* in `diffpair.py` that
+advances both traces simultaneously using a fixed grid-node offset — guaranteeing
+zero length skew by construction. Diff pair copper is baked into the grid's static
+`owner` array after the pre-routing pass so the annealing loop needs no changes.
+`rules.dp_gap_for()` reads `differential_pair_gap` from the net class (falling back
+to clearance). After routing, a per-pair table reports length, skew, vias, and
+estimated differential impedance (IPC-2141A microstrip) using substrate parameters
+from the new `Board.stackup` (parsed from the PCB file's `(setup (stackup …))`
+block). See [`diffpair-plan.md`](diffpair-plan.md) for the full design record.
+
+> Note: the coupled A* (`diffpair._coupled_astar`) originally checked each
+> trace's freeness via `RoutingState.is_free` per expansion instead of a
+> precomputed free mask like the single-net search — fixed as perf item **O3**
+> (0.56.2), which factored the mask-building logic out into
+> `router.build_free_mask` for reuse. Also, until bug **B1** was fixed
+> (0.56.1), the routed pair copper was never written to the output file at
+> all — see item 1 above for why that went unnoticed.
+
+### 4. ✅ Incremental / partial re-routing (`--existing-routes preserve`) — **shipped**
+
+`--existing-routes {clear,preserve}` (default `clear`). In `preserve` mode: keep
+existing copper, run a layer-aware union-find over segments/vias/THT pads to
+classify each MST connection as pre-routed or unrouted, pass only unrouted
+connections to the router, and treat all existing copper as obstacles. `clear` mode
+(the new default) also strips segments before writing — fixing the doubled-tracks
+bug that occurred when re-routing an already-routed board.
+
+### 14. ~~Wire up the "Suggest" button~~ — **removed**
+
+The Suggest… button and its associated `_suggest` placeholder, `on_suggest`
+callback parameter, `auto_probe_time` field in `RunConfig`, and the
+"Auto probe time" entry in the Advanced dialog were all removed (2026-06-05).
+The feature was never wired to `tune.sweep` and was deemed not practical enough
+to implement.
